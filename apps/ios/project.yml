@@ -42,6 +42,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSRequiresIPhoneOS: true
+        UIRequiresFullScreen: false
         ITSAppUsesNonExemptEncryption: false
         UIAppFonts: [Literata.ttf, Literata-Italic.ttf, Inter.ttf]
         UILaunchScreen:
