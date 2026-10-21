@@ -14,6 +14,17 @@ This fork keeps the upstream Rust engine and develops the native Apple app incre
 
 The repository already includes a SwiftUI app targeting iOS 17+, with iPhone and iPad device families enabled. The app includes a custom UIKit/TextKit reader, local Bible translations, reference navigation, search, themes, verse selection, highlights, notes, and bookmarks. The README identifies parallel/compare translation views, importing translations, and online translations as Mac-only.
 
+## Primary iPad workflow
+
+The main target workflow is iPadOS Split View / windowed multitasking: Bible reading in this app on one side, with the user's preferred note-taking app alongside it. The Bible app should remain useful at half-width without requiring a dedicated in-app notes workspace.
+
+Acceptance checks for this workflow:
+- The app can participate in iPad multitasking and resize without restarting.
+- At narrow iPad widths, reading controls collapse into an overflow menu while reference and translation remain directly accessible.
+- The Bible text stays in a comfortable measure and adapts to width changes without losing the current verse.
+- Search, settings, bookmarks, highlights and verse notes remain available in the compact layout.
+- Validate with common note-taking apps in Split View, portrait/landscape, and Stage Manager where available.
+
 ## Proposed milestones
 
 ### 0. Establish a working baseline
