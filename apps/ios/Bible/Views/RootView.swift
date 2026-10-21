@@ -4,6 +4,7 @@ struct RootView: View {
     @Environment(Store.self) private var store
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var dynamicType
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
         @Bindable var store = store
@@ -31,6 +32,10 @@ struct RootView: View {
                 .ignoresSafeArea()
 
                 TopBar(theme: theme)
+                    // Keep the floating controls grouped on iPad instead of spreading them
+                    // across the full window. The reader itself already uses a centered measure.
+                    .frame(maxWidth: horizontalSizeClass == .regular ? 1040 : .infinity)
+                    .frame(maxWidth: .infinity)
                     .padding(.top, 4)
                     .offset(y: store.barsHidden ? -(safeTop + 72) : 0)
                     .opacity(store.barsHidden ? 0 : 1)
