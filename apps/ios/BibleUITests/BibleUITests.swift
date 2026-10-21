@@ -24,6 +24,18 @@ final class BibleUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [found], timeout: 5), .completed, "expected \(title), saw \(reference.label)", file: file, line: line)
     }
 
+    func testSearchRemainsAvailableInCompactAndRegularToolbars() {
+        let compactTools = app.buttons["reading-tools"]
+        if compactTools.waitForExistence(timeout: 1) {
+            compactTools.tap()
+        }
+
+        let search = app.buttons["search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3), "search should be available directly or in the compact toolbar menu")
+        search.tap()
+        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 3))
+    }
+
     func testOpensAtJohnOne() {
         expectChapter("John 1")
         XCTAssertTrue(verse("John 1:1").exists)
