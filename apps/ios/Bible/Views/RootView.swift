@@ -31,10 +31,13 @@ struct RootView: View {
                 }
                 .ignoresSafeArea()
 
-                TopBar(theme: theme)
+                TopBar(
+                    theme: theme,
+                    compactForSplitView: UIDevice.current.userInterfaceIdiom == .pad && geo.size.width < 700
+                )
                     // Keep the floating controls grouped on iPad instead of spreading them
-                    // across the full window. The reader itself already uses a centered measure.
-                    .frame(maxWidth: horizontalSizeClass == .regular ? 1040 : .infinity)
+                    // across the full window. In a narrow iPad window, the tools collapse into a menu.
+                    .frame(maxWidth: horizontalSizeClass == .regular && geo.size.width >= 700 ? 1040 : .infinity)
                     .frame(maxWidth: .infinity)
                     .padding(.top, 4)
                     .offset(y: store.barsHidden ? -(safeTop + 72) : 0)
@@ -104,6 +107,7 @@ struct RootView: View {
 struct TopBar: View {
     @Environment(Store.self) private var store
     let theme: Theme
+    var compactForSplitView = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -149,13 +153,48 @@ struct TopBar: View {
 
             Spacer(minLength: 0)
 
-            HStack(spacing: 0) {
-                tool("magnifyingglass", "Search", id: "search") { store.sheet = .search }
-                tool("textformat.size", "Text and theme", id: "settings") { store.sheet = .settings }
-                tool("bookmark", "Bookmarks, highlights and notes", id: "study") { store.sheet = .study }
+            if compactForSplitView {
+                Menu {
+                    Button {
+                        store.sheet = .search
+                    } label: {
+                        Label("Search", systemImage: "magnifyingglass")
+                    }
+                    .accessibilityIdentifier("search")
+
+                    Button {
+                        store.sheet = .settings
+                    } label: {
+                        Label("Text and theme", systemImage: "textformat.size")
+                    }
+                    .accessibilityIdentifier("settings")
+
+                    Button {
+                        store.sheet = .study
+                    } label: {
+                        Label("Bookmarks, highlights and notes", systemImage: "bookmark")
+                    }
+                    .accessibilityIdentifier("study")
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("More reading tools")
+                .accessibilityIdentifier("reading-tools")
+                .foregroundStyle(Color(theme.ink))
+                .padding(.horizontal, 4)
+                .glass(in: Capsule(), theme: theme)
+            } else {
+                HStack(spacing: 0) {
+                    tool("magnifyingglass", "Search", id: "search") { store.sheet = .search }
+                    tool("textformat.size", "Text and theme", id: "settings") { store.sheet = .settings }
+                    tool("bookmark", "Bookmarks, highlights and notes", id: "study") { store.sheet = .study }
+                }
+                .padding(.horizontal, 4)
+                .glass(in: Capsule(), theme: theme)
             }
-            .padding(.horizontal, 4)
-            .glass(in: Capsule(), theme: theme)
         }
         .padding(.horizontal, 16)
     }
