@@ -18,12 +18,19 @@ The repository already includes a SwiftUI app targeting iOS 17+, with iPhone and
 
 The main target workflow is iPadOS Split View / windowed multitasking: Bible reading in this app on one side, with the user's preferred note-taking app alongside it. The Bible app should remain useful at half-width without requiring a dedicated in-app notes workspace.
 
+Current implementation notes:
+- The reader already recalculates its text column from the actual scroll-view width and safe-area insets.
+- When the reader is re-typeset after a width or text-style change, it records the verse at the reading line and its relative line offset, then restores that position. Keep this behavior intact when changing layout code.
+- The iPad toolbar uses a centered maximum width in regular layouts and consolidates its tools into an overflow menu below 700 pt of window width.
+- The generated app configuration explicitly opts out of full-screen-only behavior.
+
 Acceptance checks for this workflow:
 - The app can participate in iPad multitasking and resize without restarting.
 - At narrow iPad widths, reading controls collapse into an overflow menu while reference and translation remain directly accessible.
-- The Bible text stays in a comfortable measure and adapts to width changes without losing the current verse.
+- The Bible text stays in a comfortable measure and adapts to width changes without losing the current verse (reader position restoration exists in code; verify visually on device).
 - Search, settings, bookmarks, highlights and verse notes remain available in the compact layout.
-- Validate with common note-taking apps in Split View, portrait/landscape, and Stage Manager where available.
+- The UI test checks that Search remains reachable from either the compact overflow menu or the regular toolbar.
+- Validate with common note-taking apps in Split View, portrait/landscape, and Stage Manager where available; these device-level checks are still outstanding.
 
 ## Proposed milestones
 
