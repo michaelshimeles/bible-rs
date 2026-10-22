@@ -3,6 +3,13 @@
 	to the shorter column, its lines washed in the colour as the reader shows them. Filters by
 	colour, testament and book.
 -->
+<script module lang="ts">
+	// Kept across visits to the page (Back returns to it as it was), as the Mac keeps it.
+	let color = $state<string | null>(null);
+	let testament = $state(0);
+	let book = $state<number | null>(null);
+</script>
+
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getApp } from '../app.svelte';
@@ -19,9 +26,6 @@
 	const ROW = 26;
 
 	const app = getApp();
-	let color = $state<string | null>(null);
-	let testament = $state(0);
-	let book = $state<number | null>(null);
 	let width = $state(0);
 	let fonts = $state(false);
 	let menu = $state<{ item: StudyItem; x: number; y: number } | null>(null);

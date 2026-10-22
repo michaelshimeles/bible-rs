@@ -146,31 +146,53 @@ pub fn initialize(data_dir: PathBuf, notify: Arc<dyn Fn() + Send + Sync>) -> Res
     Ok(Init { data_dir, study, library, settings, elapsed: t.elapsed() })
 }
 
-/// Back/forward navigation history.
+/// Somewhere Back and Forward return to: a spot in the reader, or a page as it was left (its
+/// filter, scroll and open item), so a bookmark opened from Bookmarks comes back to Bookmarks.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Place {
+    Reader(ChapterIdx, u8),
+    Page(crate::pages::View),
+}
+
+impl Place {
+    /// The same spot, however it's scrolled or filtered (a repeat isn't recorded twice).
+    fn same(&self, other: &Place) -> bool {
+        match (self, other) {
+            (Place::Reader(a, x), Place::Reader(b, y)) => a == b && x == y,
+            (Place::Page(a), Place::Page(b)) => a.page == b.page,
+            _ => false,
+        }
+    }
+}
+
+/// Back/forward navigation history, across the reader and the pages.
 #[derive(Default)]
 pub struct History {
-    back: Vec<(ChapterIdx, u8)>,
-    forward: Vec<(ChapterIdx, u8)>,
+    back: Vec<Place>,
+    forward: Vec<Place>,
 }
 
 impl History {
-    pub fn push(&mut self, here: (ChapterIdx, u8)) {
-        if self.back.last() != Some(&here) {
-            self.back.push(here);
-            if self.back.len() > 200 {
-                self.back.remove(0);
+    pub fn push(&mut self, here: Place) {
+        match self.back.last_mut() {
+            Some(last) if last.same(&here) => *last = here,
+            _ => {
+                self.back.push(here);
+                if self.back.len() > 200 {
+                    self.back.remove(0);
+                }
             }
         }
         self.forward.clear();
     }
 
-    pub fn back(&mut self, here: (ChapterIdx, u8)) -> Option<(ChapterIdx, u8)> {
+    pub fn back(&mut self, here: Place) -> Option<Place> {
         let to = self.back.pop()?;
         self.forward.push(here);
         Some(to)
     }
 
-    pub fn forward(&mut self, here: (ChapterIdx, u8)) -> Option<(ChapterIdx, u8)> {
+    pub fn forward(&mut self, here: Place) -> Option<Place> {
         let to = self.forward.pop()?;
         self.back.push(here);
         Some(to)
@@ -184,8 +206,12 @@ impl History {
         !self.forward.is_empty()
     }
 
-    pub fn recent(&self) -> impl Iterator<Item = &(ChapterIdx, u8)> {
-        self.back.iter().rev()
+    /// The reader's earlier spots, most recent first.
+    pub fn recent(&self) -> impl Iterator<Item = (ChapterIdx, u8)> + '_ {
+        self.back.iter().rev().filter_map(|p| match p {
+            Place::Reader(c, v) => Some((*c, *v)),
+            Place::Page(_) => None,
+        })
     }
 }
 
@@ -436,9 +462,38 @@ impl BibleApp {
         self.reader.location
     }
 
+    /// Where Back would return to after leaving now: the reader's spot, or the open page.
+    fn place(&self) -> Place {
+        if self.pages.reader() {
+            let (c, v) = self.here();
+            Place::Reader(c, v)
+        } else {
+            Place::Page(self.pages.view())
+        }
+    }
+
+    /// Goes to a page (or the reader), recording where it left in history.
+    fn open_page(&mut self, page: crate::pages::Page) {
+        if self.pages.page != page {
+            self.history.push(self.place());
+            self.pages.open(page);
+        }
+    }
+
+    /// Returns to a place from history.
+    fn go(&mut self, to: Place) {
+        match to {
+            Place::Reader(c, v) => {
+                self.pages.open(crate::pages::Page::Reader);
+                self.reader.jump(c, Some(v), false);
+            }
+            Place::Page(view) => self.pages.restore(view),
+        }
+    }
+
     fn jump(&mut self, chapter: ChapterIdx, verse: Option<u8>, flash: bool) {
-        let here = self.here();
-        self.history.push(here);
+        self.history.push(self.place());
+        self.pages.open(crate::pages::Page::Reader);
         let flash = flash && self.settings.flash_jumps && !self.settings.reduce_motion;
         self.reader.jump(chapter, verse, flash);
     }
@@ -463,6 +518,21 @@ impl BibleApp {
         // The rows of Settings › Shortcuts, with any chords chosen there.
         let bindings = crate::keymap::bindings(&self.settings.shortcuts);
         let anywhere = |a: &Action| matches!(a, Action::OpenPalette | Action::OpenSearch(_));
+        // A mouse's back and forward buttons, as in a browser.
+        if !overlay {
+            let (back, forward) = ctx.input(|i| {
+                (
+                    i.pointer.button_pressed(egui::PointerButton::Extra1),
+                    i.pointer.button_pressed(egui::PointerButton::Extra2),
+                )
+            });
+            if back {
+                actions.push(Action::Back);
+            }
+            if forward {
+                actions.push(Action::Forward);
+            }
+        }
         ctx.input_mut(|i| {
             let cmd = Modifiers::COMMAND;
             let cmd_shift = Modifiers::COMMAND | Modifiers::SHIFT;
@@ -590,24 +660,24 @@ impl BibleApp {
     fn apply_one(&mut self, ctx: &egui::Context, a: Action) {
         match a {
             Action::Jump { chapter, verse, flash } => {
-                self.pages.open(crate::pages::Page::Reader);
                 self.jump(chapter, verse, flash);
                 // Landing on a specific verse selects it, so N/B/C/1–6 act on it right away.
                 if let (Some(v), true) = (verse, flash) {
                     self.reader.set_selection(Some(VerseRef::new(chapter.book(), chapter.chapter(), v)));
                 }
             }
-            // From a page, Back returns to the reader.
-            Action::Back if !self.pages.reader() => self.pages.open(crate::pages::Page::Reader),
-            Action::Back => {
-                if let Some((c, v)) = self.history.back(self.here()) {
-                    self.reader.jump(c, Some(v), false);
+            Action::Back => match self.history.back(self.place()) {
+                Some(to) => self.go(to),
+                // A page with nothing before it (opened at launch) goes back to the reader.
+                None if !self.pages.reader() => {
+                    self.history.forward.push(self.place());
+                    self.pages.open(crate::pages::Page::Reader);
                 }
-            }
+                None => {}
+            },
             Action::Forward => {
-                self.pages.open(crate::pages::Page::Reader);
-                if let Some((c, v)) = self.history.forward(self.here()) {
-                    self.reader.jump(c, Some(v), false);
+                if let Some(to) = self.history.forward(self.place()) {
+                    self.go(to);
                 }
             }
             Action::PrevChapter => {
@@ -869,7 +939,7 @@ impl BibleApp {
                 }
                 Err(e) => self.toast(ctx, format!("{e:#}")),
             },
-            Action::OpenPage(page) => self.pages.open(page),
+            Action::OpenPage(page) => self.open_page(page),
             Action::SaveNote(v, body) => {
                 if let Err(e) = self.study.set_note(v, &body) {
                     self.toast(ctx, format!("Couldn't save note: {e:#}"));
@@ -1300,14 +1370,14 @@ impl BibleApp {
         let nav = [
             CapsuleButton {
                 tooltip: "Back (⌘[)",
-                // From a page, Back returns to the reader.
+                // A page with nothing before it can still go back to the reader.
                 enabled: self.history.can_back() || !self.pages.reader(),
                 on: false,
                 icon: crate::icons::chevron_left,
             },
             CapsuleButton {
                 tooltip: "Forward (⌘])",
-                enabled: self.history.can_forward() && self.pages.reader(),
+                enabled: self.history.can_forward(),
                 on: false,
                 icon: crate::icons::chevron_right,
             },
@@ -2309,7 +2379,7 @@ impl eframe::App for BibleApp {
                         location: self.reader.location,
                         // The current place first, then where the reader came from.
                         recent: std::iter::once(self.reader.location)
-                            .chain(self.history.recent().copied())
+                            .chain(self.history.recent())
                             .fold(Vec::new(), |mut v, here| {
                                 if !v.iter().any(|(c, _): &(ChapterIdx, u8)| *c == here.0) {
                                     v.push(here);
@@ -2625,7 +2695,46 @@ pub fn bump(counter: &AtomicU64) {
 
 #[cfg(test)]
 mod tests {
-    use super::Leading;
+    use super::{History, Leading, Place};
+    use crate::pages::{Page, Pages};
+    use bible_core::{BookId, ChapterIdx};
+
+    fn reader(book: u8, chapter: u8, verse: u8) -> Place {
+        Place::Reader(ChapterIdx::new(BookId(book), chapter).unwrap(), verse)
+    }
+
+    fn page(page: Page, query: &str) -> Place {
+        let mut pages = Pages::default();
+        pages.open(page);
+        pages.query = query.into();
+        Place::Page(pages.view())
+    }
+
+    #[test]
+    fn back_from_a_bookmark_returns_to_the_bookmarks_page() {
+        // Reading Romans 8, open Bookmarks, filter it, then open John 3:16 from it.
+        let mut h = History::default();
+        h.push(reader(45, 8, 1));
+        h.push(page(Page::Bookmarks, "john"));
+        let here = reader(43, 3, 16);
+        assert_eq!(h.back(here.clone()), Some(page(Page::Bookmarks, "john")));
+        assert_eq!(h.back(page(Page::Bookmarks, "john")), Some(reader(45, 8, 1)));
+        assert!(!h.can_back());
+        assert_eq!(h.forward(reader(45, 8, 1)), Some(page(Page::Bookmarks, "john")));
+        assert_eq!(h.forward(page(Page::Bookmarks, "john")), Some(here));
+        assert!(!h.can_forward());
+        // Only the reader's spots count as where it came from.
+        assert_eq!(h.recent().count(), 1);
+    }
+
+    #[test]
+    fn a_page_left_twice_in_a_row_is_one_entry_as_it_was_last() {
+        let mut h = History::default();
+        h.push(page(Page::Highlights, "a"));
+        h.push(page(Page::Highlights, "ab"));
+        assert_eq!(h.back(reader(1, 1, 1)), Some(page(Page::Highlights, "ab")));
+        assert!(!h.can_back());
+    }
 
     // The default window: a 264 pt floating sidebar, the toolbar starting at 96 pt after the
     // traffic lights.

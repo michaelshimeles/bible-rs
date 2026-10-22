@@ -6,6 +6,7 @@
 	import { onMount, untrack } from 'svelte';
 	import { dev } from '$app/env';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { SITE_URL } from '#lib/config.js';
 	import { ReadApp, setApp, now } from './app.svelte';
 	import { chapterPath } from './books';
@@ -216,9 +217,36 @@
 			? chapterPath(app.core.books, s.translation, app.here.chapter)
 			: '/read';
 		const t = setTimeout(() => {
-			if (location.pathname !== path) void goto(path, { shallow: true, replace: true });
+			if (location.pathname !== path) void goto(path, { shallow: true, replace: true, state: { nav } });
 		}, 400);
 		return () => clearTimeout(t);
+	});
+
+	// Back and forward through the browser: every place the app records (a jump, a page opened) is
+	// a browser entry too, numbered in its state, so the browser's Back button, a mouse's back
+	// button and ⌘[ all walk the same history. Coming back to an entry moves the app by the
+	// difference in numbers.
+	let nav = untrack(() => page.state.nav ?? 0);
+	app.browser = {
+		push() {
+			nav += 1;
+			void goto(location.href, { shallow: true, state: { nav } });
+		},
+		go(delta) {
+			// The first entry of this visit has nothing of the app's before it.
+			if (nav + delta < 0) return false;
+			history.go(delta);
+			return true;
+		}
+	};
+	$effect(() => {
+		const to = page.state.nav ?? 0;
+		untrack(() => {
+			if (to === nav) return;
+			const delta = to - nav;
+			nav = to;
+			app.travel(delta);
+		});
 	});
 
 	// A file dragged onto the page opens the import sheet, whose drop zone takes it.

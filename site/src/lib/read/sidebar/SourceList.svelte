@@ -44,7 +44,8 @@
 	/** Where the reader is, then where it came from: three chapters. */
 	const recent = $derived.by(() => {
 		const out: { chapter: number; verse: number }[] = [];
-		for (const loc of [app.here, ...app.history.back.toReversed()]) {
+		const earlier = app.history.back.filter((p) => p.kind === 'reader').toReversed();
+		for (const loc of [app.here, ...earlier]) {
 			if (out.length === 3) break;
 			if (!out.some((l) => l.chapter === loc.chapter)) out.push({ chapter: loc.chapter, verse: loc.verse });
 		}

@@ -2,6 +2,11 @@
 	Bookmarks (pages/bookmarks.rs): the bookmarked verses in canonical order under their books, or
 	newest first, each with its text; hovering a row offers Go and Remove in place of its date.
 -->
+<script module lang="ts">
+	// Kept across visits to the page (Back returns to it as it was), as the Mac keeps it.
+	let recent = $state(false);
+</script>
+
 <script lang="ts">
 	import { getApp } from '../app.svelte';
 	import type { StudyItem } from '../core';
@@ -11,7 +16,6 @@
 	import PageHead from './PageHead.svelte';
 
 	const app = getApp();
-	let recent = $state(false);
 
 	const all = $derived(app.studyItems('bookmarks'));
 	const subtitle = $derived.by(() => {

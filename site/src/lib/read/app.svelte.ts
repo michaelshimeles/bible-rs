@@ -45,6 +45,8 @@ import {
 	type Theme
 } from './settings';
 import { dayStart } from './time';
+import { notesPage } from './pages/notes.svelte';
+import { plansPage } from './pages/plans.svelte';
 
 export type Page = 'reader' | 'translations' | 'bookmarks' | 'highlights' | 'notes' | 'history' | 'plans';
 export type SettingsTab = 'reading' | 'appearance' | 'translations' | 'shortcuts' | 'data' | 'about';
@@ -54,6 +56,35 @@ export type StudyKind = 'bookmarks' | 'highlights' | 'notes';
 export interface Loc {
 	chapter: number;
 	verse: number;
+}
+
+/** A page as it was left: its filter, how far it was scrolled, and the plan day or note open. */
+export interface PageView {
+	page: Exclude<Page, 'reader'>;
+	query: string;
+	scroll: number;
+	planDay: { id: string; day: number } | null;
+	note: VerseRef | null;
+}
+
+/**
+ * Somewhere Back and Forward return to: a spot in the reader, or a page as it was left, so a
+ * bookmark opened from Bookmarks comes back to Bookmarks (app.rs `Place`).
+ */
+export type Place = ({ kind: 'reader' } & Loc) | ({ kind: 'page' } & PageView);
+
+/** The same spot, however it's scrolled or filtered (a repeat isn't recorded twice). */
+const samePlace = (a: Place, b: Place) =>
+	a.kind === 'reader' && b.kind === 'reader'
+		? a.chapter === b.chapter && a.verse === b.verse
+		: a.kind === 'page' && b.kind === 'page' && a.page === b.page;
+
+/** What the shell offers for history: the browser's entries, kept in step with the app's. */
+export interface BrowserHistory {
+	/** Records a new entry for the place just reached. */
+	push(): void;
+	/** Steps through the browser's entries (popstate then moves the app); false when it can't. */
+	go(delta: -1 | 1): boolean;
 }
 
 export interface Toast {
@@ -206,7 +237,7 @@ export class ReadApp {
 	/** Chosen words kept while the pointer is pressed outside the text (a menu, the highlight bar),
 	 *  which may take the page's selection away. */
 	heldWords: Words | null = null;
-	history = $state<{ back: Loc[]; forward: Loc[] }>({ back: [], forward: [] });
+	history = $state<{ back: Place[]; forward: Place[] }>({ back: [], forward: [] });
 	page = $state<Page>('reader');
 	/** The translation selected on the Translations page (an import selects what it added). */
 	translationPick = $state<string | null>(null);
@@ -233,6 +264,12 @@ export class ReadApp {
 	pageScrolled = $state(false);
 	/** The toolbar's field on a page, filtering it. */
 	pageQuery = $state('');
+	/** How far the open page is scrolled (kept by the page, for history). */
+	pageScroll = 0;
+	/** Where to scroll a page that history returns to, taken once it shows. */
+	restoreScroll: number | null = null;
+	/** The browser's history, once the shell connects it. */
+	browser: BrowserHistory | null = null;
 	/** Bumped on every study change; reads below depend on it. */
 	studyGen = $state(0);
 	/** Development only: states `?demo=` asks components to show (see demo.ts). */
@@ -561,19 +598,80 @@ export class ReadApp {
 
 	#jump(chapter: number, verse: number | undefined, flash: boolean) {
 		this.#pushHistory();
+		this.page = 'reader';
 		const s = this.settings;
 		this.reader?.jump(chapter, verse, flash && s.flashJumps && !s.reduceMotion);
 	}
 
+	/** Where Back would return to after leaving now: the reader's spot, or the open page. */
+	place(): Place {
+		if (this.page === 'reader') return { kind: 'reader', ...this.here };
+		return {
+			kind: 'page',
+			page: this.page,
+			query: this.pageQuery,
+			scroll: this.pageScroll,
+			planDay: plansPage.open && { ...plansPage.open },
+			note: notesPage.selected && { ...notesPage.selected }
+		};
+	}
+
+	/** Records where the app is leaving, before it goes somewhere new. */
 	#pushHistory() {
-		const here = { ...this.here };
+		const here = this.place();
 		const back = this.history.back;
 		const last = back[back.length - 1];
-		if (!last || last.chapter !== here.chapter || last.verse !== here.verse) {
+		if (last && samePlace(last, here)) back[back.length - 1] = here;
+		else {
 			back.push(here);
 			if (back.length > 200) back.shift();
 		}
 		this.history.forward = [];
+		this.browser?.push();
+	}
+
+	/** Goes to a page (or the reader), recording where it left. */
+	#openPage(page: Page) {
+		if (this.page === page) return;
+		this.#pushHistory();
+		this.pageQuery = '';
+		this.pageScroll = 0;
+		this.restoreScroll = null;
+		this.page = page;
+	}
+
+	/** Returns to a place from history. */
+	#go(to: Place) {
+		if (to.kind === 'reader') {
+			this.page = 'reader';
+			this.reader?.jump(to.chapter, to.verse, false);
+			return;
+		}
+		this.pageQuery = to.query;
+		this.pageScroll = to.scroll;
+		this.restoreScroll = to.scroll;
+		if (to.page === 'plans') plansPage.open = to.planDay;
+		if (to.page === 'notes' && to.note) notesPage.selected = to.note;
+		this.page = to.page;
+	}
+
+	/**
+	 * Moves `delta` places through history (negative is back) without touching the browser's
+	 * entries: the browser has already moved (popstate), or has none to move through.
+	 */
+	travel(delta: number) {
+		for (; delta < 0; delta++) {
+			const to = this.history.back.pop();
+			if (!to) break;
+			this.history.forward.push(this.place());
+			this.#go(to);
+		}
+		for (; delta > 0; delta--) {
+			const to = this.history.forward.pop();
+			if (!to) break;
+			this.history.back.push(this.place());
+			this.#go(to);
+		}
 	}
 
 	// ---------------------------------------------------------------- study
@@ -807,32 +905,22 @@ export class ReadApp {
 		const s = this.settings;
 		switch (a.type) {
 			case 'jump':
-				this.page = 'reader';
 				this.#jump(a.chapter, a.verse, a.flash ?? false);
 				// Landing on a specific verse selects it, so N/B/C/1–6 act on it right away.
 				if (a.verse && a.flash) this.setSelection(this.refAt(a.chapter, a.verse));
 				break;
-			case 'back': {
-				if (this.page !== 'reader') {
+			// Through the browser when it can, so its Back button and the app's stay in step.
+			case 'back':
+				if (this.history.back.length > 0) {
+					if (!this.browser?.go(-1)) this.travel(-1);
+				} else if (this.page !== 'reader') {
+					// A page with nothing before it (opened at start) goes back to the reader.
 					this.page = 'reader';
-					break;
-				}
-				const to = this.history.back.pop();
-				if (to) {
-					this.history.forward.push({ ...this.here });
-					this.reader?.jump(to.chapter, to.verse, false);
 				}
 				break;
-			}
-			case 'forward': {
-				this.page = 'reader';
-				const to = this.history.forward.pop();
-				if (to) {
-					this.history.back.push({ ...this.here });
-					this.reader?.jump(to.chapter, to.verse, false);
-				}
+			case 'forward':
+				if (this.history.forward.length > 0 && !this.browser?.go(1)) this.travel(1);
 				break;
-			}
 			case 'prevChapter': {
 				const c = this.here.chapter;
 				// Within a chapter, ← first returns to its start.
@@ -1086,8 +1174,7 @@ export class ReadApp {
 				void this.removeImported(a.id);
 				break;
 			case 'openPage':
-				if (this.page !== a.page) this.pageQuery = '';
-				this.page = a.page;
+				this.#openPage(a.page);
 				break;
 			case 'showShortcuts':
 				this.shortcuts = !this.shortcuts;

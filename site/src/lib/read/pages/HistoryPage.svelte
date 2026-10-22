@@ -2,6 +2,11 @@
 	History (pages/history.rs): every chapter read, newest first, as a timeline under day labels —
 	when, how long, the chapter's opening and how far you got — beside a card of the week's minutes.
 -->
+<script module lang="ts">
+	// Kept across visits to the page (Back returns to it as it was), as the Mac keeps it.
+	let range = $state(1);
+</script>
+
 <script lang="ts">
 	import { getApp, now } from '../app.svelte';
 	import { chapterLabel, type ReadingSession } from '../core';
@@ -12,7 +17,6 @@
 
 	const DAY = 86_400;
 	const app = getApp();
-	let range = $state(1);
 	let clearing = $state(false);
 	let clearButton = $state<HTMLButtonElement>();
 	let hovered = $state<number | null>(null);

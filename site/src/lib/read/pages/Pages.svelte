@@ -23,11 +23,27 @@
 
 	const panes = $derived(app.page === 'notes' && (app.counts().notes > 0 || notesPage.selected !== null));
 
-	// A page opens at its top, with the toolbar clear.
+	// A page opens at its top, with the toolbar clear; one that history returns to opens where it
+	// was left. Its rows can still be settling (fonts, measured widths), so that's tried again on
+	// the next frames until it holds.
 	$effect(() => {
 		void app.page;
-		scroller?.scrollTo({ top: 0 });
-		app.pageScrolled = false;
+		const el = scroller;
+		if (!el) return;
+		const top = app.restoreScroll ?? 0;
+		app.restoreScroll = null;
+		el.scrollTo({ top });
+		app.pageScroll = el.scrollTop;
+		app.pageScrolled = app.pageScroll > 0.5;
+		if (top === 0) return;
+		let tries = 0;
+		let frame = requestAnimationFrame(function settle() {
+			if (Math.abs(el.scrollTop - top) > 1 && tries++ < 10) {
+				el.scrollTo({ top });
+				frame = requestAnimationFrame(settle);
+			}
+		});
+		return () => cancelAnimationFrame(frame);
 	});
 </script>
 
@@ -38,7 +54,10 @@
 		class="pages"
 		bind:this={scroller}
 		style:--toolbar="{top}px"
-		onscroll={(e) => (app.pageScrolled = e.currentTarget.scrollTop > 0.5)}
+		onscroll={(e) => {
+			app.pageScroll = e.currentTarget.scrollTop;
+			app.pageScrolled = app.pageScroll > 0.5;
+		}}
 	>
 		<div class="content">
 			{#if app.page === 'translations'}<TranslationsPage />

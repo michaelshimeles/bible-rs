@@ -5,7 +5,10 @@ declare global {
 		// interface Error {}
 		// interface Locals {}
 		// interface PageData {}
-		// interface PageState {}
+		interface PageState {
+			/** The reader's place in its own history (Shell.svelte): entries count up from 0. */
+			nav?: number;
+		}
 		// interface Platform {}
 	}
 }

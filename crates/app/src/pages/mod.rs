@@ -59,6 +59,17 @@ impl Page {
     }
 }
 
+/// A page as it was left, for Back and Forward to return to: its filter, how far it was
+/// scrolled, and the plan day or note it had open.
+#[derive(Clone, PartialEq, Debug)]
+pub struct View {
+    pub page: Page,
+    query: String,
+    scroll: f32,
+    plan_day: Option<(String, usize)>,
+    note: Option<bible_core::VerseRef>,
+}
+
 /// What a page reads from the app each frame.
 pub struct PageEnv<'a> {
     pub library: &'a Library,
@@ -83,6 +94,10 @@ pub struct Pages {
     pub plans: plans::State,
     /// Whether the page is scrolled (the toolbar then takes its material).
     pub scrolled: bool,
+    /// How far the open page is scrolled, and where to scroll it on the next frame (returning
+    /// to it from history).
+    offset: f32,
+    restore_offset: Option<f32>,
 }
 
 impl Pages {
@@ -97,6 +112,34 @@ impl Pages {
         self.page == Page::Reader
     }
 
+    /// The open page as it is now.
+    pub fn view(&self) -> View {
+        View {
+            page: self.page,
+            query: self.query.clone(),
+            scroll: self.offset,
+            plan_day: self.plans.open.clone(),
+            note: self.notes.selected(),
+        }
+    }
+
+    /// Shows a page as it was left.
+    pub fn restore(&mut self, v: View) {
+        self.page = v.page;
+        self.query = v.query;
+        self.offset = v.scroll;
+        self.restore_offset = Some(v.scroll);
+        match v.page {
+            Page::Plans => self.plans.open = v.plan_day,
+            Page::Notes => {
+                if let Some(n) = v.note {
+                    self.notes.select(n);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Draws the open page over `rect` (the main area, from the window's top: content scrolls
     /// under the toolbar).
     pub fn show(&mut self, ui: &mut Ui, rect: Rect, env: &PageEnv<'_>, actions: &mut Vec<Action>) {
@@ -107,9 +150,15 @@ impl Pages {
         if self.page.has_panes() && !self.notes.is_empty(env) {
             self.notes.show(&mut child, rect, env, actions);
             self.scrolled = false;
+            self.offset = 0.0;
+            self.restore_offset = None;
             return;
         }
-        let out = ScrollArea::vertical().id_salt(("page", self.page as u8)).auto_shrink(false).show(
+        let mut area = ScrollArea::vertical().id_salt(("page", self.page as u8)).auto_shrink(false);
+        if let Some(y) = self.restore_offset.take() {
+            area = area.vertical_scroll_offset(y);
+        }
+        let out = area.show(
             &mut child,
             |ui| {
                 let width = ui.available_width();
@@ -131,7 +180,8 @@ impl Pages {
                 );
             },
         );
-        self.scrolled = out.state.offset.y > 0.5;
+        self.offset = out.state.offset.y;
+        self.scrolled = self.offset > 0.5;
     }
 }
 
@@ -374,4 +424,24 @@ pub fn under_toolbar(ui: &Ui, content: Rect) -> egui::Rangef {
 /// with 45 % of the leftover height above it, and never above `min_top`.
 pub fn optical_top(area: egui::Rangef, h: f32, min_top: f32) -> f32 {
     (area.min + (area.span() - h).max(0.0) * 0.45).max(min_top)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Page, Pages};
+
+    #[test]
+    fn a_page_comes_back_as_it_was_left() {
+        let mut pages = Pages::default();
+        pages.open(Page::Bookmarks);
+        pages.query = "psalm".into();
+        pages.offset = 420.0;
+        let left = pages.view();
+        pages.open(Page::Reader);
+        assert!(pages.query.is_empty());
+        pages.restore(left);
+        assert_eq!(pages.page, Page::Bookmarks);
+        assert_eq!(pages.query, "psalm");
+        assert_eq!(pages.restore_offset, Some(420.0));
+    }
 }

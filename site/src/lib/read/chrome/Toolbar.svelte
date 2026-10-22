@@ -180,7 +180,7 @@
 			<ToolbarButton
 				icon="chevron-right"
 				label={tip('Forward', cmdText(']'))}
-				disabled={!(app.history.forward.length > 0 && reading)}
+				disabled={app.history.forward.length === 0}
 				onclick={() => app.dispatch({ type: 'forward' })}
 			/>
 		</Capsule>

@@ -663,6 +663,11 @@ impl State {
         }
     }
 
+    /// The note open in the editor.
+    pub fn selected(&self) -> Option<VerseRef> {
+        self.selected
+    }
+
     /// Opens a note (demo steps, links from elsewhere).
     pub fn select(&mut self, v: VerseRef) {
         self.selected = Some(v);
