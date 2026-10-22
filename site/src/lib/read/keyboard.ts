@@ -55,7 +55,9 @@ export const GROUPS = ['Navigate', 'Verses', 'View'] as const;
 
 export const SHORTCUTS: Shortcut[] = [
 	bindable('jump', 'Navigate', 'Jump to a reference', chord('K', { cmd: true })),
-	fixed('chapter', 'Navigate', 'Previous / next chapter', ['←', '→', 'H', 'L', '[', ']']),
+	fixed('chapter', 'Navigate', 'Previous / next chapter', ['←', '→']),
+	fixed('chapter-hl', 'Navigate', 'Previous / next chapter (vim)', ['H', 'L']),
+	fixed('chapter-brackets', 'Navigate', 'Previous / next chapter (brackets)', ['[', ']']),
 	fixed('history', 'Navigate', 'Back / forward', ['⌘', '[', '⌘', ']']),
 	bindable('search', 'Navigate', 'Search', chord('F', { cmd: true })),
 	bindable('sidebar', 'Navigate', 'Books & study sidebar', chord('B', { cmd: true })),
