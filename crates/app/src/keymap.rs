@@ -156,7 +156,7 @@ pub const GROUPS: [&str; 3] = ["Navigate", "Verses", "View"];
 
 pub const ALL: [Shortcut; 18] = [
     bindable("jump", "Navigate", "Jump to a reference", Chord::cmd(Key::K)),
-    fixed("chapter", "Navigate", "Previous / next chapter", &["←", "→"]),
+    fixed("chapter", "Navigate", "Previous / next chapter", &["←", "→", "H", "L", "[", "]"]),
     fixed("history", "Navigate", "Back / forward", &["⌘", "[", "⌘", "]"]),
     bindable("search", "Navigate", "Search", Chord::cmd(Key::F)),
     bindable("sidebar", "Navigate", "Books & study sidebar", Chord::cmd(Key::B)),

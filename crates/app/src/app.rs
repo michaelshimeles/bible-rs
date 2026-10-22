@@ -528,6 +528,11 @@ impl BibleApp {
             }
             key(Modifiers::NONE, Key::ArrowLeft, Action::PrevChapter);
             key(Modifiers::NONE, Key::ArrowRight, Action::NextChapter);
+            // H and L (as in vim) and [ ] turn chapters too.
+            key(Modifiers::NONE, Key::H, Action::PrevChapter);
+            key(Modifiers::NONE, Key::L, Action::NextChapter);
+            key(Modifiers::NONE, Key::OpenBracket, Action::PrevChapter);
+            key(Modifiers::NONE, Key::CloseBracket, Action::NextChapter);
             key(Modifiers::NONE, Key::ArrowDown, Action::ScrollLines(3.0));
             key(Modifiers::NONE, Key::ArrowUp, Action::ScrollLines(-3.0));
             key(Modifiers::NONE, Key::PageDown, Action::ScrollPages(1.0));

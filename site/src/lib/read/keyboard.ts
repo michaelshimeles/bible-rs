@@ -55,7 +55,7 @@ export const GROUPS = ['Navigate', 'Verses', 'View'] as const;
 
 export const SHORTCUTS: Shortcut[] = [
 	bindable('jump', 'Navigate', 'Jump to a reference', chord('K', { cmd: true })),
-	fixed('chapter', 'Navigate', 'Previous / next chapter', ['←', '→']),
+	fixed('chapter', 'Navigate', 'Previous / next chapter', ['←', '→', 'H', 'L', '[', ']']),
 	fixed('history', 'Navigate', 'Back / forward', ['⌘', '[', '⌘', ']']),
 	bindable('search', 'Navigate', 'Search', chord('F', { cmd: true })),
 	bindable('sidebar', 'Navigate', 'Books & study sidebar', chord('B', { cmd: true })),
@@ -285,8 +285,8 @@ export function handleKey(app: ReadApp, e: KeyboardEvent): boolean {
 	}
 	if (!plain) return false;
 	const shift = e.shiftKey;
-	if (!shift && key === 'ArrowLeft') return go({ type: 'prevChapter' });
-	if (!shift && key === 'ArrowRight') return go({ type: 'nextChapter' });
+	if (!shift && (key === 'ArrowLeft' || key === 'H' || key === '[')) return go({ type: 'prevChapter' });
+	if (!shift && (key === 'ArrowRight' || key === 'L' || key === ']')) return go({ type: 'nextChapter' });
 	if (!shift && key === 'ArrowDown') return go({ type: 'scrollLines', n: 3 });
 	if (!shift && key === 'ArrowUp') return go({ type: 'scrollLines', n: -3 });
 	if (key === 'PageDown') return go({ type: 'scrollPages', n: 1 });

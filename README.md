@@ -17,7 +17,7 @@ typeset, searchable as you type, with highlights, notes and bookmarks kept on yo
   one click, the ESV with a free key, others with an API.Bible key or a file you own
   ([which translations, and how](TRANSLATIONS.md)).
 - **Keyboard-first.** ⌘K jumps anywhere (`jn 3:16`, `Rom 8`, `1co13`, even `revalation 21`),
-  ← → turn chapters, ⌘F searches, ⌘[ ⌘] go back and forward, 1–6 highlight.
+  ← → (or H L, [ ]) turn chapters, ⌘F searches, ⌘[ ⌘] go back and forward, 1–6 highlight.
 - **Yours.** Highlights, notes and bookmarks live in a local SQLite file and export to JSON or
   Markdown. No accounts, no feeds, no network unless you add an online translation.
 
@@ -57,7 +57,7 @@ typeset, searchable as you type, with highlights, notes and bookmarks kept on yo
 **Navigation**
 - ⌘K palette: references with fuzzy book names and typos, recent places, translations, commands.
 - Book/chapter picker in the toolbar and the sidebar (⌘B).
-- Back/forward history (⌘[ ⌘], ⌥← ⌥→), previous/next chapter (← →).
+- Back/forward history (⌘[ ⌘], ⌥← ⌥→), previous/next chapter (← →, H L or [ ]).
 
 **Search** (⌘F)
 - Results update as you type; every word must appear (word prefixes by default, or whole words).
@@ -168,7 +168,7 @@ chapter by chapter, and appear in parallel and compare views as their chapters l
 |---|---|
 | ⌘K | Jump to a reference, translation or command |
 | ⌘F or / | Search |
-| ← / → | Previous / next chapter |
+| ← / →, H / L or [ / ] | Previous / next chapter |
 | ↑ ↓, Space, ⇧Space, PgUp/PgDn | Scroll |
 | ⌘[ / ⌘] (⌥← / ⌥→) | Back / forward |
 | Click, ⇧-click, J / K | Select a verse, a range, next / previous verse |
