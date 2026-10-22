@@ -558,6 +558,8 @@ impl Reader {
         let mut c = Some(self.anchor.chapter);
         let mut hit: Option<VerseRef> = None;
         let mut marker_hit: Option<VerseRef> = None;
+        let mut note_hover = false;
+        let parallel = env.columns.len() > 1;
         let mut first_visible: Option<(ChapterIdx, u8)> = None;
         let reading_line = rect.top() + rect.height() * 0.22;
         let toolbar_bottom = rect.top() + env.toolbar;
@@ -600,7 +602,6 @@ impl Reader {
                 under_toolbar |= br.top() < toolbar_bottom;
                 let bo = origin + block.pos;
                 // Parallel: a selected verse is marked as a whole row across the columns.
-                let parallel = env.columns.len() > 1;
                 if parallel
                     && words.is_none()
                     && block.column == 0
@@ -700,7 +701,13 @@ impl Reader {
                 }
             }
             // Margin markers (notes, bookmarks) at each verse's first line, 32 pt right of the text.
-            let right = geom.x0 + geom.total_w + layout::MARKER_GAP * self.em / layout::DESIGN_EM;
+            // Side by side the columns run nearly to the window's edge, so the markers sit just
+            // outside the row's tint, in a margin kept for them (see `Geometry::new`).
+            let right = if parallel {
+                geom.x0 + geom.total_w + layout::PARALLEL_ROW_PAD.x + layout::PARALLEL_MARKER_GAP
+            } else {
+                geom.x0 + geom.total_w + layout::MARKER_GAP * self.em / layout::DESIGN_EM
+            };
             for a in l.anchors.iter().filter(|a| a.column == 0) {
                 let vref = VerseRef::new(ch.book(), ch.chapter(), a.number);
                 let top = y + a.top;
@@ -716,7 +723,8 @@ impl Reader {
                         _ => in_view.push((ch, a.number)),
                     }
                 }
-                // 16 pt glyphs in 20 pt boxes, centred on the first line.
+                // 16 pt glyphs, centred on the first line. A note is a button: a tinted chip that
+                // brightens under the pointer and opens the note in one click.
                 let mut x = right;
                 let lh = (self.em * env.typo.line_height).round();
                 let cy = top + lh / 2.0 - 1.0;
@@ -726,20 +734,23 @@ impl Reader {
                     if pointer.is_some_and(|pt| r.expand(4.0).contains(pt)) {
                         marker_hit = Some(vref);
                     }
-                    x += 24.0;
+                    x += layout::MARKER_STEP;
                 }
                 let open = self.marker_for == Some(vref);
                 if env.study.note(vref).is_some() || open {
-                    let r = Rect::from_center_size(pos2(x + 10.0, cy), vec2(16.0, 16.0));
+                    let r = Rect::from_center_size(pos2(x + 12.0, cy), vec2(16.0, 16.0));
+                    let chip = Rect::from_center_size(r.center(), vec2(layout::NOTE_CHIP, layout::NOTE_CHIP));
+                    let hovered = pointer.is_some_and(|pt| chip.expand(2.0).contains(pt));
+                    let fill = if open || hovered { p.accent.gamma_multiply(0.28) } else { p.accent_soft };
+                    painter.rect_filled(chip, CornerRadius::same(6), fill);
                     if open {
                         // The note being written: its marker carries the popover's beak.
-                        let box_ = Rect::from_center_size(r.center(), vec2(20.0, 20.0));
-                        painter.rect_filled(box_, CornerRadius::same(6), p.accent_soft);
-                        self.marker_rect = Some(box_);
+                        self.marker_rect = Some(chip);
                     }
                     icons::note(&painter, r, p.accent);
-                    if pointer.is_some_and(|pt| r.expand(4.0).contains(pt)) {
+                    if hovered {
                         marker_hit = Some(vref);
+                        note_hover = true;
                     }
                 }
             }
@@ -824,6 +835,9 @@ impl Reader {
                     self.selection = None;
                 }
             }
+        }
+        if note_hover && self.marker_for.is_none() {
+            resp.clone().on_hover_text_at_pointer("Open note");
         }
         if resp.clicked() {
             let shift = ui.input(|i| i.modifiers.shift);
@@ -1072,7 +1086,9 @@ impl Geometry {
             // Parallel (frame 07): rows padded 8 pt inside a 24 pt left and 16 pt right margin,
             // columns 32 pt apart, as wide as the window allows up to a comfortable measure.
             let s = typo.size / layout::DESIGN_EM;
-            let (left, right, pad) = (24.0 * s, 16.0 * s, layout::PARALLEL_ROW_PAD.x);
+            // The right margin holds the note/bookmark markers beside each row.
+            let pad = layout::PARALLEL_ROW_PAD.x;
+            let (left, right) = (24.0 * s, (16.0 * s).max(layout::PARALLEL_MARKERS_W));
             let gutter = (32.0 * s).round();
             let avail = (rect.width() - left - right - 2.0 * pad).max(200.0);
             let col_w =
@@ -1080,7 +1096,10 @@ impl Geometry {
             let total_w = col_w * n + gutter * (n - 1.0);
             // Centred, but never into the left margin: continuous in the width, so the columns
             // glide rather than jump as the sidebar slides.
-            let x0 = px(rect.center().x - total_w / 2.0).max(rect.left() + left + pad);
+            // When the window is tight, the columns give way to the left to keep the markers'
+            // margin.
+            let x0 = px((rect.center().x - total_w / 2.0).min(rect.right() - right - pad - total_w))
+                .max(rect.left() + left + pad);
             return Self { x0, col_w, gutter, total_w };
         }
         // At least 80 pt either side (a compact window's 560 pt measure, frame 34), room for the

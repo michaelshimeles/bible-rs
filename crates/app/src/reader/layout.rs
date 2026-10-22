@@ -27,6 +27,14 @@ pub const DESIGN_EM: f32 = text::BODY.size;
 pub const PAGE_TOP: f32 = theme::space::S6;
 /// From the text column to the margin markers.
 pub const MARKER_GAP: f32 = theme::space::S8;
+/// Side by side: from a row's tinted edge to the markers.
+pub const PARALLEL_MARKER_GAP: f32 = theme::space::S3;
+/// From a bookmark marker to the note marker after it.
+pub const MARKER_STEP: f32 = 26.0;
+/// The note marker's tinted, clickable chip.
+pub const NOTE_CHIP: f32 = 26.0;
+/// Side by side: the right margin that holds the markers (gap, bookmark, note chip, breathing room).
+pub const PARALLEL_MARKERS_W: f32 = PARALLEL_MARKER_GAP + MARKER_STEP + NOTE_CHIP + theme::space::S3;
 /// Blank space after a chapter. At least [`PAGE_TOP`] plus the toolbar, so the end of the previous
 /// chapter is out of sight when a chapter is scrolled to its start.
 const CHAPTER_END: f32 = 80.0;
