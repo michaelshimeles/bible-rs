@@ -89,9 +89,9 @@ pub struct Sidebar {
     /// The result list laid out (headers and hits with their positions).
     entries: Arc<Vec<Entry>>,
     key: Option<(String, String, Scope, bool)>,
-    /// Results ordered with the current book first, and the book they were ordered for.
-    current_first: bool,
-    order_key: (bool, BookId),
+    /// How the results are ordered, and the order and book they were last ordered for.
+    order: Order,
+    order_key: (Order, BookId),
     /// Steps through the results asked for by the reader's navigator.
     pending_step: i32,
     elapsed: Duration,
@@ -126,8 +126,8 @@ impl Sidebar {
             results: Arc::new(Vec::new()),
             entries: Arc::new(Vec::new()),
             key: None,
-            current_first: false,
-            order_key: (false, BookId(0)),
+            order: Order::BestMatch,
+            order_key: (Order::BestMatch, BookId(0)),
             pending_step: 0,
             elapsed: Duration::ZERO,
             selected: 0,
@@ -847,20 +847,26 @@ impl Sidebar {
 
                 // Run the search when its inputs change (well under a millisecond on the KJV).
                 let key = (self.query.clone(), translation.to_string(), self.scope, *whole_words);
-                if self.key.as_ref() != Some(&key) || self.order_key != (self.current_first, book) {
+                if self.key.as_ref() != Some(&key) || self.order_key != (self.order, book) {
                     let out = bible_core::search::run(&t, &self.query, self.scope, *whole_words);
                     let mut verses = out.verses;
-                    if self.current_first {
+                    let query = Query::parse(&self.query, *whole_words);
+                    let canonical = (self.order == Order::BestMatch).then(|| verses.clone());
+                    match self.order {
+                        Order::BestMatch => t.search_index().rank(&query, &mut verses),
+                        Order::Canonical => {}
                         // Stable: this book's hits first, the rest in canonical order.
-                        verses.sort_by_key(|vi| t.verse_view(*vi).is_none_or(|v| v.chapter.book() != book));
+                        Order::BookFirst => verses
+                            .sort_by_key(|vi| t.verse_view(*vi).is_none_or(|v| v.chapter.book() != book)),
                     }
+                    // Ranked hits jump between books, so they are listed without book headers.
+                    let grouped = canonical.is_none_or(|c| c == verses);
                     self.results = Arc::new(verses);
                     self.elapsed = out.elapsed;
                     self.key = Some(key);
-                    self.order_key = (self.current_first, book);
+                    self.order_key = (self.order, book);
                     self.selected = 0;
-                    let query = Query::parse(&self.query, *whole_words);
-                    self.entries = Arc::new(result_entries(ui, &t, &self.results, &query));
+                    self.entries = Arc::new(result_entries(ui, &t, &self.results, &query, grouped));
                     self.suggestion = if self.results.is_empty() {
                         bible_core::search::suggest(&t, &self.query, self.scope, *whole_words)
                     } else {
@@ -881,7 +887,16 @@ impl Sidebar {
 
                 let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
                 let n = self.results.len();
-                let books = self.entries.iter().filter(|e| matches!(e.kind, EntryKind::Header(..))).count();
+                let books = {
+                    let mut books: Vec<BookId> = self
+                        .results
+                        .iter()
+                        .filter_map(|vi| t.verse_view(*vi).map(|v| v.chapter.book()))
+                        .collect();
+                    books.sort_unstable_by_key(|b| b.0);
+                    books.dedup();
+                    books.len()
+                };
                 let summary = format!(
                     "{} {} in {} {}",
                     group(n),
@@ -903,7 +918,7 @@ impl Sidebar {
                     self.elapsed.as_secs_f64() * 1000.0,
                     t.meta.abbrev
                 ));
-                let order = if self.current_first { "This book first" } else { "Canonical" };
+                let order = self.order.label();
                 let ow = ui.painter().layout_no_wrap(order.into(), font.clone(), p.ink_2).size().x;
                 let chevron = Rect::from_center_size(pos2(row.right() - 4.0 - 6.0, cy), vec2(12.0, 12.0));
                 let order_rect = Rect::from_min_max(
@@ -914,13 +929,11 @@ impl Sidebar {
                 ui.painter().text(pos2(chevron.left() - 2.0, cy), Align2::RIGHT_CENTER, order, font, p.ink_2);
                 crate::icons::chevron_down(ui.painter(), chevron, p.ink_3);
                 crate::menu::popup(&resp, p).show(|ui| {
-                    if ui.selectable_label(!self.current_first, "Canonical").clicked() {
-                        self.current_first = false;
-                        ui.close();
-                    }
-                    if ui.selectable_label(self.current_first, "This book first").clicked() {
-                        self.current_first = true;
-                        ui.close();
+                    for order in [Order::BestMatch, Order::Canonical, Order::BookFirst] {
+                        if ui.selectable_label(self.order == order, order.label()).clicked() {
+                            self.order = order;
+                            ui.close();
+                        }
                     }
                 });
             },
@@ -1461,6 +1474,26 @@ fn paint_snippet(
     painter.galley(pos, galley, p.ink_2);
 }
 
+/// How search results are ordered.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Order {
+    /// The closest matches first (the longest run of the query's words), ties in canonical order.
+    BestMatch,
+    Canonical,
+    /// The current book's hits first, the rest in canonical order.
+    BookFirst,
+}
+
+impl Order {
+    fn label(self) -> &'static str {
+        match self {
+            Order::BestMatch => "Best match",
+            Order::Canonical => "Canonical",
+            Order::BookFirst => "This book first",
+        }
+    }
+}
+
 /// One line of the result list: a book's header or a hit (its index in the results and how many
 /// snippet lines it shows), at a precomputed position so the list can be virtualized.
 #[derive(Clone, Copy)]
@@ -1478,7 +1511,14 @@ struct Entry {
 
 /// Lays the result list out: headers 28 pt, hits 60 (one snippet line) or 80 (two). A snippet's
 /// line count comes from its glyph advances (no shaping), for the first couple of thousand hits.
-fn result_entries(ui: &Ui, t: &bible_core::Translation, results: &[u32], query: &Query) -> Vec<Entry> {
+/// Without `grouped` the hits are listed as they come, with no book headers.
+fn result_entries(
+    ui: &Ui,
+    t: &bible_core::Translation,
+    results: &[u32],
+    query: &Query,
+    grouped: bool,
+) -> Vec<Entry> {
     let width = ui.available_width() - 2.0 * LIST_INSET - 2.0 * ITEM_PAD.x;
     let font = FontId::new(text::SNIPPET_SM.size, theme::family(theme::SERIF));
     let mut out = Vec::with_capacity(results.len() + 64);
@@ -1489,12 +1529,18 @@ fn result_entries(ui: &Ui, t: &bible_core::Translation, results: &[u32], query: 
             i += 1;
             continue;
         };
-        let count = results[i..]
-            .iter()
-            .take_while(|vi| t.verse_view(**vi).is_some_and(|v| v.chapter.book() == book))
-            .count();
-        out.push(Entry { kind: EntryKind::Header(book, count), y, height: 28.0 });
-        y += 28.0;
+        let count = if grouped {
+            results[i..]
+                .iter()
+                .take_while(|vi| t.verse_view(**vi).is_some_and(|v| v.chapter.book() == book))
+                .count()
+        } else {
+            results.len() - i
+        };
+        if grouped {
+            out.push(Entry { kind: EntryKind::Header(book, count), y, height: 28.0 });
+            y += 28.0;
+        }
         for (k, vi) in results.iter().enumerate().skip(i).take(count) {
             let rows = if k < 2000 {
                 let text = t.verse_view(*vi).map(|v| v.plain_text()).unwrap_or_default();
