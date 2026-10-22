@@ -1,6 +1,6 @@
-//! Keyboard shortcuts as the design lists them (frames 26 and 29): three groups of rows, each
-//! shown as keycaps. Rows that do one thing can be given another chord in Settings › Shortcuts;
-//! paired rows (previous / next, the 1–6 colours…) keep theirs.
+//! Keyboard shortcuts as the design lists them (frames 26 and 29): every shortcut as a row in a
+//! group, each shown as keycaps. Rows that do one thing can be given another chord in Settings ›
+//! Shortcuts; fixed rows (previous / next, the 1–6 colours, the ⌘ chords…) keep theirs.
 
 use std::collections::BTreeMap;
 
@@ -133,7 +133,7 @@ pub struct Shortcut {
     pub id: &'static str,
     pub group: &'static str,
     pub label: &'static str,
-    /// The default chord of a row that can be changed; `None` for a fixed (paired) row.
+    /// The default chord of a row that can be changed; `None` for a fixed row.
     pub default: Option<Chord>,
     /// A fixed row's keycaps.
     pub fixed: &'static [&'static str],
@@ -152,27 +152,51 @@ const fn fixed(
     Shortcut { id, group, label, default: None, fixed: caps }
 }
 
-pub const GROUPS: [&str; 3] = ["Navigate", "Verses", "View"];
+pub const GROUPS: [&str; 6] = ["Navigate", "Search", "Study", "Translations", "View", "App"];
 
-pub const ALL: [Shortcut; 18] = [
+/// How the shortcuts overlay stacks the groups in its three columns.
+pub const COLUMNS: [&[&str]; 3] = [&["Navigate", "Search"], &["Study", "Translations"], &["View", "App"]];
+
+/// Every shortcut, as the shortcuts overlay (`?`) and Settings › Shortcuts list them.
+/// `BibleApp::shortcuts` acts on them: a changeable row through [`action`], a fixed row by its own
+/// line there. A new shortcut needs a row here to be listed.
+pub const ALL: &[Shortcut] = &[
     bindable("jump", "Navigate", "Jump to a reference", Chord::cmd(Key::K)),
     fixed("chapter", "Navigate", "Previous / next chapter", &["←", "→"]),
     fixed("history", "Navigate", "Back / forward", &["⌘", "[", "⌘", "]"]),
-    bindable("search", "Navigate", "Search", Chord::cmd(Key::F)),
+    fixed("history-arrows", "Navigate", "Back / forward (arrows)", &["⌥", "←", "⌥", "→"]),
+    fixed("scroll", "Navigate", "Scroll", &["↑", "↓"]),
+    fixed("page", "Navigate", "Page down / up", &["Space", "⇧", "Space"]),
     bindable("sidebar", "Navigate", "Books & study sidebar", Chord::cmd(Key::B)),
-    fixed("verse", "Verses", "Next / previous verse", &["J", "K"]),
-    fixed("highlight", "Verses", "Highlight colour · clear", &["1–6", "0"]),
-    bindable("note", "Verses", "Note", Chord::new(Key::N)),
-    bindable("bookmark", "Verses", "Bookmark", Chord::new(Key::B)),
-    bindable("copy", "Verses", "Copy with reference", Chord::shift_cmd(Key::C)),
-    bindable("compare", "Verses", "Compare translations", Chord::new(Key::C)),
-    fixed("translation", "View", "Switch translation", &["⌘", "1…9"]),
-    bindable("parallel", "View", "Parallel translations", Chord::shift_cmd(Key::P)),
+    bindable("search", "Search", "Search", Chord::cmd(Key::F)),
+    fixed("search-slash", "Search", "Search (while reading)", &["/"]),
+    fixed("search-step", "Search", "Previous / next result", &["↑", "↓"]),
+    fixed("search-open", "Search", "Go to the result", &["⏎"]),
+    fixed("search-clear", "Search", "Clear the search", &["Esc"]),
+    fixed("range", "Study", "Select a verse range", &["⇧", "Click"]),
+    fixed("verse", "Study", "Next / previous verse", &["J", "K"]),
+    fixed("deselect", "Study", "Clear the selection", &["Esc"]),
+    fixed("highlight", "Study", "Highlight colour · clear", &["1–6", "0"]),
+    bindable("note", "Study", "Note", Chord::new(Key::N)),
+    bindable("bookmark", "Study", "Bookmark", Chord::new(Key::B)),
+    fixed("bookmark-cmd", "Study", "Bookmark (anywhere)", &["⌘", "D"]),
+    fixed("copy-text", "Study", "Copy", &["⌘", "C"]),
+    bindable("copy", "Study", "Copy with reference", Chord::shift_cmd(Key::C)),
+    bindable("compare", "Study", "Compare translations", Chord::new(Key::C)),
+    fixed("translation", "Translations", "Switch translation", &["⌘", "1…9"]),
+    bindable("parallel", "Translations", "Parallel translations", Chord::shift_cmd(Key::P)),
+    fixed("import", "Translations", "Import a translation", &["⌘", "I"]),
     fixed("size", "View", "Text size", &["⌘", "+", "⌘", "−"]),
+    fixed("size-reset", "View", "Default text size", &["⌘", "0"]),
+    fixed("text", "View", "Text & layout", &["⌘", "T"]),
     bindable("mode", "View", "Paragraphs / verse per line", Chord::cmd(Key::L)),
     bindable("red", "View", "Red letters", Chord::cmd(Key::R)),
     bindable("theme", "View", "Theme", Chord::shift_cmd(Key::L)),
     bindable("focus", "View", "Focus mode", Chord::ctrl_cmd(Key::F)),
+    fixed("help", "App", "Keyboard shortcuts", &["?"]),
+    fixed("settings", "App", "Settings", &["⌘", ","]),
+    fixed("export", "App", "Export as Markdown", &["⌘", "E"]),
+    fixed("export-json", "App", "Export as JSON", &["⇧", "⌘", "E"]),
 ];
 
 /// What a changeable row does.
@@ -237,5 +261,20 @@ mod tests {
         // More modifiers first.
         let b = bindings(&BTreeMap::new());
         assert!(b.first().unwrap().0.modifier_count() >= b.last().unwrap().0.modifier_count());
+    }
+
+    #[test]
+    fn every_row_is_in_a_listed_group_and_column_once() {
+        let mut ids = std::collections::BTreeSet::new();
+        for s in ALL {
+            assert!(ids.insert(s.id), "{} is listed twice", s.id);
+            assert!(GROUPS.contains(&s.group), "{} has no group", s.id);
+            assert!(s.default.is_some() || !s.fixed.is_empty(), "{} has no keys", s.id);
+        }
+        let stacked: Vec<&str> = COLUMNS.iter().flat_map(|c| c.iter().copied()).collect();
+        assert_eq!(stacked.len(), GROUPS.len());
+        assert!(GROUPS.iter().all(|g| stacked.contains(g)));
+        // Every row Settings can change does something.
+        assert!(ALL.iter().filter(|s| s.default.is_some()).all(|s| action(s.id).is_some()));
     }
 }

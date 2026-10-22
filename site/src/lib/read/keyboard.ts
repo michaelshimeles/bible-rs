@@ -1,7 +1,7 @@
 /**
  * Keyboard shortcuts as the Mac app has them (crates/app/src/keymap.rs and `BibleApp::shortcuts`):
- * three groups of rows, the changeable ones with chords chosen in Settings › Shortcuts. ⌘ is the
- * Command key on a Mac and Control elsewhere (where ⌃⌘ becomes Control-Alt).
+ * every shortcut as a row in a group, the changeable ones with chords chosen in Settings ›
+ * Shortcuts. ⌘ is the Command key on a Mac and Control elsewhere (where ⌃⌘ becomes Control-Alt).
  */
 import type { Action, ReadApp } from './app.svelte';
 import { HIGHLIGHT_COLORS } from './core';
@@ -17,9 +17,9 @@ export interface Chord {
 
 export interface Shortcut {
 	id: string;
-	group: 'Navigate' | 'Verses' | 'View';
+	group: Group;
 	label: string;
-	/** A changeable row's default chord; null for a fixed (paired) row. */
+	/** A changeable row's default chord; null for a fixed row. */
 	chord: Chord | null;
 	/** A fixed row's keycaps. */
 	fixed: string[];
@@ -36,14 +36,14 @@ const chord = (key: string, m: Partial<Chord> = {}): Chord => ({
 	key,
 	...m
 });
-const bindable = (id: string, group: Shortcut['group'], label: string, c: Chord): Shortcut => ({
+const bindable = (id: string, group: Group, label: string, c: Chord): Shortcut => ({
 	id,
 	group,
 	label,
 	chord: c,
 	fixed: []
 });
-const fixed = (id: string, group: Shortcut['group'], label: string, caps: string[]): Shortcut => ({
+const fixed = (id: string, group: Group, label: string, caps: string[]): Shortcut => ({
 	id,
 	group,
 	label,
@@ -51,27 +51,58 @@ const fixed = (id: string, group: Shortcut['group'], label: string, caps: string
 	fixed: caps
 });
 
-export const GROUPS = ['Navigate', 'Verses', 'View'] as const;
+export const GROUPS = ['Navigate', 'Search', 'Study', 'Translations', 'View', 'App'] as const;
+export type Group = (typeof GROUPS)[number];
 
+/** How the shortcuts sheet stacks the groups in its three columns. */
+export const COLUMNS: Group[][] = [
+	['Navigate', 'Search'],
+	['Study', 'Translations'],
+	['View', 'App']
+];
+
+/**
+ * Every shortcut, as the shortcuts sheet (`?`) and Settings › Shortcuts list them. `handleKey`
+ * below acts on them: a changeable row through `rowAction`, a fixed row by its own line there. A
+ * new shortcut needs a row here to be listed.
+ */
 export const SHORTCUTS: Shortcut[] = [
 	bindable('jump', 'Navigate', 'Jump to a reference', chord('K', { cmd: true })),
 	fixed('chapter', 'Navigate', 'Previous / next chapter', ['←', '→']),
 	fixed('history', 'Navigate', 'Back / forward', ['⌘', '[', '⌘', ']']),
-	bindable('search', 'Navigate', 'Search', chord('F', { cmd: true })),
+	fixed('history-arrows', 'Navigate', 'Back / forward (arrows)', ['⌥', '←', '⌥', '→']),
+	fixed('scroll', 'Navigate', 'Scroll', ['↑', '↓']),
+	fixed('page', 'Navigate', 'Page down / up', ['Space', '⇧', 'Space']),
 	bindable('sidebar', 'Navigate', 'Books & study sidebar', chord('B', { cmd: true })),
-	fixed('verse', 'Verses', 'Next / previous verse', ['J', 'K']),
-	fixed('highlight', 'Verses', 'Highlight colour · clear', ['1–6', '0']),
-	bindable('note', 'Verses', 'Note', chord('N')),
-	bindable('bookmark', 'Verses', 'Bookmark', chord('B')),
-	bindable('copy', 'Verses', 'Copy with reference', chord('C', { shift: true, cmd: true })),
-	bindable('compare', 'Verses', 'Compare translations', chord('C')),
-	fixed('translation', 'View', 'Switch translation', ['⌘', '1…9']),
-	bindable('parallel', 'View', 'Parallel translations', chord('P', { shift: true, cmd: true })),
+	bindable('search', 'Search', 'Search', chord('F', { cmd: true })),
+	fixed('search-slash', 'Search', 'Search (while reading)', ['/']),
+	fixed('search-step', 'Search', 'Previous / next result', ['↑', '↓']),
+	fixed('search-open', 'Search', 'Go to the result', ['⏎']),
+	fixed('search-clear', 'Search', 'Clear the search', ['Esc']),
+	fixed('range', 'Study', 'Select a verse range', ['⇧', 'Click']),
+	fixed('verse', 'Study', 'Next / previous verse', ['J', 'K']),
+	fixed('deselect', 'Study', 'Clear the selection', ['Esc']),
+	fixed('highlight', 'Study', 'Highlight colour · clear', ['1–6', '0']),
+	bindable('note', 'Study', 'Note', chord('N')),
+	bindable('bookmark', 'Study', 'Bookmark', chord('B')),
+	fixed('bookmark-cmd', 'Study', 'Bookmark (anywhere)', ['⌘', 'D']),
+	fixed('copy-text', 'Study', 'Copy', ['⌘', 'C']),
+	bindable('copy', 'Study', 'Copy with reference', chord('C', { shift: true, cmd: true })),
+	bindable('compare', 'Study', 'Compare translations', chord('C')),
+	fixed('translation', 'Translations', 'Switch translation', ['⌘', '1…9']),
+	bindable('parallel', 'Translations', 'Parallel translations', chord('P', { shift: true, cmd: true })),
+	fixed('import', 'Translations', 'Import a translation', ['⌘', 'I']),
 	fixed('size', 'View', 'Text size', ['⌘', '+', '⌘', '−']),
+	fixed('size-reset', 'View', 'Default text size', ['⌘', '0']),
+	fixed('text', 'View', 'Text & layout', ['⌘', 'T']),
 	bindable('mode', 'View', 'Paragraphs / verse per line', chord('L', { cmd: true })),
 	bindable('red', 'View', 'Red letters', chord('R', { cmd: true })),
 	bindable('theme', 'View', 'Theme', chord('L', { shift: true, cmd: true })),
-	bindable('focus', 'View', 'Focus mode', chord('F', { ctrl: true, cmd: true }))
+	bindable('focus', 'View', 'Focus mode', chord('F', { ctrl: true, cmd: true })),
+	fixed('help', 'App', 'Keyboard shortcuts', ['?']),
+	fixed('settings', 'App', 'Settings', ['⌘', ',']),
+	fixed('export', 'App', 'Export as Markdown', ['⌘', 'E']),
+	fixed('export-json', 'App', 'Export as JSON', ['⇧', '⌘', 'E'])
 ];
 
 /** What a changeable row does. */
@@ -149,8 +180,24 @@ export function keycaps(c: Chord): string[] {
 	return caps;
 }
 
-/** A fixed row's caps, with ⌘ spelled for this platform. */
-export const fixedCaps = (caps: string[]) => (isMac ? caps : caps.map((c) => (c === '⌘' ? 'Ctrl' : c)));
+const WORDS: Record<string, string> = { '⌘': 'Ctrl', '⇧': 'Shift', '⌥': 'Alt', '⌃': 'Ctrl' };
+
+const ORDER = ['Ctrl', 'Alt', 'Shift'];
+
+/** A fixed row's caps, with the modifiers spelled (and ordered, Ctrl Alt Shift) for this platform. */
+export function fixedCaps(caps: string[]): string[] {
+	if (isMac) return caps;
+	const out: string[] = [];
+	let mods: string[] = [];
+	for (const c of caps.map((c) => WORDS[c] ?? c)) {
+		if (ORDER.includes(c)) mods.push(c);
+		else {
+			out.push(...mods.sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b)), c);
+			mods = [];
+		}
+	}
+	return [...out, ...mods];
+}
 
 /** A row's chord: its override (empty when it was taken by another row), else its default. */
 export const chordFor = (s: Shortcut, overrides: Record<string, string>): Chord | null =>

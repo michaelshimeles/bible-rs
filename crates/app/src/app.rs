@@ -1379,12 +1379,21 @@ impl BibleApp {
                         on: false,
                         icon: crate::icons::text_size,
                     },
+                    CapsuleButton {
+                        tooltip: "Keyboard shortcuts (?)",
+                        enabled: true,
+                        on: false,
+                        icon: crate::icons::keyboard,
+                    },
                 ];
-                let tools_left = search.left() - GROUP_GAP - 2.0 * BUTTON_WIDTH;
+                let tools_left = search.left() - GROUP_GAP - tools.len() as f32 * BUTTON_WIDTH;
                 let (tools_rect, resp) =
                     widgets::button_capsule(ui, p, tools_left, cy, BUTTON_WIDTH, false, &tools);
                 if resp[0].clicked() {
                     actions.push(Action::ToggleParallel);
+                }
+                if resp[2].clicked() {
+                    actions.push(Action::ShowShortcuts);
                 }
                 text_anchor = Some((resp[1].clone(), true));
                 items.push(tools_rect);
@@ -1724,7 +1733,7 @@ impl BibleApp {
     }
 
     /// The compact toolbar's More menu (frame 34): the view tools, the sidebar and focus mode,
-    /// with their shortcuts as currently bound.
+    /// with their shortcuts as currently bound, and the keyboard shortcuts.
     fn more_menu(&mut self, ui: &mut Ui, more: &egui::Response, actions: &mut Vec<Action>) {
         let p = self.settings.theme.palette();
         let chord = |id: &str| {
@@ -1735,12 +1744,14 @@ impl BibleApp {
                 .unwrap_or_default()
         };
         let sidebar = if self.settings.sidebar_open { "Hide Sidebar" } else { "Show Sidebar" };
-        let items: [Option<(widgets::IconFn, &str, String, Action)>; 5] = [
+        let items: [Option<(widgets::IconFn, &str, String, Action)>; 7] = [
             Some((crate::icons::columns, "Parallel Translations", chord("parallel"), Action::ToggleParallel)),
             Some((crate::icons::text_size, "Text & Layout", "⌘T".into(), Action::TextFormat)),
             None,
             Some((crate::icons::sidebar, sidebar, chord("sidebar"), Action::ToggleSidebar)),
             Some((crate::icons::expand, "Focus Mode", chord("focus"), Action::ToggleFocus)),
+            None,
+            Some((crate::icons::keyboard, "Keyboard Shortcuts", "?".into(), Action::ShowShortcuts)),
         ];
         let id = Id::new(MORE_POPUP);
         if std::mem::take(&mut self.open_more) {

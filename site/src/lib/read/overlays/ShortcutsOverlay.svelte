@@ -1,53 +1,66 @@
 <!--
-	The keyboard shortcuts (shortcuts_overlay.rs, `?`): every shortcut in three columns with
-	keycaps, a filter, and a way to change them in Settings.
+	The keyboard shortcuts (shortcuts_overlay.rs, `?`, ⌘/ or the toolbar's keyboard button): every
+	shortcut by group in three columns with keycaps, a filter, and a way to change them in Settings.
 -->
 <script lang="ts">
 	import { getApp } from '../app.svelte';
-	import { GROUPS, SHORTCUTS, rowCaps } from '../keyboard';
+	import { COLUMNS, SHORTCUTS, cmdText, rowCaps } from '../keyboard';
 	import { Button, Keycap, RoundButton, Sheet, TextField } from '../ui';
 
 	const app = getApp();
 
 	let filter = $state('');
 
+	/** Each column's groups, without those the filter empties. */
 	const columns = $derived.by(() => {
 		const q = filter.trim().toLowerCase();
-		return GROUPS.map((group) => ({
-			group,
-			rows: SHORTCUTS.filter((s) => s.group === group && (!q || s.label.toLowerCase().includes(q)))
-		}));
+		return COLUMNS.map((groups) =>
+			groups
+				.map((group) => ({
+					group,
+					rows: SHORTCUTS.filter((s) => s.group === group && (!q || s.label.toLowerCase().includes(q)))
+				}))
+				.filter((g) => g.rows.length)
+		);
 	});
-	const tallest = $derived(Math.max(1, ...columns.map((c) => c.rows.length)));
+	/** The body keeps its height while filtering. */
+	const tallest = $derived(
+		Math.max(...COLUMNS.map((groups) => groups.reduce((n, g) => n + SHORTCUTS.filter((s) => s.group === g).length, 0)))
+	);
+	const sections = $derived(Math.max(...COLUMNS.map((g) => g.length)));
 
 	const close = () => (app.shortcuts = false);
 </script>
 
-<Sheet label="Keyboard Shortcuts" onclose={close} width={960} top={72} focusSheet>
+<Sheet label="Keyboard Shortcuts" onclose={close} width={960} top={72} focusSheet class="shortcuts-sheet">
 	<header class="head">
 		<h2 class="title">Keyboard Shortcuts</h2>
 		<TextField bind:value={filter} icon="search" placeholder="Filter" aria-label="Filter shortcuts" class="filter" />
 		<RoundButton icon="close" label="Close" onclick={close} />
 	</header>
-	<div class="body" style:--rows={tallest}>
-		{#if columns.every((c) => c.rows.length === 0)}
+	<div class="body" style:--rows={tallest} style:--sections={sections}>
+		{#if columns.every((c) => c.length === 0)}
 			<p class="none">No shortcut matches.</p>
 		{:else}
-			{#each columns as { group, rows } (group)}
-				<section class="column">
-					<h3 class="group">{group}</h3>
-					{#each rows as s (s.id)}
-						<div class="row">
-							<span class="label">{s.label}</span>
-							<span class="caps">{#each rowCaps(s, app.settings.shortcuts) as c, i (i)}<Keycap label={c} />{/each}</span>
-						</div>
+			{#each columns as groups, i (i)}
+				<div class="column">
+					{#each groups as { group, rows } (group)}
+						<section class="section" aria-label={group}>
+							<h3 class="group">{group}</h3>
+							{#each rows as s (s.id)}
+								<div class="row">
+									<span class="label">{s.label}</span>
+									<span class="caps">{#each rowCaps(s, app.settings.shortcuts) as c, i (i)}<Keycap label={c} />{/each}</span>
+								</div>
+							{/each}
+						</section>
 					{/each}
-				</section>
+				</div>
 			{/each}
 		{/if}
 	</div>
 	<footer class="foot">
-		<p class="tip">Press ? any time to see this.</p>
+		<p class="tip">Press ? or {cmdText('/')} any time to see this.</p>
 		<Button
 			kind="ghost"
 			size="sm"
@@ -72,28 +85,36 @@
 	}
 
 	.title {
-		flex: 1;
+		flex: 1 0 auto;
 		margin: 0;
+		white-space: nowrap;
 		color: var(--ink);
 		font: 600 15px/20px var(--font-ui);
 	}
 
 	.head :global(.filter) {
-		width: 200px;
-		margin-right: 12px;
+		flex: 0 1 200px;
+		min-width: 0;
+		margin: 0 12px;
+	}
+
+	/* Under the toolbar, and clear of the window's bottom edge. */
+	:global(.layer .sheet.shortcuts-sheet) {
+		max-height: calc(100dvh - 72px - 16px);
 	}
 
 	.body {
-		display: flex;
-		gap: 32px;
-		min-height: calc(20px + 21px + 32px * var(--rows) + 8px);
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+		gap: 16px 32px;
+		align-content: start;
+		min-height: min(calc(20px + (21px + 16px) * var(--sections) + 30px * var(--rows)), 60dvh);
 		padding: 20px 24px 8px;
 		overflow-y: auto;
 	}
 
-	.column {
-		width: 280px;
-		flex-shrink: 0;
+	.section + .section {
+		margin-top: 16px;
 	}
 
 	.group {
@@ -108,7 +129,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		height: 32px;
+		height: 30px;
 		gap: 12px;
 	}
 
@@ -137,6 +158,13 @@
 		padding: 0 16px 0 24px;
 		background: var(--fill);
 		box-shadow: inset 0 1px 0 var(--separator);
+	}
+
+	/* A phone has no keyboard to press it with. */
+	@media (max-width: 520px) {
+		.tip {
+			display: none;
+		}
 	}
 
 	.tip {

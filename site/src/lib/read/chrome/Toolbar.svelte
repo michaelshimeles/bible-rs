@@ -1,7 +1,7 @@
 <!--
 	The toolbar over the reading area (app.rs `toolbar`, `ds-06` in the design): back and forward
 	(after the sidebar toggle when the sidebar is hidden), the location and translation pickers
-	centred, the view tools and the search field at the end. Every control is a glass capsule on
+	centred, the view tools (with the keyboard shortcuts) and the search field at the end. Every control is a glass capsule on
 	the bar's centre line; once text scrolls beneath, the bar takes the toolbar material. A compact
 	bar folds the tools and the field into Search and More; on a page, a field filters the page.
 -->
@@ -75,7 +75,7 @@
 	const showField = $derived(!compact || wantField || search.searching || search.fieldFocused);
 	const fieldWidth = $derived(compact ? FIELD_COMPACT : FIELD);
 	const trailingLeft = $derived(
-		barWidth - TRAILING_INSET - (showField ? fieldWidth + (compact ? 0 : GROUP_GAP + 2 * BUTTON) : 2 * BUTTON)
+		barWidth - TRAILING_INSET - (showField ? fieldWidth + (compact ? 0 : GROUP_GAP + 3 * BUTTON) : 2 * BUTTON)
 	);
 
 	const navLeft = $derived(shown ? LEADING_INSET_SIDEBAR : LEADING_INSET + TOGGLE + GROUP_GAP);
@@ -247,6 +247,11 @@
 							bind:el={textEl}
 							onclick={() => app.dispatch({ type: 'textFormat' })}
 						/>
+						<ToolbarButton
+							icon="keyboard"
+							label={tip('Keyboard shortcuts', '?')}
+							onclick={() => app.dispatch({ type: 'showShortcuts' })}
+						/>
 					</Capsule>
 				</div>
 			{/if}
@@ -316,6 +321,8 @@
 			shortcut={shortcutText('focus', s.shortcuts)}
 			onclick={() => more({ type: 'toggleFocus' })}
 		/>
+		<MenuSeparator />
+		<MenuItem icon="keyboard" label="Keyboard Shortcuts" shortcut="?" onclick={() => more({ type: 'showShortcuts' })} />
 	</Menu>
 {/if}
 {#if app.textPopover && reading}
