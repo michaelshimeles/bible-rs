@@ -1,5 +1,5 @@
-//! The keyboard shortcuts overlay (frame 29, `?`): every shortcut in three columns with keycaps,
-//! a filter, and a way to change them in Settings.
+//! The keyboard shortcuts overlay (frame 29, `?`, ⌘/ or the toolbar's keyboard button): every
+//! shortcut by group in three columns with keycaps, a filter, and a way to change them in Settings.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +14,10 @@ use crate::widgets::{self, Button, Kind};
 
 const WIDTH: f32 = 960.0;
 const COLUMN: f32 = 280.0;
-const ROW: f32 = 32.0;
+const ROW: f32 = 30.0;
+/// A group's title, and the space above every group but a column's first.
+const GROUP_TITLE: f32 = 21.0;
+const GROUP_GAP: f32 = 16.0;
 
 #[derive(Default)]
 pub struct ShortcutsOverlay {
@@ -41,21 +44,33 @@ impl ShortcutsOverlay {
             },
         );
         let q = self.filter.trim().to_lowercase();
-        let columns: Vec<(&str, Vec<&keymap::Shortcut>)> = keymap::GROUPS
+        let rows_of = |g: &str, q: &str| -> Vec<&'static keymap::Shortcut> {
+            keymap::ALL
+                .iter()
+                .filter(|s| s.group == g && (q.is_empty() || s.label.to_lowercase().contains(q)))
+                .collect()
+        };
+        // Each column's groups, without those the filter empties.
+        let columns: Vec<Vec<(&str, Vec<&keymap::Shortcut>)>> = keymap::COLUMNS
             .iter()
-            .map(|g| {
-                let rows = keymap::ALL
-                    .iter()
-                    .filter(|s| s.group == *g && (q.is_empty() || s.label.to_lowercase().contains(&q)))
-                    .collect();
-                (*g, rows)
+            .map(|groups| {
+                groups.iter().map(|g| (*g, rows_of(g, &q))).filter(|(_, rows)| !rows.is_empty()).collect()
             })
             .collect();
-        let tallest = columns.iter().map(|(_, r)| r.len()).max().unwrap_or(0).max(1);
-        let height = 60.0 + 20.0 + 21.0 + ROW * tallest as f32 + 8.0 + 44.0;
+        // The body keeps its height while filtering: the tallest column unfiltered.
+        let tallest = keymap::COLUMNS
+            .iter()
+            .map(|groups| {
+                groups.iter().map(|g| GROUP_TITLE + ROW * rows_of(g, "").len() as f32).sum::<f32>()
+                    + GROUP_GAP * (groups.len().max(1) - 1) as f32
+            })
+            .fold(ROW, f32::max);
+        let height = 60.0 + 20.0 + tallest + 8.0 + 44.0;
         let width = WIDTH.min(screen.width() - 48.0);
+        // Under the toolbar, or higher when the window is short.
+        let top = 72.0_f32.min(screen.height() - 16.0 - height).max(16.0);
         let rect = Rect::from_min_size(
-            pos2((screen.center().x - width / 2.0).round(), screen.top() + 72.0),
+            pos2((screen.center().x - width / 2.0).round(), screen.top() + top),
             vec2(width, height),
         );
         egui::Area::new(egui::Id::new("shortcuts-overlay"))
@@ -104,42 +119,45 @@ impl ShortcutsOverlay {
                 );
                 painter.hline(rect.x_range(), rect.top() + 59.5, Stroke::new(1.0, p.separator));
 
-                // Three columns.
+                // Three columns of groups.
                 let mut x = rect.left() + 24.0;
-                for (group, rows) in &columns {
-                    let top = rect.top() + 60.0 + 20.0;
-                    let g = widgets::line(
-                        &painter,
-                        &group.to_uppercase(),
-                        theme::ui_semibold(11.0),
-                        p.accent,
-                        0.12,
-                    );
-                    widgets::paint_on_baseline(
-                        &painter,
-                        x,
-                        widgets::css_baseline(top, 16.0, 11.0, false),
-                        g,
-                        p.accent,
-                    );
-                    let mut y = top + 21.0;
-                    for s in rows {
-                        text(&painter, x, y + 6.0, 20.0, s.label, theme::ui_font(13.0), p.ink, false);
-                        let caps = keymap::keycaps(s, overrides);
-                        let widths: Vec<f32> =
-                            caps.iter().map(|c| widgets::keycap_width(&painter, c)).collect();
-                        let mut kx = x + COLUMN
-                            - widths.iter().sum::<f32>()
-                            - 4.0 * (widths.len().max(1) as f32 - 1.0);
-                        for (c, w) in caps.iter().zip(widths) {
-                            widgets::keycap(&painter, p, kx, y + 16.0, c);
-                            kx += w + 4.0;
+                for groups in &columns {
+                    let mut top = rect.top() + 60.0 + 20.0;
+                    for (group, rows) in groups {
+                        let g = widgets::line(
+                            &painter,
+                            &group.to_uppercase(),
+                            theme::ui_semibold(11.0),
+                            p.accent,
+                            0.12,
+                        );
+                        widgets::paint_on_baseline(
+                            &painter,
+                            x,
+                            widgets::css_baseline(top, 16.0, 11.0, false),
+                            g,
+                            p.accent,
+                        );
+                        let mut y = top + GROUP_TITLE;
+                        for s in rows {
+                            text(&painter, x, y + 5.0, 20.0, s.label, theme::ui_font(13.0), p.ink, false);
+                            let caps = keymap::keycaps(s, overrides);
+                            let widths: Vec<f32> =
+                                caps.iter().map(|c| widgets::keycap_width(&painter, c)).collect();
+                            let mut kx = x + COLUMN
+                                - widths.iter().sum::<f32>()
+                                - 4.0 * (widths.len().max(1) as f32 - 1.0);
+                            for (c, w) in caps.iter().zip(widths) {
+                                widgets::keycap(&painter, p, kx, y + ROW / 2.0, c);
+                                kx += w + 4.0;
+                            }
+                            y += ROW;
                         }
-                        y += ROW;
+                        top = y + GROUP_GAP;
                     }
                     x += COLUMN + 32.0;
                 }
-                if columns.iter().all(|(_, r)| r.is_empty()) {
+                if columns.iter().all(|c| c.is_empty()) {
                     text(
                         &painter,
                         rect.left() + 24.0,
@@ -161,7 +179,7 @@ impl ShortcutsOverlay {
                     foot.left() + 24.0,
                     foot.top() + 14.0,
                     16.0,
-                    "Press ? any time to see this.",
+                    "Press ? or ⌘/ any time to see this.",
                     theme::ui_font(12.0),
                     p.ink_3,
                     false,

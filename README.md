@@ -180,10 +180,10 @@ chapter by chapter, and appear in parallel and compare views as their chapters l
 | ⌘L · ⌘R · ⌘⇧L | Verse-per-line · red letters · theme |
 | ⌘+ ⌘− ⌘0 · ⌘T | Text size · text & layout |
 | ⌃⌘F | Focus mode |
-| ⌘B · ⌘, · ⌘/ | Sidebar · settings · shortcut help |
+| ⌘B · ⌘, · ? or ⌘/ | Sidebar · settings · shortcut help |
 | ⌘E · ⌘⇧E · ⌘I | Export Markdown · export JSON · import translation |
 
-⌘/ shows them in the app:
+? (or ⌘/, or the keyboard button in the toolbar) shows them all in the app, grouped:
 
 ![Keyboard shortcuts overlay](docs/screenshots/shortcuts.png)
 
