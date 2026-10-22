@@ -12,7 +12,8 @@ license = "MIT"
 repository = "https://github.com/michaelshimeles/bible-rs"
 
 [workspace.dependencies]
-bible-core = { path = "crates/core" }
+# Each member picks its features (the web build leaves out the native ones).
+bible-core = { path = "crates/core", default-features = false }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
