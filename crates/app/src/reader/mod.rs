@@ -145,9 +145,14 @@ pub struct Reader {
     /// Where the selection is on screen this frame (its line bands, together), for popovers.
     pub selection_rect: Option<Rect>,
     frames: u64,
+    /// The verse clicked last and when (egui time), to see a second click as a double-click.
+    last_click: Option<(VerseRef, f64)>,
     /// Chapters typeset so far (`BIBLE_RS_SIDEBAR_PROBE` counts them per transition).
     pub layouts: u64,
 }
+
+/// How soon a second click on a verse counts as a double-click, in seconds (macOS's default).
+const DOUBLE_CLICK: f64 = 0.5;
 
 impl Reader {
     pub fn new(chapter: ChapterIdx, verse: u8) -> Self {
@@ -177,6 +182,7 @@ impl Reader {
             furthest_in_view: verse.max(1),
             columns_x: Vec::new(),
             marker_for: None,
+            last_click: None,
             marker_rect: None,
             selection_rect: None,
             frames: 0,
@@ -241,6 +247,11 @@ impl Reader {
     pub fn set_selection(&mut self, v: Option<VerseRef>) {
         self.text_selection = None;
         self.selection = v.map(|v| (v, v));
+    }
+
+    /// Selects the verses from `a` to `b`, as a shift-click would.
+    pub fn select_range(&mut self, a: VerseRef, b: VerseRef) {
+        self.selection = Some((a, b));
     }
 
     /// Moves a single-verse selection by `delta` verses (within the chapter, else across).
@@ -852,16 +863,25 @@ impl Reader {
                 // Shift-click carries chosen words on to the click.
                 self.select_text(t);
             } else if let Some(v) = hit {
-                self.select(v, shift);
+                // A second click on the same verse soon after the first is a double-click: it
+                // opens the verse's note, even when the first click deselected it. Counted here
+                // rather than by egui, whose 0.3 s window is quicker than many people click.
+                let now = ui.input(|i| i.time);
+                if !shift
+                    && let Some((last, at)) = self.last_click
+                    && last == v
+                    && now - at < DOUBLE_CLICK
+                {
+                    self.last_click = None;
+                    self.set_selection(Some(v));
+                    actions.push(Action::EditNote(v));
+                } else {
+                    self.last_click = Some((v, now));
+                    self.select(v, shift);
+                }
             } else {
                 self.set_selection(None);
             }
-        }
-        if resp.double_clicked()
-            && let Some(v) = hit
-        {
-            self.set_selection(Some(v));
-            actions.push(Action::EditNote(v));
         }
         if resp.secondary_clicked()
             && let Some(v) = hit

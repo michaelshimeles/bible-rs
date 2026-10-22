@@ -460,9 +460,20 @@ impl StudyStore {
         color: Option<HighlightColor>,
         text: impl Fn(VerseRef) -> Option<String>,
     ) -> Result<()> {
+        self.highlight_span_keeping(span, color, text, |_| false)
+    }
+
+    /// [`Self::highlight_span`], leaving the verses `keep` names as they are.
+    pub fn highlight_span_keeping(
+        &mut self,
+        span: &TextSpan,
+        color: Option<HighlightColor>,
+        text: impl Fn(VerseRef) -> Option<String>,
+        keep: impl Fn(VerseRef) -> bool,
+    ) -> Result<()> {
         let t = now();
         self.transaction(|s| {
-            for v in span.refs() {
+            for v in span.refs().into_iter().filter(|v| !keep(*v)) {
                 let parts = match text(v) {
                     Some(text) => highlight::paint(s.highlight_parts(v), &text, span.range_of(v), color, t),
                     None => color.map(|c| Highlight::whole(c, t)).into_iter().collect(),
