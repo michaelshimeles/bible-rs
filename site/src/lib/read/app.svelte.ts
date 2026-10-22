@@ -6,6 +6,8 @@
 import { getContext, setContext } from 'svelte';
 import { SvelteSet } from 'svelte/reactivity';
 import { Search } from './search.svelte';
+import { Chat } from './chat/chat.svelte';
+import type { ChatContext } from './chat/context';
 import { deleteImported, importedInfos, storeImported, type ImportResult } from './imports';
 import { importer } from './overlays/importer.svelte';
 import {
@@ -128,7 +130,13 @@ export type Action =
 	| { type: 'showShortcuts' }
 	| { type: 'scrollLines'; n: number }
 	| { type: 'scrollPages'; n: number }
-	| { type: 'toast'; text: string };
+	| { type: 'toast'; text: string }
+	/** The Ask sheet on the selected verses (or the chapter being read). */
+	| { type: 'ask' }
+	| { type: 'askAbout'; context: ChatContext }
+	| { type: 'toggleChat' }
+	/** A new conversation in the chat panel, asking `question` if given. */
+	| { type: 'chatAbout'; context: ChatContext; question?: string };
 
 /** What the reader component offers the app (registered while it's mounted). */
 export interface ReaderHandle {
@@ -239,6 +247,7 @@ export class ReadApp {
 	demo = $state<Record<string, string>>({});
 	reader: ReaderHandle | null = null;
 	readonly search = new Search(this);
+	readonly chat = new Chat(this);
 	/** The first chapter's names, from the page, until the core can name chapters itself. */
 	#initNames: { index: number; label: string; short: string };
 
@@ -300,6 +309,7 @@ export class ReadApp {
 		saved.parallel = saved.parallel.filter((id) => this.info(id));
 		this.settings = saved;
 		this.onboarding = !saved.onboarded && !urlTranslation;
+		this.chat.restore();
 	}
 
 	/** Starts the core: the module, the saved study and the translations being read. */
@@ -1100,6 +1110,23 @@ export class ReadApp {
 				break;
 			case 'toast':
 				this.toastNow(a.text);
+				break;
+			case 'ask': {
+				const sel = this.selection;
+				const refs = this.selectedRefs();
+				if (sel && refs.length)
+					this.chat.askAbout({ kind: 'verses', from: refs[0], to: refs[refs.length - 1] });
+				else this.chat.askAbout({ kind: 'chapter', chapter: this.here.chapter });
+				break;
+			}
+			case 'askAbout':
+				this.chat.askAbout(a.context);
+				break;
+			case 'toggleChat':
+				this.chat.toggle();
+				break;
+			case 'chatAbout':
+				this.chat.start(a.context, a.question);
 				break;
 		}
 	};

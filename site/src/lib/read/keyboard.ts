@@ -65,13 +65,15 @@ export const SHORTCUTS: Shortcut[] = [
 	bindable('bookmark', 'Verses', 'Bookmark', chord('B')),
 	bindable('copy', 'Verses', 'Copy with reference', chord('C', { shift: true, cmd: true })),
 	bindable('compare', 'Verses', 'Compare translations', chord('C')),
+	bindable('ask', 'Verses', 'Ask about the verse', chord('A')),
 	fixed('translation', 'View', 'Switch translation', ['⌘', '1…9']),
 	bindable('parallel', 'View', 'Parallel translations', chord('P', { shift: true, cmd: true })),
 	fixed('size', 'View', 'Text size', ['⌘', '+', '⌘', '−']),
 	bindable('mode', 'View', 'Paragraphs / verse per line', chord('L', { cmd: true })),
 	bindable('red', 'View', 'Red letters', chord('R', { cmd: true })),
 	bindable('theme', 'View', 'Theme', chord('L', { shift: true, cmd: true })),
-	bindable('focus', 'View', 'Focus mode', chord('F', { ctrl: true, cmd: true }))
+	bindable('focus', 'View', 'Focus mode', chord('F', { ctrl: true, cmd: true })),
+	bindable('chat', 'View', 'Bible chat', chord('A', { shift: true }))
 ];
 
 /** What a changeable row does. */
@@ -101,6 +103,10 @@ export function rowAction(id: string): Action | null {
 			return { type: 'cycleTheme' };
 		case 'focus':
 			return { type: 'toggleFocus' };
+		case 'ask':
+			return { type: 'ask' };
+		case 'chat':
+			return { type: 'toggleChat' };
 	}
 	return null;
 }
@@ -256,7 +262,7 @@ export function handleKey(app: ReadApp, e: KeyboardEvent): boolean {
 	for (const { c, a } of bindings) if (anywhere(a) && matches(e, c)) return go(a);
 	if (only(',', { cmd: true })) return go({ type: 'openSettings', tab: 'reading' });
 	if (only('/', { cmd: true })) return go({ type: 'showShortcuts' });
-	if (app.palette || app.settingsTab || app.shortcuts || app.share || app.importSheet) return false;
+	if (app.palette || app.settingsTab || app.shortcuts || app.share || app.importSheet || app.chat.asking) return false;
 
 	for (const { c, a } of bindings) {
 		if (isCommand(c) && !anywhere(a) && a.type !== 'copy' && matches(e, c)) return go(a);

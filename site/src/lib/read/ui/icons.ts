@@ -159,6 +159,23 @@ export const ICONS = {
 	},
 	retry: { body: path('M15.968 11.26A6.1 6.1 0 1 1 14.283 5.657') + path('M14.75 2.75V6.25H11.25') },
 	info: { body: circle(10, 10, 7.25) + path('M10 9.25V13.75') + circle(10, 6.45, 0.9, true) },
+	/** A four-point star: the Bible chat. */
+	sparkle: {
+		body:
+			path('M9 2.75Q9.6 7.9 15.25 9Q9.6 10.1 9 15.25Q8.4 10.1 2.75 9Q8.4 7.9 9 2.75Z') +
+			path('M15.25 12.75Q15.5 14.5 17.25 14.75Q15.5 15 15.25 16.75Q15 15 13.25 14.75Q15 14.5 15.25 12.75Z')
+	},
+	/** A speech bubble. */
+	chat: { body: path('M4.75 3.75H15.25A2 2 0 0 1 17.25 5.75V12.25A2 2 0 0 1 15.25 14.25H9.5L5.75 17V14.25H4.75A2 2 0 0 1 2.75 12.25V5.75A2 2 0 0 1 4.75 3.75Z') },
+	'arrow-up': { stroke: 1.75, body: path('M10 16V4.5M5 9.25 10 4.25 15 9.25') },
+	stop: { body: rect(5.5, 5.5, 9, 9, 1.75).replace('/>', ' class="f"/>') },
+	gear: {
+		body:
+			circle(10, 10, 2.5) +
+			path(
+				'M8.6 2.75H11.4L11.85 4.85L13.6 5.85L15.65 5.2L17.05 7.6L15.45 9.05V10.95L17.05 12.4L15.65 14.8L13.6 14.15L11.85 15.15L11.4 17.25H8.6L8.15 15.15L6.4 14.15L4.35 14.8L2.95 12.4L4.55 10.95V9.05L2.95 7.6L4.35 5.2L6.4 5.85L8.15 4.85Z'
+			)
+	},
 	ellipsis: { body: circle(5, 10, 1.4, true) + circle(10, 10, 1.4, true) + circle(15, 10, 1.4, true) }
 } satisfies Record<string, IconDef>;
 

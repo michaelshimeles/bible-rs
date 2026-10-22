@@ -480,6 +480,24 @@ also a static page that search engines can index.
   also aren't all open to browsers (CORS). The web reader offers the bundled translations and
   files you import.
 
+### Bible chat: the reader's own key, straight to the provider
+
+The web reader can talk with a language model about a passage, a chapter, a book, notes, or
+anything ("find me a verse for…"). It runs on the reader's own OpenAI key, kept in
+`localStorage` and sent only to `api.openai.com`, which accepts calls from browsers. There's no
+proxy, account or server cost, and nothing about what someone asks passes through this site.
+
+- **Grounded in the reader's text.** The passage asked about goes in with its chapter (a book goes
+  in whole), and the model has two tools that run in the page against the core: `search_bible`
+  (the reader's own search) and `read_passage`. Replies write references as `[[John 3:16]]`; the
+  page links them and shows each cited passage from the reader's translation under the reply, so a
+  misquote is easy to catch.
+- **One conversation model, many contexts.** A context (verses, chapter, book, note, all notes,
+  general) names itself, gives its text and suggests questions; the panel, the Ask sheet, the verse
+  menu, the palette and the notes page all start conversations the same way.
+- **Chat Completions with streamed tool calls**, behind a small provider interface, so another
+  provider is one file. The default is a fast model (GPT-4.1 mini); others can be picked.
+
 ## What was traded away
 
 - Highlights of part of a verse fall back to the whole verse in a translation that words it

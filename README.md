@@ -182,6 +182,7 @@ chapter by chapter, and appear in parallel and compare views as their chapters l
 | ⌃⌘F | Focus mode |
 | ⌘B · ⌘, · ⌘/ | Sidebar · settings · shortcut help |
 | ⌘E · ⌘⇧E · ⌘I | Export Markdown · export JSON · import translation |
+| A · ⇧A | Ask about the selected verse · Bible chat (web reader) |
 
 ⌘/ shows them in the app:
 
@@ -383,6 +384,15 @@ WebAssembly. Every chapter of every bundled translation is also a static page
 (`/read/kjv/john/3`). [Importing](#import-a-translation-you-own) works as on the Mac, with the same
 formats, and the conversion runs in the browser. Study data, settings and imported translations
 stay in the browser. After one visit the reader works offline. Online translations are Mac-only.
+
+**Bible chat** (web only, bring your own OpenAI key): right-click a verse and choose *Ask About
+This Verse…*, or open the chat from the toolbar (✦, ⇧A) to talk about a chapter, a book, your
+notes, or anything ("find me a verse to help me stay motivated"). Replies stream in beside the
+text; every reference in them opens in the reader, and the passages cited are shown from your own
+translation. The model can search the Bible and read passages itself. Your key and your
+conversations stay in the browser, and requests go straight to OpenAI.
+
+![Bible chat beside John 3](docs/screenshots/chat/answer.png)
 
 The site is the SvelteKit app in `site/` ([site/README.md](site/README.md)):
 

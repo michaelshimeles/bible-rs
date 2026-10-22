@@ -33,6 +33,8 @@
 	import Toasts from './overlays/Toasts.svelte';
 	import SettingsSheet from './settings/SettingsSheet.svelte';
 	import Onboarding from './onboarding/Onboarding.svelte';
+	import ChatPanel from './chat/ChatPanel.svelte';
+	import AskSheet from './chat/AskSheet.svelte';
 
 	interface Props {
 		data: {
@@ -74,11 +76,16 @@
 	const SEARCH_SIDEBAR = 352;
 	const SIDEBAR_INSET = 8;
 	const INSPECTOR = 344;
+	const CHAT = 408;
+	const CHAT_WIDE = 760;
+	/** The reader keeps at least this much beside a wide chat panel. */
+	const CHAT_READER = 440;
 
 	let booted = $state(false);
 	let systemDark = $state(false);
 	/** A phone's sidebar covers the reader rather than pushing it aside. */
 	let phone = $state(false);
+	let windowWidth = $state(0);
 
 	const s = $derived(app.settings);
 	const parallel = $derived(app.columns().length > 1);
@@ -87,6 +94,15 @@
 	const sidebarShown = $derived(s.sidebarOpen && !app.focus);
 	const sidebarWidth = $derived(app.search?.searching ? SEARCH_SIDEBAR : SIDEBAR);
 	const sidebarExtent = $derived((s.sidebarAttached ? 0 : SIDEBAR_INSET) + sidebarWidth);
+	/** The chat panel's share of the window (none on a phone, where it covers the window). */
+	const chatShown = $derived(app.chat.open && !app.focus);
+	const chatWidth = $derived(
+		!chatShown || phone
+			? 0
+			: app.chat.expanded
+				? Math.max(CHAT, Math.min(CHAT_WIDE, windowWidth - (sidebarShown ? sidebarExtent : 0) - CHAT_READER))
+				: CHAT
+	);
 	const theme = $derived(s.themeSystem ? (systemDark ? 'dark' : 'light') : s.theme);
 
 	/** Focus mode sets the text two points larger, 36 pt lines at 22, a 680 pt measure. */
@@ -122,11 +138,15 @@
 			app.finishReading();
 			app.saveStudyNow();
 			app.saveSettingsNow();
+			app.chat.saveNow();
 		};
 		const onVisibility = () => document.hidden && leave();
 		document.addEventListener('visibilitychange', onVisibility);
 		window.addEventListener('pagehide', leave);
-		const onStorage = (e: StorageEvent) => e.key === STUDY_KEY && app.studySaved(e.newValue);
+		const onStorage = (e: StorageEvent) => {
+			if (e.key === STUDY_KEY) app.studySaved(e.newValue);
+			else app.chat.storageChanged(e.key);
+		};
 		window.addEventListener('storage', onStorage);
 		const backups = setInterval(() => autoBackup(), 3600_000);
 		setTimeout(autoBackup, 10_000);
@@ -268,6 +288,7 @@
 </svelte:head>
 
 <svelte:window
+	bind:innerWidth={windowWidth}
 	onkeydown={(e) => handleKey(app, e)}
 	ondragover={dragover}
 	ondragleave={(e) => !e.relatedTarget && (importer.dragging = false)}
@@ -289,7 +310,7 @@
 		>
 			<Sidebar />
 		</aside>
-		<main class="main" style:--left="{sidebarShown ? sidebarExtent : 0}px">
+		<main class="main" style:--left="{sidebarShown ? sidebarExtent : 0}px" style:--right="{chatWidth}px">
 			<div class="reading" style:right="{app.panel && app.page === 'reader' ? INSPECTOR : 0}px">
 				<Reader top={chrome + PAGE_TOP} {chrome} covered={app.page !== 'reader'} />
 				{#if app.page === 'reader' && band > 0}
@@ -311,10 +332,13 @@
 			{#if app.focus}
 				<FocusChrome />
 			{:else}
-				<Toolbar sidebar={phone ? 0 : sidebarExtent} {sidebarShown} />
+				<Toolbar sidebar={phone ? 0 : sidebarExtent} {sidebarShown} reserved={chatWidth} />
 			{/if}
 			<Toasts />
 		</main>
+		{#if chatShown}
+			<ChatPanel top={8} width={chatWidth} cover={phone} />
+		{/if}
 		{#if app.note}{#key app.note}<NotePopover />{/key}{/if}
 		{#if app.compare}<ComparePopover />{/if}
 		{#if app.verseMenu}<VerseMenu />{/if}
@@ -324,6 +348,7 @@
 		{#if app.share}<ShareSheet />{/if}
 		{#if app.importSheet}<ImportSheet />{/if}
 		{#if app.shortcuts}<ShortcutsOverlay />{/if}
+		{#if app.chat.asking}<AskSheet />{/if}
 	{/if}
 	{#if app.coreError}
 		<p class="error t-ui" role="alert">The reader couldn’t start: {app.coreError}</p>
@@ -361,8 +386,10 @@
 
 	.main {
 		position: absolute;
-		inset: 0 0 0 var(--left);
-		transition: left var(--motion-slow) var(--motion-easing);
+		inset: 0 var(--right, 0) 0 var(--left);
+		transition:
+			left var(--motion-slow) var(--motion-easing),
+			right var(--motion-slow) var(--motion-easing);
 	}
 
 	.reading {

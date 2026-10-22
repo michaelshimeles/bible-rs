@@ -184,7 +184,12 @@
 					alternate: { type: 'addParallel', id: t.id }
 				});
 			}
+			// A sentence is more likely a question for the chat than words to search for.
+			const ask = command('sparkle', `Ask Bible chat: “${q}”`, [], { type: 'chatAbout', context: { kind: 'general' }, question: q });
+			const sentence = !first && q.trim().split(/\s+/).length >= 3;
+			if (sentence) out.push(ask);
 			out.push(command('search', `Search for “${q}”`, bound('search'), { type: 'openSearch', query: q }));
+			if (!first && !sentence && q.includes(' ')) out.push(ask);
 			if (first) {
 				if (first.verse) {
 					const verse = { book: first.book, chapter: first.chapter, verse: first.verse };
@@ -207,12 +212,34 @@
 						then: jump
 					})
 				);
+				out.push(
+					command(
+						'sparkle',
+						first.verse ? `Ask about ${first.label}` : `Ask about ${name(first.book)} ${first.chapter}`,
+						[],
+						first.verse
+							? {
+									type: 'askAbout',
+									context: {
+										kind: 'verses',
+										from: { book: first.book, chapter: first.chapter, verse: first.verse },
+										to: { book: first.book, chapter: first.chapter, verse: first.verseEnd ?? first.verse }
+									}
+								}
+							: { type: 'askAbout', context: { kind: 'chapter', chapter: first.chapterIndex } }
+					)
+				);
 			}
 		}
 
 		const ql = q.toLowerCase();
 		const commands: [string, IconName, string[], Action][] = [
 			['Toggle parallel translations', 'columns', bound('parallel'), { type: 'toggleParallel' }],
+			['Bible chat', 'sparkle', bound('chat'), { type: 'toggleChat' }],
+			[`Ask about ${app.chapterName(app.here.chapter)}`, 'sparkle', [], { type: 'askAbout', context: { kind: 'chapter', chapter: app.here.chapter } }],
+			[`Ask about the book of ${app.core?.books[app.hereRef().book]?.name ?? ''}`, 'sparkle', [], { type: 'askAbout', context: { kind: 'book', book: app.hereRef().book } }],
+			['Ask about my notes', 'sparkle', [], { type: 'askAbout', context: { kind: 'notes' } }],
+			['Find a verse for…', 'sparkle', [], { type: 'chatAbout', context: { kind: 'general' } }],
 			['Theme: Light', 'text-size', [], { type: 'setTheme', theme: 'light' }],
 			['Theme: Sepia', 'text-size', [], { type: 'setTheme', theme: 'sepia' }],
 			['Theme: Dark', 'text-size', [], { type: 'setTheme', theme: 'dark' }],

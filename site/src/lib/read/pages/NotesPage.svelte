@@ -239,6 +239,12 @@
 							size={32}
 							onclick={() => copy(`${app.label(v)} — ${verseText(v)}\n\n${text}`, `Copied the note on ${app.label(v)}`)}
 						/>
+						<RoundButton
+							icon="sparkle"
+							label="Ask about this note"
+							size={32}
+							onclick={() => (flush(), app.dispatch({ type: 'askAbout', context: { kind: 'note', verse: v } }))}
+						/>
 						<RoundButton icon="trash" label="Delete note" size={32} onclick={remove} />
 						<RoundButton icon="ellipsis" label="More" size={32} bind:el={moreButton} onclick={() => (more = !more)} />
 					</div>
@@ -334,6 +340,10 @@
 					onclick={() => ((more = false), app.dispatch({ type: 'jump', chapter: index(v), verse: v.verse, flash: true }))}
 				/>
 				<MenuItem label="Copy as Markdown" onclick={() => ((more = false), copy(text))} />
+				<MenuItem
+					label="Ask About All Notes…"
+					onclick={() => ((more = false), app.dispatch({ type: 'askAbout', context: { kind: 'notes' } }))}
+				/>
 				<MenuSeparator />
 				<MenuItem label="Delete Note" onclick={() => ((more = false), remove())} />
 			</Menu>

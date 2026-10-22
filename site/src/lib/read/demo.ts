@@ -15,6 +15,9 @@ import type { ReadApp } from './app.svelte';
 import { parseReference, type VerseRef } from './core';
 import { importer } from './overlays/importer.svelte';
 import { merge, type Settings } from './settings';
+import { mockProvider, type MockOptions } from './chat/mock';
+import { openai } from './chat/openai';
+import type { ChatContext } from './chat/context';
 
 /** The import fixture the Mac renders use (a folder: John, and Tobit, which is left out). */
 const SOURCE = {
@@ -181,12 +184,76 @@ async function apply(app: ReadApp, step: string) {
 			await importer.demoReview(app, error || null, key || null);
 			break;
 		}
+		// The chat, with a stand-in provider: `chat-mock` (with a key) or `chat-nokey`, then
+		// `chat-speed:<ms>`, `chat-freeze:<chars>`, `chat-fail`, `ask:<ref>`, `chat-about:<kind>[:<ref>]`,
+		// `chat:<question>` (waits for the reply unless frozen), `chat-expand`, `chat-view:<view>`.
+		case 'chat-mock':
+		case 'chat-nokey':
+			app.chat.restore();
+			app.chat.stub = mockProvider(openai, mock);
+			app.chat.config.key = cmd === 'chat-mock' ? 'sk-demo-0000000000000000' : '';
+			break;
+		case 'chat-speed':
+			mock.delay = Number(arg) || 0;
+			break;
+		case 'chat-freeze':
+			mock.freezeAt = Number(arg) || 0;
+			break;
+		case 'chat-fail':
+			mock.fail = 'auth';
+			break;
+		case 'ask':
+			app.dispatch({ type: 'askAbout', context: contextFor(app, 'verses', arg) });
+			break;
+		case 'chat-about': {
+			const colon = arg.indexOf(':');
+			const [kind, where] = colon < 0 ? [arg, ''] : [arg.slice(0, colon), arg.slice(colon + 1)];
+			app.chat.newChat(contextFor(app, kind, where));
+			break;
+		}
+		case 'chat-open':
+			app.chat.show();
+			break;
+		case 'chat':
+			void app.chat.send(arg);
+			if (mock.freezeAt === null) {
+				for (let i = 0; i < 1200 && (app.chat.streaming || (!app.chat.active && !app.chat.pending)); i++) await frames(1);
+			} else await frames(30);
+			break;
+		case 'chat-expand':
+			app.chat.expanded = true;
+			break;
+		case 'chat-view':
+			app.chat.view = arg as typeof app.chat.view;
+			break;
 		case 'onboarding':
 			app.demo.onboarding = arg || '1';
 			app.onboarding = true;
 			break;
 		default:
 			app.demo[cmd] = arg || 'true';
+	}
+}
+
+const mock: MockOptions = { delay: 12, freezeAt: null, fail: null };
+
+function contextFor(app: ReadApp, kind: string, where: string): ChatContext {
+	const r = parseReference(where);
+	const verse = r?.verse ? { book: r.book, chapter: r.chapter, verse: r.verse } : null;
+	switch (kind) {
+		case 'verses':
+			if (r && verse) return { kind: 'verses', from: verse, to: { ...verse, verse: r.verseEnd ?? r.verse! } };
+			return { kind: 'chapter', chapter: r?.chapterIndex ?? app.here.chapter };
+		case 'chapter':
+			return { kind: 'chapter', chapter: r?.chapterIndex ?? app.here.chapter };
+		case 'book':
+			return { kind: 'book', book: r?.book ?? app.hereRef().book };
+		case 'note':
+			return verse ? { kind: 'note', verse } : { kind: 'notes' };
+		case 'notes':
+			return { kind: 'notes' };
+		default:
+			return { kind: 'general' };
 	}
 }
 

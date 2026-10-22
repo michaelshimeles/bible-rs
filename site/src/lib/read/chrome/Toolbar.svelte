@@ -20,9 +20,11 @@
 		sidebar: number;
 		/** Whether the sidebar is shown (its header then holds the toggle). */
 		sidebarShown: boolean;
+		/** The width the chat panel takes at the trailing edge. */
+		reserved?: number;
 	}
 
-	let { sidebar, sidebarShown }: Props = $props();
+	let { sidebar, sidebarShown, reserved = 0 }: Props = $props();
 
 	const app = getApp();
 	const s = $derived(app.settings);
@@ -70,12 +72,12 @@
 	const reading = $derived(app.page === 'reader');
 	const shown = $derived(sidebarShown && sidebar > 0);
 	/** Judged at the width the bar is heading for, so a sliding sidebar switches it at once. */
-	const barWidth = $derived(windowWidth - (sidebarShown ? sidebar : 0));
+	const barWidth = $derived(windowWidth - (sidebarShown ? sidebar : 0) - reserved);
 	const compact = $derived(windowWidth > 0 && barWidth < COMPACT);
 	const showField = $derived(!compact || wantField || search.searching || search.fieldFocused);
 	const fieldWidth = $derived(compact ? FIELD_COMPACT : FIELD);
 	const trailingLeft = $derived(
-		barWidth - TRAILING_INSET - (showField ? fieldWidth + (compact ? 0 : GROUP_GAP + 2 * BUTTON) : 2 * BUTTON)
+		barWidth - TRAILING_INSET - (showField ? fieldWidth + (compact ? 0 : GROUP_GAP + 3 * BUTTON) : 3 * BUTTON)
 	);
 
 	const navLeft = $derived(shown ? LEADING_INSET_SIDEBAR : LEADING_INSET + TOGGLE + GROUP_GAP);
@@ -247,6 +249,13 @@
 							bind:el={textEl}
 							onclick={() => app.dispatch({ type: 'textFormat' })}
 						/>
+						<ToolbarButton
+							icon="sparkle"
+							label={tip('Bible chat', shortcutText('chat', s.shortcuts))}
+							on={app.chat.open}
+							toggle
+							onclick={() => app.dispatch({ type: 'toggleChat' })}
+						/>
 					</Capsule>
 				</div>
 			{/if}
@@ -272,6 +281,13 @@
 						icon="search-thin"
 						label={tip('Search', shortcutText('search', s.shortcuts))}
 						onclick={() => app.dispatch({ type: 'openSearch' })}
+					/>
+					<ToolbarButton
+						icon="sparkle"
+						label={tip('Bible chat', shortcutText('chat', s.shortcuts))}
+						on={app.chat.open}
+						toggle
+						onclick={() => app.dispatch({ type: 'toggleChat' })}
 					/>
 					<ToolbarButton icon="ellipsis" label="More" open={moreOpen} bind:el={moreEl} onclick={() => (moreOpen = !moreOpen)} />
 				</Capsule>

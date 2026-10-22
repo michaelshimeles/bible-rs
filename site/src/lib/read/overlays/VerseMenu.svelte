@@ -83,6 +83,13 @@
 		onclick={() => run({ type: 'toggleBookmark' })}
 	/>
 	<MenuSeparator />
+	<MenuItem
+		icon="sparkle"
+		label={refs.length > 1 ? 'Ask About These Verses…' : 'Ask About This Verse…'}
+		shortcut={keys('ask')}
+		onclick={() => run({ type: 'ask' })}
+	/>
+	<MenuSeparator />
 	<MenuItem icon="copy" label="Copy" shortcut={cmdText('C')} onclick={() => run({ type: 'copyText' })} />
 	<MenuItem icon="quote" label="Copy with Reference" shortcut={keys('copy')} onclick={() => run({ type: 'copy' })} />
 	<MenuItem icon="share" label="Share as Image…" onclick={() => run({ type: 'shareImage' })} />
