@@ -182,7 +182,7 @@ impl State {
         // The chapter's opening, in the translation it was read in.
         let snippet = s
             .chapter_idx()
-            .and_then(|c| env.library.load(&s.translation).ok().map(|t| (c, t)))
+            .zip(env.library.load(&s.translation).ok())
             .and_then(|(c, t)| t.verses_in(c).next().map(|v| v.plain_text()))
             .unwrap_or_default();
         if !snippet.is_empty() {

@@ -16,6 +16,7 @@ use eframe::egui::{
 };
 
 use crate::actions::{Action, ExportKind, SidebarTab};
+use crate::book_filter;
 use crate::theme::{self, Palette, Theme, text};
 use crate::widgets;
 
@@ -812,43 +813,38 @@ impl Sidebar {
                     _ => "All books".into(),
                 };
                 let resp = select_field(ui, p, select, &label, "scope-book");
-                crate::menu::popup(&resp, p).show(|ui| {
-                    ui.set_min_width(200.0);
-                    let testament = match self.scope {
-                        Scope::OldTestament => Some(false),
-                        Scope::NewTestament => Some(true),
-                        _ => None,
-                    };
-                    if ui.selectable_label(!matches!(self.scope, Scope::Book(_)), "All books").clicked() {
+                let testament = match self.scope {
+                    Scope::OldTestament => Some(false),
+                    Scope::NewTestament => Some(true),
+                    _ => None,
+                };
+                let listed: Vec<BookId> = BookId::all()
+                    .filter(|b| testament.is_none_or(|nt| (*b >= FIRST_NT_BOOK) == nt))
+                    .collect();
+                let searchable: Vec<BookId> = BookId::all().collect();
+                let current = match self.scope {
+                    Scope::Book(b) => Some(b),
+                    _ => None,
+                };
+                let books = book_filter::Books {
+                    current,
+                    here: Some(book),
+                    listed: &listed,
+                    searchable: &searchable,
+                    name: &|b: BookId| b.name().to_string(),
+                    width: 200.0,
+                };
+                match book_filter::show(&resp, p, books) {
+                    Some(book_filter::Pick::All) => {
                         self.scope = match testament {
                             Some(false) => Scope::OldTestament,
                             Some(true) => Scope::NewTestament,
                             None => Scope::All,
                         };
-                        ui.close();
                     }
-                    if ui
-                        .selectable_label(
-                            self.scope == Scope::Book(book),
-                            format!("{} (this book)", book.name()),
-                        )
-                        .clicked()
-                    {
-                        self.scope = Scope::Book(book);
-                        ui.close();
-                    }
-                    crate::menu::separator(ui);
-                    ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                        for b in
-                            BookId::all().filter(|b| testament.is_none_or(|nt| (*b >= FIRST_NT_BOOK) == nt))
-                        {
-                            if ui.selectable_label(self.scope == Scope::Book(b), b.name()).clicked() {
-                                self.scope = Scope::Book(b);
-                                ui.close();
-                            }
-                        }
-                    });
-                });
+                    Some(book_filter::Pick::Book(b)) => self.scope = Scope::Book(b),
+                    None => {}
+                }
                 let check =
                     Rect::from_min_size(pos2(select.right() + 16.0, row.center().y - 8.0), vec2(16.0, 16.0));
                 if widgets::checkbox(ui, p, check, *whole_words, "Whole words").clicked() {

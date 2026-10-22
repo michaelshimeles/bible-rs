@@ -84,6 +84,24 @@ pub fn suggest(input: &str, limit: usize) -> Vec<Reference> {
     out
 }
 
+/// The books a type-ahead book filter offers for what's typed, best first: every book in order
+/// when nothing is, the books named with an ordinal for a bare "1"–"3", and otherwise the book
+/// candidates of a typed reference ("jn", "1co", "song", "revalation"), so the filter and the
+/// jump palette read names the same way. Chapter and verse numbers after the name are ignored.
+pub fn filter_books(input: &str) -> Vec<BookId> {
+    let s = input.trim();
+    if s.is_empty() {
+        return BookId::all().collect();
+    }
+    match split(s) {
+        Some(parts) => book_candidates(&parts.book_key, parts.ordinal).into_iter().map(|(b, _)| b).collect(),
+        None => match s.parse::<u8>() {
+            Ok(n @ 1..=3) => BookId::all().filter(|b| b.name().starts_with(char::from(b'0' + n))).collect(),
+            _ => Vec::new(),
+        },
+    }
+}
+
 struct Parts {
     ordinal: Option<u8>,
     book_key: String,
@@ -266,6 +284,37 @@ mod tests {
         let s = suggest("jo 3", 5);
         assert_eq!(s[0].book.name(), "John");
         assert!(s.len() >= 3);
+    }
+
+    #[test]
+    fn book_filter() {
+        let f = |s: &str| filter_books(s).iter().map(|b| b.name()).collect::<Vec<_>>();
+        assert_eq!(filter_books("").len(), 66);
+        assert_eq!(filter_books("   ")[0], BookId::GENESIS);
+        assert_eq!(f("john")[0], "John");
+        assert!(f("john").contains(&"1 John"));
+        assert_eq!(f("1 john"), ["1 John"]);
+        assert_eq!(f("1co")[0], "1 Corinthians");
+        assert_eq!(f("ps")[0], "Psalms");
+        assert_eq!(f("song")[0], "Song of Solomon");
+        assert_eq!(f("rev")[0], "Revelation");
+        assert_eq!(f("revalation")[0], "Revelation");
+        assert_eq!(f("Romans 8")[0], "Romans");
+        assert_eq!(
+            f("2"),
+            [
+                "2 Samuel",
+                "2 Kings",
+                "2 Chronicles",
+                "2 Corinthians",
+                "2 Thessalonians",
+                "2 Timothy",
+                "2 Peter",
+                "2 John"
+            ]
+        );
+        assert!(f("xyzzy").is_empty());
+        assert!(f("7").is_empty());
     }
 
     #[test]

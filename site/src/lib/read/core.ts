@@ -346,3 +346,5 @@ async function start(): Promise<Core> {
 	});
 	return c;
 }
+/** The books a type-ahead book filter offers for what's typed, best first (all 66 for nothing). */
+export const filterBooks = (input: string): number[] => Array.from(wasm.filterBooks(input));

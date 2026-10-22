@@ -8,7 +8,8 @@
 	import { getApp } from '../app.svelte';
 	import { HIGHLIGHT_COLORS, type StudyItem } from '../core';
 	import { shortDate } from '../time';
-	import { CapsText, Menu, MenuItem, PillTab, Segmented, SelectField } from '../ui';
+	import BookFilterMenu from '../chrome/BookFilterMenu.svelte';
+	import { CapsText, Icon, Menu, MenuItem, PillTab, Segmented } from '../ui';
 	import { lines } from './measure';
 	import PageEmpty from './PageEmpty.svelte';
 	import PageHead from './PageHead.svelte';
@@ -22,6 +23,8 @@
 	let color = $state<string | null>(null);
 	let testament = $state(0);
 	let book = $state<number | null>(null);
+	let bookButton = $state<HTMLElement>();
+	let bookMenu = $state(false);
 	let width = $state(0);
 	let fonts = $state(false);
 	let menu = $state<{ item: StudyItem; x: number; y: number } | null>(null);
@@ -73,17 +76,19 @@
 <PageHead title="Highlights" {subtitle}>
 	{#snippet actions()}
 		{#if all.length}
-			<SelectField
-				icon="book"
-				width={160}
-				label="Book"
-				options={[{ value: '', label: 'All books' }, ...books.map((b) => ({ value: String(b), label: bookName(b) }))]}
-				value={book === null ? '' : String(book)}
-				onchange={(v) => {
-					book = v === '' ? null : Number(v);
-					testament = 0;
-				}}
-			/>
+			<button
+				bind:this={bookButton}
+				type="button"
+				class={['select', { open: bookMenu }]}
+				aria-label="Book"
+				aria-haspopup="listbox"
+				aria-expanded={bookMenu}
+				onclick={() => (bookMenu = !bookMenu)}
+			>
+				<Icon name="book" size={16} heavy class="lead" />
+				<span class="value">{book === null ? 'All books' : bookName(book)}</span>
+				<Icon name="chevrons-up-down" size={16} heavy class="chevrons" />
+			</button>
 			<Segmented
 				layout="tight"
 				label="Testament"
@@ -157,6 +162,21 @@
 	</div>
 {/if}
 
+{#if bookMenu && bookButton}
+	<BookFilterMenu
+		anchor={bookButton}
+		label="Book"
+		current={book}
+		listed={books}
+		width={180}
+		onchoose={(b) => {
+			book = b;
+			testament = 0;
+		}}
+		onclose={() => (bookMenu = false)}
+	/>
+{/if}
+
 {#if menu}
 	{@const m = menu}
 	<Menu anchor={new DOMRect(m.x, m.y, 0, 0)} onclose={() => (menu = null)} label="Highlight">
@@ -171,6 +191,50 @@
 {/if}
 
 <style>
+	/* The pop-up button SelectField draws, opening the book filter instead of the browser's menu. */
+	.select {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 160px;
+		height: 32px;
+		padding: 0 8px 0 12px;
+		border-radius: 8px;
+		background: var(--field);
+		box-shadow:
+			0 0 0 0.5px var(--border),
+			0 1px 2px rgb(0 0 0 / 0.06);
+		color: var(--ink);
+		font: var(--type-ui);
+		text-align: left;
+	}
+
+	.select:hover,
+	.select.open {
+		background: var(--raised);
+	}
+
+	.select:focus-visible {
+		outline: none;
+		box-shadow:
+			0 0 0 1px var(--accent),
+			0 0 0 4px var(--focus);
+	}
+
+	.select :global(.lead),
+	.select :global(.chevrons) {
+		flex-shrink: 0;
+		color: var(--ink-2);
+	}
+
+	.value {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	.tabs {
 		display: flex;
 		flex-wrap: wrap;
