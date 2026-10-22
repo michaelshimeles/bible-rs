@@ -100,6 +100,12 @@ export class Bible {
      */
     restore(json: string): void;
     /**
+     * The passage a search query names ("genesis 1:14", "gen 1:14", "ps 23", or a bare "1:14"
+     * in `current_book`), as a hit to list above the others, or null when the query isn't a
+     * reference or the translation hasn't the verse.
+     */
+    searchReference(translation: string, query: string, current_book: number): any;
+    /**
      * Searches a translation: every word must appear (as a word prefix unless `whole_words`),
      * `"quoted phrases"` in order, `-words` excluded. `scope` is "all", "ot", "nt" or a book
      * index. With `first_book` (a book index, or -1) that book's hits come first, the rest in
@@ -245,6 +251,7 @@ export interface InitOutput {
     readonly bible_removeHighlight: (a: number, b: number, c: number, d: number) => void;
     readonly bible_restore: (a: number, b: number, c: number, d: number) => void;
     readonly bible_search: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => void;
+    readonly bible_searchReference: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly bible_setBookmark: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly bible_setHighlight: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly bible_setNote: (a: number, b: number, c: number, d: number, e: number) => void;

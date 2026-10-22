@@ -26,6 +26,7 @@ export const bible_recordReading: (a: number, b: number, c: number) => void;
 export const bible_removeHighlight: (a: number, b: number, c: number, d: number) => void;
 export const bible_restore: (a: number, b: number, c: number, d: number) => void;
 export const bible_search: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => void;
+export const bible_searchReference: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
 export const bible_setBookmark: (a: number, b: number, c: number, d: number, e: number) => void;
 export const bible_setHighlight: (a: number, b: number, c: number, d: number, e: number) => void;
 export const bible_setNote: (a: number, b: number, c: number, d: number, e: number) => void;

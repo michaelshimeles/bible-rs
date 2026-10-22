@@ -2,6 +2,7 @@
 //! "revalation 21" (typo-tolerant), "jude 3" (single-chapter books take a verse).
 
 use crate::books::{BOOKS, BookId, ChapterIdx, VerseRef};
+use crate::model::{Translation, VerseView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reference {
@@ -20,8 +21,37 @@ impl Reference {
         VerseRef::new(self.book, self.chapter, self.verse.unwrap_or(1))
     }
 
+    /// The verse this reference opens at in `t`: its verse, or its chapter's first. None when
+    /// the translation hasn't it.
+    pub fn target<'a>(&self, t: &'a Translation) -> Option<VerseView<'a>> {
+        match self.verse {
+            Some(v) => t.find(VerseRef::new(self.book, self.chapter, v)),
+            None => t.verses_in(ChapterIdx::new(self.book, self.chapter)?).next(),
+        }
+    }
+
+    /// The passage's text in `t`: its verses joined, or a chapter's first verse.
+    pub fn text_in(&self, t: &Translation) -> String {
+        let Some(first) = self.target(t) else { return String::new() };
+        let last = self.verse.and(self.verse_end).unwrap_or(first.number).max(first.number);
+        t.verses_in(first.chapter)
+            .filter(|v| v.number >= first.number && v.number <= last)
+            .map(|v| v.plain_text())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Like [`Reference::display`], with the book named as `t` names it.
+    pub fn display_in(&self, t: &Translation) -> String {
+        self.label(t.meta.ref_name(self.book))
+    }
+
     pub fn display(&self) -> String {
-        let mut s = format!("{} {}", self.book.ref_name(), self.chapter);
+        self.label(self.book.ref_name())
+    }
+
+    fn label(&self, book: &str) -> String {
+        let mut s = format!("{book} {}", self.chapter);
         if let Some(v) = self.verse {
             s.push_str(&format!(":{v}"));
             if let Some(e) = self.verse_end.filter(|&e| e > v) {
@@ -60,21 +90,7 @@ pub fn suggest(input: &str, limit: usize) -> Vec<Reference> {
     let Some(parts) = split(input) else { return Vec::new() };
     let mut out = Vec::new();
     for (book, _score) in book_candidates(&parts.book_key, parts.ordinal) {
-        let r = match (parts.nums.first(), parts.nums.get(1), parts.nums.get(2)) {
-            (None, _, _) => Some(Reference { book, chapter: 1, verse: None, verse_end: None }),
-            // Single-chapter books: "jude 3" means verse 3.
-            (Some(&n), None, _) if book.chapters() == 1 && n > 1 && n <= 255 => {
-                Some(Reference { book, chapter: 1, verse: Some(n as u8), verse_end: None })
-            }
-            (Some(&c), v, e) if c >= 1 && c <= book.chapters() as u32 => Some(Reference {
-                book,
-                chapter: c as u8,
-                verse: v.and_then(|&v| u8::try_from(v).ok()).filter(|&v| v > 0),
-                verse_end: e.and_then(|&e| u8::try_from(e).ok()),
-            }),
-            _ => None,
-        };
-        if let Some(r) = r {
+        if let Some(r) = resolve(book, &parts.nums) {
             out.push(r);
             if out.len() >= limit {
                 break;
@@ -84,10 +100,66 @@ pub fn suggest(input: &str, limit: usize) -> Vec<Reference> {
     out
 }
 
+/// A search query that names a passage: "genesis 1:14", "gen 1:14", "jn 3:16-18", "ps 23", or a
+/// bare "1:14" in `current` (the book being read). Unlike [`parse`], the whole query has to read
+/// as a reference, a book followed by a chapter (and verse), so that words such as "love" or
+/// "acts" stay full-text searches. The verse may still be missing from a given translation.
+pub fn parse_query(input: &str, current: BookId) -> Option<Reference> {
+    let s = input.trim();
+    let numeric = |t: &str| t.chars().all(|c| c.is_ascii_digit() || c.is_whitespace() || ":.-–—".contains(c));
+    if s.starts_with(|c: char| c.is_ascii_digit()) && numeric(s) {
+        // "1:14" (or "1.14", "1:14-16") in the current book; a lone number could be a chapter
+        // or a verse, so it needs the colon.
+        let nums: Vec<u32> = numbers(s);
+        if !s.contains([':', '.']) || nums.len() < 2 {
+            return None;
+        }
+        let chapter = u8::try_from(nums[0]).ok().filter(|&c| c >= 1 && c <= current.chapters())?;
+        let verse = u8::try_from(nums[1]).ok().filter(|&v| v > 0)?;
+        let verse_end = nums.get(2).and_then(|&e| u8::try_from(e).ok()).filter(|&e| e > verse);
+        return Some(Reference { book: current, chapter, verse: Some(verse), verse_end });
+    }
+    let parts = split(s)?;
+    if parts.nums.is_empty() || !numeric(&parts.tail) {
+        return None;
+    }
+    // Only the best reading of the book: "gen 51" is no verse rather than some other book's.
+    let (book, _) = *book_candidates(&parts.book_key, parts.ordinal).first()?;
+    resolve(book, &parts.nums)
+}
+
+/// A book with the numbers typed after it: chapter, verse, last verse.
+fn resolve(book: BookId, nums: &[u32]) -> Option<Reference> {
+    match (nums.first(), nums.get(1), nums.get(2)) {
+        (None, _, _) => Some(Reference { book, chapter: 1, verse: None, verse_end: None }),
+        // Single-chapter books: "jude 3" means verse 3.
+        (Some(&n), None, _) if book.chapters() == 1 && n > 1 && n <= 255 => {
+            Some(Reference { book, chapter: 1, verse: Some(n as u8), verse_end: None })
+        }
+        (Some(&c), v, e) if c >= 1 && c <= book.chapters() as u32 => Some(Reference {
+            book,
+            chapter: c as u8,
+            verse: v.and_then(|&v| u8::try_from(v).ok()).filter(|&v| v > 0),
+            verse_end: e.and_then(|&e| u8::try_from(e).ok()),
+        }),
+        _ => None,
+    }
+}
+
+fn numbers(s: &str) -> Vec<u32> {
+    s.split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| p.parse().ok())
+        .take(3)
+        .collect()
+}
+
 struct Parts {
     ordinal: Option<u8>,
     book_key: String,
     nums: Vec<u32>,
+    /// Everything from the first digit after the book on.
+    tail: String,
 }
 
 fn split(input: &str) -> Option<Parts> {
@@ -123,13 +195,8 @@ fn split(input: &str) -> Option<Parts> {
     if book_key.is_empty() {
         return None;
     }
-    let nums: Vec<u32> = rest[letters_end..]
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|p| !p.is_empty())
-        .filter_map(|p| p.parse().ok())
-        .take(3)
-        .collect();
-    Some(Parts { ordinal, book_key, nums })
+    let tail = rest[letters_end..].to_string();
+    Some(Parts { ordinal, book_key, nums: numbers(&tail), tail })
 }
 
 fn normalized_name(b: &crate::books::BookInfo) -> String {
@@ -266,6 +333,39 @@ mod tests {
         let s = suggest("jo 3", 5);
         assert_eq!(s[0].book.name(), "John");
         assert!(s.len() >= 3);
+    }
+
+    #[test]
+    fn search_queries() {
+        let q = |s: &str, current: BookId| {
+            parse_query(s, current).map(|r| r.display()).unwrap_or_else(|| "-".into())
+        };
+        let genesis = BookId::GENESIS;
+        let john = BookId(42);
+        assert_eq!(q("1:14", genesis), "Genesis 1:14");
+        assert_eq!(q(" 1:14 ", john), "John 1:14");
+        assert_eq!(q("3.16", john), "John 3:16");
+        assert_eq!(q("3:16-18", john), "John 3:16–18");
+        assert_eq!(q("genesis 1:14", john), "Genesis 1:14");
+        assert_eq!(q("Genesis 1:14", john), "Genesis 1:14");
+        assert_eq!(q("gen 1:14", john), "Genesis 1:14");
+        assert_eq!(q("gen1:14", john), "Genesis 1:14");
+        assert_eq!(q("1 cor 13:4-7", genesis), "1 Corinthians 13:4–7");
+        assert_eq!(q("1 john 4:8", genesis), "1 John 4:8");
+        assert_eq!(q("ps 23", genesis), "Psalm 23");
+        assert_eq!(q("jude 3", genesis), "Jude 1:3");
+        assert_eq!(q("revalation 21:4", genesis), "Revelation 21:4");
+        // Words, a lone number and chapters a book hasn't are full-text searches.
+        assert_eq!(q("love", genesis), "-");
+        assert_eq!(q("acts", genesis), "-");
+        assert_eq!(q("god so loved", genesis), "-");
+        assert_eq!(q("14", genesis), "-");
+        assert_eq!(q("51:1", genesis), "-");
+        assert_eq!(q("0:1", genesis), "-");
+        assert_eq!(q("1:0", genesis), "-");
+        assert_eq!(q("gen 51:1", genesis), "-");
+        assert_eq!(q("john 3:16 love", genesis), "-");
+        assert_eq!(q("\"1:14\"", genesis), "-");
     }
 
     #[test]

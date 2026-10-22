@@ -186,7 +186,7 @@
 			<Checkbox label="Whole words" bind:checked={app.settings.wholeWords} />
 		</div>
 		{#if results && results.total === 0}
-			<p class="count">No verses match</p>
+			<p class="count">{search.reference ? 'No verse text matches' : 'No verses match'}</p>
 		{:else if results}
 			<div class="count">
 				<span title="{search.elapsed.toFixed(2)} ms · {abbrev}">{summary(results.total, results.books.length)}</span>
@@ -205,7 +205,21 @@
 		{/if}
 	</div>
 
-	{#if results && results.total === 0}
+	{#if search.reference}
+		{@const passage = search.reference}
+		<!-- The passage the query names ("gen 1:14", "1:14"), above the hits. -->
+		<div class="passage">
+			<ListItem
+				reference={passage.reference}
+				trailing={abbrev}
+				snippet={passage.text}
+				selected={search.index === -1}
+				onclick={() => search.choose(-1)}
+			/>
+		</div>
+	{/if}
+
+	{#if results && results.total === 0 && !search.reference}
 		<div class="none">
 			<EmptyState
 				glyph="search-thin"
@@ -435,6 +449,10 @@
 	.detail {
 		color: var(--ink-3);
 		font: var(--type-small);
+	}
+
+	.passage {
+		padding: 0 8px 4px;
 	}
 
 	.results {

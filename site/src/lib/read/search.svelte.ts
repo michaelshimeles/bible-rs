@@ -69,13 +69,27 @@ export class Search {
 		return page;
 	});
 
+	/**
+	 * The passage the query names ("gen 1:14", or "1:14" in the book being read when it was
+	 * typed), listed above the hits as row -1, or null.
+	 */
+	readonly reference = $derived.by((): SearchHit | null => {
+		const app = this.app;
+		const id = app.settings.translation;
+		void this.key;
+		if (!this.searching || !app.core || !app.loaded.has(id)) return null;
+		return app.core.searchReference(id, this.query, untrack(() => app.hereRef().book));
+	});
+
+	/** The selected row: a hit, or -1 for the passage the query names (selected first). */
 	get index(): number {
-		return this.#selected.key === this.key ? this.#selected.index : 0;
+		if (this.#selected.key === this.key) return this.#selected.index;
+		return this.reference ? -1 : 0;
 	}
 
 	get position() {
 		const total = this.searching ? (this.results?.total ?? 0) : 0;
-		return total ? { index: this.index + 1, total } : null;
+		return total ? { index: Math.max(0, this.index) + 1, total } : null;
 	}
 
 	#first(): number | null {
@@ -99,9 +113,9 @@ export class Search {
 		return hits[i - FIRST - n * PAGE] ?? null;
 	}
 
-	/** Selects a hit and goes to it. */
+	/** Selects a hit (or -1, the passage the query names) and goes to it. */
 	choose(i: number) {
-		const hit = this.hit(i);
+		const hit = i === -1 ? this.reference : this.hit(i);
 		if (!hit) return;
 		this.#selected = { key: this.key, index: i };
 		this.app.dispatch({ type: 'jump', chapter: hit.chapterIndex, verse: hit.verse.verse, flash: true });
@@ -114,15 +128,16 @@ export class Search {
 
 	step(delta: number) {
 		const total = this.results?.total ?? 0;
-		if (!total) return;
-		const i = Math.min(total - 1, Math.max(0, this.index + delta));
+		const first = this.reference ? -1 : 0;
+		if (!total && first === 0) return;
+		const i = Math.min(total - 1, Math.max(first, this.index + delta));
 		this.choose(i);
 		this.scrollRequest++;
 	}
 
 	/** Return in the field: the selected hit. */
 	open() {
-		if (this.results?.total) this.choose(this.index);
+		if (this.results?.total || this.index === -1) this.choose(this.index);
 	}
 
 	clear() {

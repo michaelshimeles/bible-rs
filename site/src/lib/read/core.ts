@@ -292,6 +292,11 @@ export class Core {
 		return this.bible.search(id, query, String(scope), wholeWords, firstBook ?? -1, offset, limit);
 	}
 
+	/** The passage a search query names ("gen 1:14", or "1:14" in `currentBook`), or null. */
+	searchReference(id: string, query: string, currentBook: number): SearchHit | null {
+		return this.has(id) ? (this.bible.searchReference(id, query, currentBook) ?? null) : null;
+	}
+
 	copyText(id: string, verses: VerseRef[], format: CopyFormat): string | null {
 		return this.has(id) ? (this.bible.copyText(id, verses, format) ?? null) : null;
 	}

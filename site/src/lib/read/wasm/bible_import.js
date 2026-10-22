@@ -488,6 +488,34 @@ export class Bible {
         }
     }
     /**
+     * The passage a search query names ("genesis 1:14", "gen 1:14", "ps 23", or a bare "1:14"
+     * in `current_book`), as a hit to list above the others, or null when the query isn't a
+     * reference or the translation hasn't the verse.
+     * @param {string} translation
+     * @param {string} query
+     * @param {number} current_book
+     * @returns {any}
+     */
+    searchReference(translation, query, current_book) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(translation, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(query, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.bible_searchReference(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1, current_book);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return takeObject(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * Searches a translation: every word must appear (as a word prefix unless `whole_words`),
      * `"quoted phrases"` in order, `-words` excluded. `scope` is "all", "ot", "nt" or a book
      * index. With `first_book` (a book index, or -1) that book's hits come first, the rest in

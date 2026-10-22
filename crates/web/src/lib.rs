@@ -441,6 +441,29 @@ impl Bible {
         to_js(&SearchPage { total: verses.len() as u32, books, hits, suggestion })
     }
 
+    /// The passage a search query names ("genesis 1:14", "gen 1:14", "ps 23", or a bare "1:14"
+    /// in `current_book`), as a hit to list above the others, or null when the query isn't a
+    /// reference or the translation hasn't the verse.
+    #[wasm_bindgen(js_name = searchReference)]
+    pub fn search_reference(
+        &self,
+        translation: &str,
+        query: &str,
+        current_book: u8,
+    ) -> Result<JsValue, JsError> {
+        let t = self.get(translation)?;
+        let Some(book) = BookId::new(current_book as usize) else { return Ok(JsValue::NULL) };
+        let Some(r) = bible_core::reference::parse_query(query, book) else { return Ok(JsValue::NULL) };
+        let Some(v) = r.target(t) else { return Ok(JsValue::NULL) };
+        to_js(&SearchHit {
+            verse: v.reference().into(),
+            chapter_index: v.chapter.0,
+            reference: r.display_in(t),
+            text: r.text_in(t),
+            matches: Vec::new(),
+        })
+    }
+
     /// Verses as text for the clipboard or a share sheet. `format` is "plain" (the verses
     /// joined), "reference" (`“text” — John 3:16 (KJV)`, or a reference line and numbered verses
     /// for several) or "markdown" (a quote with its reference). Null when none of the verses are
