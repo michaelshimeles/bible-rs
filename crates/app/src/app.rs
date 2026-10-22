@@ -2378,14 +2378,15 @@ impl eframe::App for BibleApp {
                         theme: self.settings.theme,
                         location: self.reader.location,
                         // The current place first, then where the reader came from.
-                        recent: std::iter::once(self.reader.location)
-                            .chain(self.history.recent())
-                            .fold(Vec::new(), |mut v, here| {
+                        recent: std::iter::once(self.reader.location).chain(self.history.recent()).fold(
+                            Vec::new(),
+                            |mut v, here| {
                                 if !v.iter().any(|(c, _): &(ChapterIdx, u8)| *c == here.0) {
                                     v.push(here);
                                 }
                                 v
-                            }),
+                            },
+                        ),
                         selection: self.reader.selected_refs().first().copied(),
                         page: self.pages.page,
                     };

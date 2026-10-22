@@ -158,28 +158,25 @@ impl Pages {
         if let Some(y) = self.restore_offset.take() {
             area = area.vertical_scroll_offset(y);
         }
-        let out = area.show(
-            &mut child,
-            |ui| {
-                let width = ui.available_width();
-                let left = ui.max_rect().left() + SIDE;
-                let top = ui.max_rect().top() + env.toolbar + TOP;
-                let content = Rect::from_min_size(pos2(left, top), vec2(width - 2.0 * SIDE, 0.0));
-                let bottom = match self.page {
-                    Page::Translations => self.translations.show(ui, content, env, actions),
-                    Page::Bookmarks => self.bookmarks.show(ui, content, env, actions),
-                    Page::Highlights => self.highlights.show(ui, content, env, actions),
-                    Page::History => self.history.show(ui, content, env, actions),
-                    Page::Plans => self.plans.show(ui, content, env, actions),
-                    Page::Notes => self.notes.show_empty(ui, content, env, actions),
-                    Page::Reader => content.top(),
-                };
-                ui.allocate_rect(
-                    Rect::from_min_max(ui.max_rect().min, pos2(ui.max_rect().right(), bottom + 40.0)),
-                    egui::Sense::hover(),
-                );
-            },
-        );
+        let out = area.show(&mut child, |ui| {
+            let width = ui.available_width();
+            let left = ui.max_rect().left() + SIDE;
+            let top = ui.max_rect().top() + env.toolbar + TOP;
+            let content = Rect::from_min_size(pos2(left, top), vec2(width - 2.0 * SIDE, 0.0));
+            let bottom = match self.page {
+                Page::Translations => self.translations.show(ui, content, env, actions),
+                Page::Bookmarks => self.bookmarks.show(ui, content, env, actions),
+                Page::Highlights => self.highlights.show(ui, content, env, actions),
+                Page::History => self.history.show(ui, content, env, actions),
+                Page::Plans => self.plans.show(ui, content, env, actions),
+                Page::Notes => self.notes.show_empty(ui, content, env, actions),
+                Page::Reader => content.top(),
+            };
+            ui.allocate_rect(
+                Rect::from_min_max(ui.max_rect().min, pos2(ui.max_rect().right(), bottom + 40.0)),
+                egui::Sense::hover(),
+            );
+        });
         self.offset = out.state.offset.y;
         self.scrolled = self.offset > 0.5;
     }
