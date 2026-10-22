@@ -108,6 +108,7 @@ export type Action =
 	| { type: 'selectPrev' }
 	| { type: 'openPalette' }
 	| { type: 'openSearch'; query?: string }
+	| { type: 'focusPageSearch' }
 	| { type: 'searchStep'; delta: number }
 	| { type: 'clearSearch' }
 	| { type: 'toggleSidebar' }
@@ -231,8 +232,10 @@ export class ReadApp {
 	underToolbar = $state(false);
 	/** The same for the open page. */
 	pageScrolled = $state(false);
-	/** The toolbar's field on a page, filtering it. */
+	/** What the open page's own field filters it by. */
 	pageQuery = $state('');
+	/** The open page's field, while it shows one (/ focuses it instead of the main search). */
+	pageField: HTMLInputElement | null = null;
 	/** Bumped on every study change; reads below depend on it. */
 	studyGen = $state(0);
 	/** Development only: states `?demo=` asks components to show (see demo.ts). */
@@ -1037,6 +1040,10 @@ export class ReadApp {
 				s.sidebarOpen = true;
 				s.sidebarTab = 'search';
 				this.search.focus(a.query);
+				break;
+			case 'focusPageSearch':
+				this.pageField?.focus();
+				this.pageField?.select();
 				break;
 			case 'toggleSidebar':
 				s.sidebarOpen = !s.sidebarOpen;

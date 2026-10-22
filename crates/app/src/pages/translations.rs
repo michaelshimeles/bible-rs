@@ -9,7 +9,7 @@ use eframe::egui::{self, Color32, FontId, Rect, Sense, Ui, pos2, vec2};
 use bible_core::library::{Entry, EntryKind};
 use bible_core::{BookId, VerseRef, bundled};
 
-use super::{Page, PageEnv, elide, text};
+use super::{Page, PageEnv, PageSearch, elide, text};
 use crate::actions::{Action, SettingsTab};
 use crate::icons;
 use crate::theme::{self, Palette};
@@ -151,7 +151,14 @@ impl State {
     }
 
     /// Draws the page from `content`'s top-left; returns the bottom of what was drawn.
-    pub fn show(&mut self, ui: &mut Ui, content: Rect, env: &PageEnv<'_>, actions: &mut Vec<Action>) -> f32 {
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        content: Rect,
+        env: &PageEnv<'_>,
+        search: &mut PageSearch,
+        actions: &mut Vec<Action>,
+    ) -> f32 {
         let p = env.settings.theme.palette();
         let painter = ui.painter().clone();
         let left = content.left();
@@ -192,8 +199,15 @@ impl State {
             actions.push(Action::OpenSettings(SettingsTab::Translations));
         }
 
-        // Filter tabs, and the sort order at the right.
-        let y = top + 58.0 + 20.0;
+        // The field, then filter tabs and the sort order at the right.
+        search.show(
+            ui,
+            p,
+            pos2(left, top + 58.0 + 20.0),
+            super::SEARCH_WIDTH.min(right - left),
+            "Filter translations",
+        );
+        let y = top + 58.0 + 20.0 + super::SEARCH_ROW;
         let mut x = left;
         for (f, label, n) in [
             (Filter::All, "All", entries.len()),

@@ -3,11 +3,12 @@
 	(after the sidebar toggle when the sidebar is hidden), the location and translation pickers
 	centred, the view tools and the search field at the end. Every control is a glass capsule on
 	the bar's centre line; once text scrolls beneath, the bar takes the toolbar material. A compact
-	bar folds the tools and the field into Search and More; on a page, a field filters the page.
+	bar folds the tools and the field into Search and More. A page holds only back and forward: its
+	own field sits over the list it filters (pages/PageSearch.svelte).
 -->
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
-	import { getApp, type Page } from '../app.svelte';
+	import { getApp } from '../app.svelte';
 	import { cmdText, shortcutText } from '../keyboard';
 	import { Capsule, Menu, MenuItem, MenuSeparator, Picker, SearchField, ToolbarButton } from '../ui';
 	import BookPicker from './BookPicker.svelte';
@@ -36,18 +37,8 @@
 	const TRAILING_INSET = 16;
 	const FIELD = 176;
 	const FIELD_COMPACT = 136;
-	const PAGE_FIELD = 200;
 	/** Below this bar width the view tools and the search field fold into one capsule. */
 	const COMPACT = 760;
-	const PLACEHOLDERS: Record<Page, string> = {
-		reader: 'Search',
-		translations: 'Filter translations',
-		bookmarks: 'Search bookmarks',
-		highlights: 'Search highlights',
-		notes: 'Search notes',
-		history: 'Search history',
-		plans: 'Search plans'
-	};
 
 	let windowWidth = $state(0);
 	let pickersWidth = $state(0);
@@ -140,15 +131,6 @@
 		}
 	}
 
-	function pageKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') {
-			e.preventDefault();
-			e.stopPropagation();
-			app.pageQuery = '';
-			(e.currentTarget as HTMLInputElement).blur();
-		}
-	}
-
 	function more(a: Parameters<typeof app.dispatch>[0]) {
 		moreOpen = false;
 		app.dispatch(a);
@@ -186,17 +168,7 @@
 		</Capsule>
 	</div>
 
-	{#if !reading}
-		<div class="slot" style:right="{TRAILING_INSET}px">
-			<SearchField
-				width={PAGE_FIELD}
-				placeholder={PLACEHOLDERS[app.page]}
-				aria-label={PLACEHOLDERS[app.page]}
-				bind:value={app.pageQuery}
-				onkeydown={pageKeydown}
-			/>
-		</div>
-	{:else}
+	{#if reading}
 		{#if pickersLeft !== -1}
 			<div
 				class="slot pickers"

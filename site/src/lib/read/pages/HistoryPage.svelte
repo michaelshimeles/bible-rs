@@ -9,6 +9,7 @@
 	import { Badge, Button, CapsText, Menu, MenuItem, MenuSeparator, Segmented } from '../ui';
 	import PageEmpty from './PageEmpty.svelte';
 	import PageHead from './PageHead.svelte';
+	import PageSearch from './PageSearch.svelte';
 
 	const DAY = 86_400;
 	const app = getApp();
@@ -128,6 +129,7 @@
 		body="Each chapter you read is kept here — when, for how long and how far you got. It stays in this browser."
 	/>
 {:else}
+	<PageSearch placeholder="Search history" />
 	<div class="body">
 		<ol class="timeline">
 			{#each sessions as s, i (s.started)}

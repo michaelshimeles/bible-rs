@@ -302,8 +302,10 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
   third step ("Ready") isn't drawn, so the second step's Continue opens the reader.
 - **Pages take the reader's place.** The Flows frames add full pages (the translation library,
   then the study collections, history and plans). The sidebar's rows open them; the toolbar
-  keeps back/forward (Back returns to the reader) and swaps the pickers and view tools for a
-  200 pt field that filters the page. Rows show the real data: sizes are each text's decoded
+  keeps back/forward (Back returns to the reader) and drops the pickers, view tools and search.
+  Each page draws its own field that filters it, at the top of the list it filters and in the
+  field colour rather than the toolbar's glass, so it isn't mistaken for the main search at the
+  top right; / focuses it there, as / focuses the main search in the reader. Rows show the real data: sizes are each text's decoded
   size from its file header, descriptions and years of the bundled texts are a small table in
   `bundled.rs`.
 - **The reader's top stays at the reader screens' 40 pt.** Frames 01–03 pad the page 40 pt above

@@ -5,7 +5,7 @@ use eframe::egui::{self, Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 
 use bible_core::study::ReadingSession;
 
-use super::{Empty, PageEnv, Tone, group_label, text};
+use super::{Empty, PageEnv, PageSearch, Tone, group_label, text};
 use crate::actions::Action;
 use crate::icons;
 use crate::theme::{self, Palette};
@@ -38,7 +38,14 @@ fn chapter_title(s: &ReadingSession, env: &PageEnv<'_>) -> String {
 }
 
 impl State {
-    pub fn show(&mut self, ui: &mut Ui, content: Rect, env: &PageEnv<'_>, actions: &mut Vec<Action>) -> f32 {
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        content: Rect,
+        env: &PageEnv<'_>,
+        search: &mut PageSearch,
+        actions: &mut Vec<Action>,
+    ) -> f32 {
         let p = env.settings.theme.palette();
         let painter = ui.painter().clone();
         let (left, right, top) = (content.left(), content.right(), content.top());
@@ -102,7 +109,14 @@ impl State {
             .into_iter()
             .filter(|s| q.is_empty() || chapter_title(s, env).to_lowercase().contains(&q))
             .collect();
-        let body = top + 58.0 + 20.0;
+        search.show(
+            ui,
+            p,
+            pos2(left, top + 58.0 + 20.0),
+            super::SEARCH_WIDTH.min(right - left),
+            "Search history",
+        );
+        let body = top + 58.0 + 20.0 + super::SEARCH_ROW;
         let card_left = right - CARD;
         let timeline_w = TIMELINE.min(card_left - 32.0 - left);
         let mut y = body;

@@ -9,7 +9,7 @@ use bible_core::plans::{self, Passage, Plan, PlanIcon};
 use bible_core::study::PlanProgress;
 use bible_core::{ChapterIdx, Translation, VerseRef};
 
-use super::{PageEnv, group_label, text};
+use super::{PageEnv, PageSearch, group_label, text};
 use crate::actions::Action;
 use crate::icons;
 use crate::theme::{self, Palette};
@@ -158,7 +158,14 @@ impl State {
         };
     }
 
-    pub fn show(&mut self, ui: &mut Ui, content: Rect, env: &PageEnv<'_>, actions: &mut Vec<Action>) -> f32 {
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        content: Rect,
+        env: &PageEnv<'_>,
+        search: &mut PageSearch,
+        actions: &mut Vec<Action>,
+    ) -> f32 {
         let started = env.study.plans();
         if let Some((id, day)) = self.open.clone()
             && let (Some(plan), Some(state)) = (plans::get(&id), started.iter().find(|s| s.id == id))
@@ -167,7 +174,7 @@ impl State {
             return self.day_view(ui, content, env, &under, day, actions);
         }
         self.open = None;
-        self.list(ui, content, env, &started, actions)
+        self.list(ui, content, env, &started, search, actions)
     }
 
     fn list(
@@ -176,6 +183,7 @@ impl State {
         content: Rect,
         env: &PageEnv<'_>,
         started: &[PlanProgress],
+        search: &mut PageSearch,
         actions: &mut Vec<Action>,
     ) -> f32 {
         let p = env.settings.theme.palette();
@@ -220,7 +228,14 @@ impl State {
             x = r.right() + 4.0;
         }
 
-        let mut y = top + 58.0 + 20.0;
+        search.show(
+            ui,
+            p,
+            pos2(left, top + 58.0 + 20.0),
+            super::SEARCH_WIDTH.min(right - left),
+            "Search plans",
+        );
+        let mut y = top + 58.0 + 20.0 + super::SEARCH_ROW;
         let t = super::reading_text(env);
         match self.tab {
             Tab::Active => {
@@ -271,7 +286,7 @@ impl State {
                 let done: Vec<&'static Plan> =
                     completed.iter().filter_map(|s| plans::get(&s.id)).filter(|plan| matches(plan)).collect();
                 if done.is_empty() {
-                    // None finished, or none of them matching the toolbar's field.
+                    // None finished, or none of them matching the page's field.
                     let (title, body) = if completed.is_empty() {
                         ("No finished plans yet", "Plans you finish show up here, ready to read again.")
                     } else {

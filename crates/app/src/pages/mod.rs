@@ -1,6 +1,7 @@
 //! Pages that take the reader's place in the main area (the design's Flows frames): the
 //! translation library and the study collections. The sidebar's rows open them; the toolbar
-//! then holds back/forward and a field that filters the page.
+//! then holds only back/forward, and each page draws its own field over the list it filters
+//! ([`PageSearch`]), away from the main search's place.
 
 pub mod bookmarks;
 pub mod highlights;
@@ -32,19 +33,6 @@ pub enum Page {
 }
 
 impl Page {
-    /// The toolbar field's placeholder on this page.
-    pub fn placeholder(self) -> &'static str {
-        match self {
-            Page::Reader => "Search",
-            Page::Translations => "Filter translations",
-            Page::Bookmarks => "Search bookmarks",
-            Page::Highlights => "Search highlights",
-            Page::Notes => "Search notes",
-            Page::History => "Search history",
-            Page::Plans => "Search plans",
-        }
-    }
-
     pub fn from_name(name: &str) -> Option<Page> {
         Some(match name {
             "reader" => Page::Reader,
@@ -64,7 +52,7 @@ pub struct PageEnv<'a> {
     pub library: &'a Library,
     pub study: &'a StudyStore,
     pub settings: &'a Settings,
-    /// The toolbar field's text.
+    /// The page field's text.
     pub query: &'a str,
     /// The toolbar's height (content starts 24 pt below it).
     pub toolbar: f32,
@@ -74,7 +62,7 @@ pub struct PageEnv<'a> {
 #[derive(Default)]
 pub struct Pages {
     pub page: Page,
-    pub query: String,
+    pub search: PageSearch,
     pub translations: translations::State,
     pub bookmarks: bookmarks::State,
     pub highlights: highlights::State,
@@ -88,7 +76,7 @@ pub struct Pages {
 impl Pages {
     pub fn open(&mut self, page: Page) {
         if self.page != page {
-            self.query.clear();
+            self.search.query.clear();
         }
         self.page = page;
     }
@@ -104,8 +92,10 @@ impl Pages {
         ui.painter().rect_filled(rect, 0.0, p.paper);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         child.set_clip_rect(rect);
+        self.search.shown = false;
+        let search = &mut self.search;
         if self.page.has_panes() && !self.notes.is_empty(env) {
-            self.notes.show(&mut child, rect, env, actions);
+            self.notes.show(&mut child, rect, env, search, actions);
             self.scrolled = false;
             return;
         }
@@ -117,11 +107,11 @@ impl Pages {
                 let top = ui.max_rect().top() + env.toolbar + TOP;
                 let content = Rect::from_min_size(pos2(left, top), vec2(width - 2.0 * SIDE, 0.0));
                 let bottom = match self.page {
-                    Page::Translations => self.translations.show(ui, content, env, actions),
-                    Page::Bookmarks => self.bookmarks.show(ui, content, env, actions),
-                    Page::Highlights => self.highlights.show(ui, content, env, actions),
-                    Page::History => self.history.show(ui, content, env, actions),
-                    Page::Plans => self.plans.show(ui, content, env, actions),
+                    Page::Translations => self.translations.show(ui, content, env, search, actions),
+                    Page::Bookmarks => self.bookmarks.show(ui, content, env, search, actions),
+                    Page::Highlights => self.highlights.show(ui, content, env, search, actions),
+                    Page::History => self.history.show(ui, content, env, search, actions),
+                    Page::Plans => self.plans.show(ui, content, env, search, actions),
                     Page::Notes => self.notes.show_empty(ui, content, env, actions),
                     Page::Reader => content.top(),
                 };
@@ -132,6 +122,87 @@ impl Pages {
             },
         );
         self.scrolled = out.state.offset.y > 0.5;
+    }
+}
+
+/// The field that filters a page ("Search highlights", …). Each page draws it over the list it
+/// filters rather than in the toolbar, where it read as the main search: the field colour with a
+/// hairline (not the toolbar's glass), and a / keycap while it's empty, since / focuses it.
+#[derive(Default)]
+pub struct PageSearch {
+    pub query: String,
+    /// Whether the open page drew its field this frame (/ then focuses it, not the main search).
+    pub shown: bool,
+    /// Asked for by /: focus the field when it's next drawn.
+    focus: bool,
+}
+
+/// The page field's width, and the row it takes under the page's head (32 pt and 16 pt below).
+pub const SEARCH_WIDTH: f32 = 280.0;
+pub const SEARCH_ROW: f32 = 32.0 + 16.0;
+
+impl PageSearch {
+    const ID: &'static str = "page-search";
+
+    /// Focuses the field (/ on a page that shows one).
+    pub fn focus(&mut self) {
+        self.focus = true;
+    }
+
+    /// Draws the field, 32 pt tall, from `at`.
+    pub fn show(&mut self, ui: &mut Ui, p: &Palette, at: egui::Pos2, width: f32, placeholder: &str) {
+        self.shown = true;
+        let rect = Rect::from_min_size(at, vec2(width, 32.0));
+        let id = egui::Id::new(Self::ID);
+        if std::mem::take(&mut self.focus) {
+            ui.memory_mut(|m| m.request_focus(id));
+        }
+        let r = rect.height() / 2.0;
+        let focused = ui.memory(|m| m.has_focus(id));
+        let painter = ui.painter().clone();
+        if focused {
+            painter.rect_filled(rect.expand(3.0), r + 3.0, p.focus);
+            painter.rect_filled(rect, r, p.field);
+            painter.rect_stroke(rect, r, egui::Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
+        } else {
+            painter.rect_filled(rect, r, p.field);
+            painter.rect_stroke(rect, r, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+        }
+        let glass = Rect::from_min_size(pos2(rect.left() + 10.0, rect.center().y - 8.0), vec2(16.0, 16.0));
+        crate::icons::search(&painter, glass, p.ink_2);
+        let key_w = crate::widgets::keycap_width(&painter, "/");
+        let trailing = if self.query.is_empty() && !focused { key_w + 8.0 } else { 22.0 };
+        let edit = Rect::from_min_max(
+            pos2(glass.right() + 6.0, rect.top()),
+            pos2(rect.right() - 12.0 - trailing, rect.bottom()),
+        );
+        let font = theme::text::UI.font();
+        let field = ui.put(
+            edit,
+            egui::TextEdit::singleline(&mut self.query)
+                .id(id)
+                .hint_text(egui::RichText::new(placeholder).color(p.ink_3).font(font.clone()))
+                .font(font)
+                .text_color(p.ink)
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .vertical_align(egui::Align::Center)
+                .desired_width(edit.width()),
+        );
+        let mut cleared = false;
+        if self.query.is_empty() {
+            if !field.has_focus() {
+                crate::widgets::keycap(&painter, p, rect.right() - 8.0 - key_w, rect.center().y, "/");
+            }
+        } else {
+            let c = Rect::from_center_size(pos2(rect.right() - 18.0, rect.center().y), vec2(16.0, 16.0));
+            cleared = ui.interact(c.expand(2.0), id.with("clear"), egui::Sense::click()).clicked();
+            crate::icons::clear(&painter, c, p.ink_3, p.paper);
+        }
+        if cleared || (field.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
+            self.query.clear();
+            field.surrender_focus();
+        }
     }
 }
 

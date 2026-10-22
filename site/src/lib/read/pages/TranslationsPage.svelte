@@ -8,6 +8,7 @@
 	import type { TranslationInfo } from '../core';
 	import { Badge, Button, CapsText, Icon, Menu, MenuItem, MenuSeparator, PillTab } from '../ui';
 	import PageHead from './PageHead.svelte';
+	import PageSearch from './PageSearch.svelte';
 
 	const app = getApp();
 
@@ -101,6 +102,7 @@
 	{/snippet}
 </PageHead>
 
+<PageSearch placeholder="Filter translations" />
 <div class="filters">
 	<div class="tabs" role="tablist" aria-label="Show">
 		<PillTab label="All" count={all.length} selected={filter === 'all'} onclick={() => (filter = 'all')} />

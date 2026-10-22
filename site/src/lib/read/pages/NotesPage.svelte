@@ -12,6 +12,7 @@
 	import { ago, shortDate } from '../time';
 	import { Icon, Menu, MenuItem, MenuSeparator, Popover, RoundButton, Segmented, TextField } from '../ui';
 	import { apply, lines, mentioned, notesPage, plain, sameVerse, stylesAt, type Tool } from './notes.svelte';
+	import PageSearch from './PageSearch.svelte';
 
 	let { top }: { top: number } = $props();
 
@@ -203,6 +204,9 @@
 				value={notesPage.recent ? 0 : 1}
 				onchange={(v) => (notesPage.recent = v === 0)}
 			/>
+		</div>
+		<div class="search">
+			<PageSearch placeholder="Search notes" width="100%" />
 		</div>
 		<div class="list">
 			{#each items as n (n.reference)}
@@ -412,6 +416,11 @@
 		margin-top: 4px;
 		color: var(--ink-2);
 		font: var(--type-small);
+	}
+
+	.search {
+		margin-top: 12px;
+		--page-search-gap: 0;
 	}
 
 	.list {

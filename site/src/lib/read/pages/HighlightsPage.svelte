@@ -12,6 +12,7 @@
 	import { lines } from './measure';
 	import PageEmpty from './PageEmpty.svelte';
 	import PageHead from './PageHead.svelte';
+	import PageSearch from './PageSearch.svelte';
 
 	const CARD = 446;
 	const GAP_X = 20;
@@ -110,6 +111,7 @@
 		hints={[[['1–6'], 'Highlight the selected verse']]}
 	/>
 {:else}
+	<PageSearch placeholder="Search highlights" />
 	<div class="tabs" role="tablist" aria-label="Colour">
 		<PillTab label="All" count={scoped.length} selected={color === null} onclick={() => (color = null)} />
 		{#each HIGHLIGHT_COLORS as c (c)}

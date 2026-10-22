@@ -6,7 +6,7 @@ use eframe::egui::{self, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Ui, p
 use bible_core::study::HighlightColor;
 use bible_core::{BookId, VerseRef};
 
-use super::{Empty, PageEnv, Tone, text};
+use super::{Empty, PageEnv, PageSearch, Tone, text};
 use crate::actions::Action;
 use crate::icons;
 use crate::theme;
@@ -27,7 +27,14 @@ pub struct State {
 }
 
 impl State {
-    pub fn show(&mut self, ui: &mut Ui, content: Rect, env: &PageEnv<'_>, actions: &mut Vec<Action>) -> f32 {
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        content: Rect,
+        env: &PageEnv<'_>,
+        search: &mut PageSearch,
+        actions: &mut Vec<Action>,
+    ) -> f32 {
         let p = env.settings.theme.palette();
         let painter = ui.painter().clone();
         let (left, right, top) = (content.left(), content.right(), content.top());
@@ -116,8 +123,15 @@ impl State {
             })
             .collect();
 
-        // Colour tabs.
-        let y = top + 58.0 + 20.0;
+        // The field, then the colour tabs.
+        search.show(
+            ui,
+            p,
+            pos2(left, top + 58.0 + 20.0),
+            super::SEARCH_WIDTH.min(right - left),
+            "Search highlights",
+        );
+        let y = top + 58.0 + 20.0 + super::SEARCH_ROW;
         let mut x = left;
         let mut tabs: Vec<(Option<HighlightColor>, String, usize)> = vec![(None, "All".into(), scoped.len())];
         for c in HighlightColor::ALL {

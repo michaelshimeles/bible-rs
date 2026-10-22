@@ -7,6 +7,7 @@
 	import { getApp } from '../app.svelte';
 	import { Badge, Button, EmptyState, Icon, PillTab } from '../ui';
 	import PageHead from './PageHead.svelte';
+	import PageSearch from './PageSearch.svelte';
 	import PlanDay from './PlanDay.svelte';
 	import { DAY, ICONS, MONTHS, Under, minutes, openPassage, passageSize, plan, plans, plansPage } from './plans.svelte';
 
@@ -85,6 +86,7 @@
 			</div>
 		{/snippet}
 	</PageHead>
+	<PageSearch placeholder="Search plans" />
 
 	{#snippet grid(list: typeof browse, action: string)}
 		<div class="grid">

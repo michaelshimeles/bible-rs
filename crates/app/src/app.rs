@@ -463,6 +463,12 @@ impl BibleApp {
         // The rows of Settings › Shortcuts, with any chords chosen there.
         let bindings = crate::keymap::bindings(&self.settings.shortcuts);
         let anywhere = |a: &Action| matches!(a, Action::OpenPalette | Action::OpenSearch(_));
+        // On a page with its own field, / filters the page; elsewhere it searches the Bible.
+        let slash = if !self.pages.reader() && self.pages.search.shown {
+            Action::FocusPageSearch
+        } else {
+            Action::OpenSearch(None)
+        };
         ctx.input_mut(|i| {
             let cmd = Modifiers::COMMAND;
             let cmd_shift = Modifiers::COMMAND | Modifiers::SHIFT;
@@ -537,7 +543,7 @@ impl BibleApp {
             key(Modifiers::NONE, Key::J, Action::SelectNext);
             key(Modifiers::NONE, Key::K, Action::SelectPrev);
             key(Modifiers::NONE, Key::Escape, Action::ClearSelection);
-            key(Modifiers::NONE, Key::Slash, Action::OpenSearch(None));
+            key(Modifiers::NONE, Key::Slash, slash);
             key(Modifiers::SHIFT, Key::Questionmark, Action::ShowShortcuts);
             key(Modifiers::NONE, Key::Questionmark, Action::ShowShortcuts);
             for (n, k) in
@@ -827,6 +833,7 @@ impl BibleApp {
                 self.settings.sidebar_tab = SidebarTab::Search;
                 self.sidebar.focus_search(q);
             }
+            Action::FocusPageSearch => self.pages.search.focus(),
             Action::ToggleSidebar => self.settings.sidebar_open = !self.settings.sidebar_open,
             Action::SidebarTab(t) => {
                 self.settings.sidebar_open = true;
@@ -1321,27 +1328,8 @@ impl BibleApp {
         }
         items.push(nav_rect);
 
-        // On a page: a wider field that filters it, and nothing else.
+        // On a page: nothing else. Its own field sits over the list it filters (pages::PageSearch).
         if !self.pages.reader() {
-            let w = PAGE_SEARCH_WIDTH;
-            let search = egui::Rect::from_min_size(
-                egui::pos2(bar.right() - TRAILING_INSET - w, cy - CAPSULE_HEIGHT / 2.0),
-                vec2(w, CAPSULE_HEIGHT),
-            );
-            let placeholder = self.pages.page.placeholder();
-            let (field, cleared) = widgets::search_field(
-                ui,
-                search,
-                p,
-                &mut self.pages.query,
-                placeholder,
-                Id::new("page-search"),
-            );
-            if cleared || (field.has_focus() && ui.input(|i| i.key_pressed(Key::Escape))) {
-                self.pages.query.clear();
-                field.surrender_focus();
-            }
-            items.push(search);
             #[cfg(target_os = "macos")]
             self.toolbar_items.extend(items);
             return;
@@ -1950,9 +1938,6 @@ const COMPACT_TOOLBAR: f32 = 760.0;
 const TEXT_POPUP: &str = "text-popover";
 const MORE_POPUP: &str = "more-menu";
 
-/// The toolbar's field on pages (it filters the page).
-const PAGE_SEARCH_WIDTH: f32 = 200.0;
-
 /// Under the toolbar in parallel: the columns' heads (16 pt down, 34 tall, 16 pt to a hairline).
 const COLUMN_HEADS: f32 = 66.0;
 
@@ -2328,7 +2313,7 @@ impl eframe::App for BibleApp {
             self.main_area = full;
             // A page in the reader's place, under the same toolbar.
             if !self.pages.reader() {
-                let query = self.pages.query.clone();
+                let query = self.pages.search.query.clone();
                 let env = crate::pages::PageEnv {
                     library: &self.library,
                     study: &self.study,

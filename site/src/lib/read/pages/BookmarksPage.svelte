@@ -9,6 +9,7 @@
 	import { Button, CapsText, Icon, RoundButton, Segmented } from '../ui';
 	import PageEmpty from './PageEmpty.svelte';
 	import PageHead from './PageHead.svelte';
+	import PageSearch from './PageSearch.svelte';
 
 	const app = getApp();
 	let recent = $state(false);
@@ -61,6 +62,7 @@
 		hints={[[['B'], 'Bookmark the selected verse']]}
 	/>
 {:else}
+	<PageSearch placeholder="Search bookmarks" />
 	<div class="rows">
 		{#each rows as b, i (b.reference)}
 			{#if !recent && b.verse.book !== rows[i - 1]?.verse.book}

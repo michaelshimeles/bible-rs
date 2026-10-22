@@ -5,7 +5,7 @@ use eframe::egui::{FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 
 use bible_core::VerseRef;
 
-use super::{Empty, Page, PageEnv, Tone, group_label, text};
+use super::{Empty, Page, PageEnv, PageSearch, Tone, group_label, text};
 use crate::actions::{Action, ExportKind};
 use crate::icons;
 use crate::theme;
@@ -22,7 +22,14 @@ pub struct State {
 }
 
 impl State {
-    pub fn show(&mut self, ui: &mut Ui, content: Rect, env: &PageEnv<'_>, actions: &mut Vec<Action>) -> f32 {
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        content: Rect,
+        env: &PageEnv<'_>,
+        search: &mut PageSearch,
+        actions: &mut Vec<Action>,
+    ) -> f32 {
         let p = env.settings.theme.palette();
         let painter = ui.painter().clone();
         let (left, right, top) = (content.left(), content.right(), content.top());
@@ -78,7 +85,7 @@ impl State {
             self.recent = i == 1;
         }
 
-        // The rows, filtered by the toolbar field.
+        // The rows, filtered by the field over them.
         let q = env.query.trim().to_lowercase();
         let mut rows: Vec<(VerseRef, i64, String)> = all
             .iter()
@@ -92,7 +99,14 @@ impl State {
         }
         let serif = FontId::new(17.0, theme::family(theme::SERIF));
         let width = TEXT_WIDTH.min(right - left - 44.0 - 16.0 - 80.0);
-        let mut y = top + 58.0 + 20.0;
+        search.show(
+            ui,
+            p,
+            pos2(left, top + 58.0 + 20.0),
+            super::SEARCH_WIDTH.min(right - left),
+            "Search bookmarks",
+        );
+        let mut y = top + 58.0 + 20.0 + super::SEARCH_ROW;
         let mut group = None;
         for (v, created, verse) in rows {
             if !self.recent && group != Some(v.book) {

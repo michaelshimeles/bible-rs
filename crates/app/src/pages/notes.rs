@@ -11,7 +11,7 @@ use eframe::egui::{self, Align, Color32, FontId, Rect, Sense, Stroke, Ui, pos2, 
 
 use bible_core::VerseRef;
 
-use super::{Empty, Page, PageEnv, Tone, text};
+use super::{Empty, Page, PageEnv, PageSearch, Tone, text};
 use crate::actions::Action;
 use crate::icons;
 use crate::sidebar::{ListItem, list_item};
@@ -151,7 +151,14 @@ impl State {
     }
 
     /// Draws the page over the main area `area` (list and editor side by side, each scrolling).
-    pub fn show(&mut self, ui: &mut Ui, area: Rect, env: &PageEnv<'_>, actions: &mut Vec<Action>) {
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        area: Rect,
+        env: &PageEnv<'_>,
+        search: &mut PageSearch,
+        actions: &mut Vec<Action>,
+    ) {
         let p = env.settings.theme.palette();
         let t = super::reading_text(env);
         let notes = env.study.notes();
@@ -173,7 +180,7 @@ impl State {
 
         let list = Rect::from_min_max(area.min, pos2(area.left() + LIST_W, area.bottom()));
         let editor = Rect::from_min_max(pos2(list.right(), area.top()), area.max);
-        self.list(ui, p, list, env, t.as_deref(), actions);
+        self.list(ui, p, list, env, t.as_deref(), search, actions);
         ui.painter().vline(
             list.right() - 0.5,
             (area.top() + env.toolbar)..=area.bottom(),
@@ -206,6 +213,7 @@ impl State {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn list(
         &mut self,
         ui: &mut Ui,
@@ -213,6 +221,7 @@ impl State {
         r: Rect,
         env: &PageEnv<'_>,
         t: Option<&bible_core::Translation>,
+        search: &mut PageSearch,
         actions: &mut Vec<Action>,
     ) {
         let painter = ui.painter().clone();
@@ -269,6 +278,9 @@ impl State {
             self.recent = i == 0;
         }
 
+        // The field, over the list it filters.
+        search.show(ui, p, pos2(x, top + 40.0 + 44.0), w, "Search notes");
+
         // The notes, then any new one not yet saved.
         let q = env.query.trim().to_lowercase();
         let verse_text = |v: VerseRef| t.and_then(|t| t.find(v)).map(|v| v.plain_text()).unwrap_or_default();
@@ -284,7 +296,7 @@ impl State {
         } else {
             items.sort_by_key(|(v, _, _)| *v);
         }
-        let list = Rect::from_min_max(pos2(x, top + 40.0 + 44.0), pos2(x + w, r.bottom()));
+        let list = Rect::from_min_max(pos2(x, top + 40.0 + 44.0 + 32.0 + 8.0), pos2(x + w, r.bottom()));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(list));
         child.set_clip_rect(list.intersect(ui.clip_rect()));
         egui::ScrollArea::vertical().id_salt("notes-list").auto_shrink(false).show(&mut child, |ui| {

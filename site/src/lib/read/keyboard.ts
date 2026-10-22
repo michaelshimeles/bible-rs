@@ -295,7 +295,8 @@ export function handleKey(app: ReadApp, e: KeyboardEvent): boolean {
 	if (!shift && key === 'J') return go({ type: 'selectNext' });
 	if (!shift && key === 'K') return go({ type: 'selectPrev' });
 	if (key === 'Escape') return go({ type: 'clearSelection' });
-	if (!shift && key === '/') return go({ type: 'openSearch' });
+	// On a page with its own field, / filters the page; elsewhere it searches the Bible.
+	if (!shift && key === '/') return go(app.pageField ? { type: 'focusPageSearch' } : { type: 'openSearch' });
 	if (e.key === '?') return go({ type: 'showShortcuts' });
 	if (!shift && /^[1-6]$/.test(key)) return go({ type: 'highlight', color: HIGHLIGHT_COLORS[Number(key) - 1] });
 	if (!shift && (key === '0' || key === 'Backspace')) return go({ type: 'highlight', color: null });
