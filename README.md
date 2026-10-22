@@ -56,7 +56,7 @@ typeset, searchable as you type, with highlights, notes and bookmarks kept on yo
 
 **Navigation**
 - ⌘K palette: references with fuzzy book names and typos, recent places, translations, commands.
-- Book/chapter picker in the toolbar and the sidebar (⌘B).
+- Book/chapter picker in the toolbar and the sidebar (⌘B); type a book's name (`jo`, `1co`, `rom 8`) to light it and return to open it.
 - Back/forward history (⌘[ ⌘], ⌥← ⌥→), previous/next chapter (← →).
 
 **Search** (⌘F)

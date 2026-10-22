@@ -42,6 +42,7 @@ export const books: (a: number) => void;
 export const bundledTranslations: (a: number) => void;
 export const chapterLabel: (a: number, b: number) => void;
 export const chapterVerses: (a: number) => number;
+export const filterBooks: (a: number, b: number, c: number) => void;
 export const parseReference: (a: number, b: number, c: number) => void;
 export const planCatalogue: (a: number) => void;
 export const planDays: (a: number, b: number, c: number) => void;

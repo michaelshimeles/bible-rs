@@ -866,6 +866,28 @@ export function chapterVerses(index) {
 }
 
 /**
+ * The books a type-ahead book filter offers for what's typed, best first, as indexes (all 66 in
+ * order for nothing typed).
+ * @param {string} input
+ * @returns {Uint8Array}
+ */
+export function filterBooks(input) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.filterBooks(retptr, ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v2 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * The best reading of a typed reference ("jn 3:16", "Rom 8", "revalation 21"), or null.
  * @param {string} input
  * @returns {any}

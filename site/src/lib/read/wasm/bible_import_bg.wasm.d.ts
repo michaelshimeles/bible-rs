@@ -42,6 +42,7 @@ export const books: (a: number) => void;
 export const bundledTranslations: (a: number) => void;
 export const chapterLabel: (a: number, b: number) => void;
 export const chapterVerses: (a: number) => number;
+export const filterBooks: (a: number, b: number, c: number) => void;
 export const importTranslation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
 export const parseReference: (a: number, b: number, c: number) => void;
 export const peekImport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;

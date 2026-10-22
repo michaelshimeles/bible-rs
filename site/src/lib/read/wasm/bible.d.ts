@@ -174,6 +174,12 @@ export function chapterLabel(index: number): string;
 export function chapterVerses(index: number): number;
 
 /**
+ * The books a type-ahead book filter offers for what's typed, best first, as indexes (all 66 in
+ * order for nothing typed).
+ */
+export function filterBooks(input: string): Uint8Array;
+
+/**
  * The best reading of a typed reference ("jn 3:16", "Rom 8", "revalation 21"), or null.
  */
 export function parseReference(input: string): any;
@@ -248,6 +254,7 @@ export interface InitOutput {
     readonly bundledTranslations: (a: number) => void;
     readonly chapterLabel: (a: number, b: number) => void;
     readonly chapterVerses: (a: number) => number;
+    readonly filterBooks: (a: number, b: number, c: number) => void;
     readonly parseReference: (a: number, b: number, c: number) => void;
     readonly planCatalogue: (a: number) => void;
     readonly planDays: (a: number, b: number, c: number) => void;

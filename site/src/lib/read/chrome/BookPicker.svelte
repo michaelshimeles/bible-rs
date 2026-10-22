@@ -3,11 +3,17 @@
 	New Testament books side by side, then a book's chapters, ten to a row. Arrow keys move through
 	the books spatially across both testaments and through the chapters in order; return chooses,
 	backspace goes back to the books.
+
+	Typing finds a book: the letters typed (read as the jump palette reads names: "jn", "1co",
+	"song") light the best match and fade the books they rule out, the arrows step through the
+	matches best first, and return opens the lit one, or goes straight to a chapter typed after the
+	name ("rom 8"). Backspace takes back a letter and escape clears them. On the chapters, typing a
+	number lights that chapter.
 -->
 <script lang="ts">
 	import { tick } from 'svelte';
 	import { getApp } from '../app.svelte';
-	import type { Book } from '../core';
+	import { filterBooks, parseReference, type Book } from '../core';
 	import { Icon, Popover } from '../ui';
 
 	interface Props {
@@ -29,6 +35,10 @@
 
 	let book = $state<Book | null>(null);
 	let panel = $state<HTMLElement>();
+	/** What's been typed: a book's name on the books, a chapter's number on the chapters. */
+	let query = $state('');
+	/** The books it could mean, best first. */
+	const matches = $derived(query ? filterBooks(query) : []);
 
 	const name = (b: Book) => (b.name.length > MAX_NAME ? b.abbrev : b.name);
 
@@ -62,6 +72,7 @@
 			return;
 		}
 		book = b;
+		query = '';
 		// From the keyboard, the highlight lands on the chapter being read or the first.
 		if (byKey) {
 			const ch = hereBook?.index === b.index ? app.here.chapter - b.firstChapter : 0;
@@ -80,10 +91,85 @@
 	function backToBooks(byKey: boolean) {
 		const from = book;
 		book = null;
+		query = '';
 		void tick().then(() => (byKey && from ? focusCell(String(from.index)) : panel?.focus({ preventScroll: true })));
 	}
 
+	/** Typing on the books: light the best match (or nothing, when nothing matches). */
+	async function retype(next: string) {
+		query = next.trim() ? next : '';
+		await tick();
+		const best = matches[0];
+		if (best !== undefined) focusCell(String(best));
+		else panel?.focus({ preventScroll: true });
+	}
+
+	/** Typing on the chapters: light the chapter typed; a digit that runs past the last restarts. */
+	function typeChapter(d: string) {
+		if (!book) return;
+		const n = book.chapters;
+		const fits = (q: string) => Number(q) >= 1 && Number(q) <= n;
+		query = fits(query + d) ? query + d : d;
+		if (fits(query)) focusCell(String(Number(query) - 1));
+	}
+
+	/** Takes the keys typed into the picker; true when it used the key. */
+	function typing(e: KeyboardEvent): boolean {
+		if (e.metaKey || e.ctrlKey || e.altKey) return false;
+		const printable = e.key.length === 1 && /[\p{L}\p{N} ]/u.test(e.key);
+		if (book) {
+			if (/^[0-9]$/.test(e.key)) {
+				typeChapter(e.key);
+				return true;
+			}
+			return false;
+		}
+		if (printable && (query || e.key !== ' ')) {
+			void retype(query + e.key);
+			return true;
+		}
+		if (!query) return false;
+		if (e.key === 'Backspace') {
+			void retype(query.slice(0, -1));
+			return true;
+		}
+		if (e.key === 'Escape') {
+			// The first escape clears the typing; the next closes.
+			e.stopPropagation();
+			void retype('');
+			return true;
+		}
+		if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+			// The arrows step through the matches, best first.
+			if (matches.length) {
+				const cell = Number(focused()?.dataset.cell);
+				const at = Math.max(0, matches.indexOf(cell));
+				const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1;
+				focusCell(String(matches[(at + step + matches.length) % matches.length]));
+			}
+			return true;
+		}
+		if (e.key === 'Enter') {
+			// A chapter typed after the name ("rom 8") goes straight there.
+			const r = /\p{L}.*\d/u.test(query) ? parseReference(query) : null;
+			if (r) {
+				app.dispatch({ type: 'jump', chapter: r.chapterIndex, verse: r.verse ?? undefined, flash: r.verse != null });
+				onclose();
+				return true;
+			}
+			const cell = focused()?.dataset.cell;
+			const b = cell !== undefined ? books[Number(cell)] : undefined;
+			if (b) chooseBook(b, true);
+			return true;
+		}
+		return false;
+	}
+
 	function keydown(e: KeyboardEvent) {
+		if (typing(e)) {
+			e.preventDefault();
+			return;
+		}
 		const dx = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
 		const dy = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
 		const cell = focused()?.dataset.cell;
@@ -132,6 +218,14 @@
 		if (focused()) panel?.focus({ preventScroll: true });
 	}
 
+	// The keys reach the picker whether the panel or a cell has focus (the panel has it on opening).
+	$effect(() => {
+		const el = panel;
+		if (!el) return;
+		el.addEventListener('keydown', keydown);
+		return () => el.removeEventListener('keydown', keydown);
+	});
+
 	// Cells are only reached by arrow keys; the panel holds focus between them.
 	$effect(() => {
 		void book;
@@ -141,17 +235,23 @@
 
 <Popover {anchor} {onclose} role="menu" label="Books" bind:panel class="book-picker">
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="body" onkeydown={keydown} onpointerover={pointerover} onpointerleave={pointerleave}>
+	<div class="body" onpointerover={pointerover} onpointerleave={pointerleave}>
 		{#if !book}
 			<div class="books">
 				<p class="header" style:grid-column="1 / span 3">Old Testament</p>
 				<p class="header" style:grid-column="5 / span 3">New Testament</p>
+				{#if query}
+					<p class="typed" style:grid-column="5 / span 3" aria-live="polite">
+						{matches.length ? query : `${query}: no book`}
+					</p>
+				{/if}
 				{#each books as b, i (b.index)}
 					{@const [col, row] = spot(i)}
 					<button
 						type="button"
 						class="cell"
 						class:selected={b.index === hereBook?.index}
+						class:muted={query !== '' && !matches.includes(b.index)}
 						role="menuitem"
 						data-cell={i}
 						style:grid-column={col + 1 + (col >= COLUMNS ? 1 : 0)}
@@ -242,6 +342,21 @@
 
 	.cell.selected {
 		background: var(--selection);
+	}
+
+	.cell.muted {
+		color: var(--ink-3);
+	}
+
+	/* What's typed, at the end of the headers' row. */
+	.typed {
+		grid-row: 1;
+		justify-self: end;
+		margin: 0;
+		padding: 6px var(--menu-item-padding) 0;
+		font: var(--type-caption);
+		color: var(--ink-2);
+		white-space: pre;
 	}
 
 	.top {
