@@ -15,6 +15,8 @@ pub enum Action {
         verse: Option<u8>,
         flash: bool,
     },
+    /// Open a `bible://` link: its translation, if installed, then the passage, selected.
+    OpenLink(bible_core::link::DeepLink),
     Back,
     Forward,
     PrevChapter,

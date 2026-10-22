@@ -8,6 +8,7 @@ pub mod app;
 pub mod book_picker;
 pub mod cli;
 pub mod compare_popover;
+pub mod deep_link;
 pub mod icons;
 pub mod import_sheet;
 pub mod keymap;
@@ -132,7 +133,13 @@ pub fn run() -> eframe::Result {
     let dir = data_dir();
     // First launch (no study database yet) opens at the onboarding screens' size.
     let first_run = !dir.join("study.sqlite").exists() && !probing();
-    if let Some(result) = cli::run(&args, &dir) {
+    // `bible-rs bible://jhn.3.16` or `bible-rs open <link-or-reference>`: start the GUI there.
+    if let Some(link) = cli::link_argument(&args) {
+        if !deep_link::open(link) {
+            eprintln!("error: not a passage: {link:?}");
+            std::process::exit(1);
+        }
+    } else if let Some(result) = cli::run(&args, &dir) {
         if let Err(e) = result {
             eprintln!("error: {e:#}");
             std::process::exit(1);
@@ -185,12 +192,14 @@ pub fn run() -> eframe::Result {
         ..Default::default()
     };
     let probe = std::env::var_os("BIBLE_RS_STARTUP_PROBE").is_some();
+    deep_link::install();
     eframe::run_native(
         "Bible",
         options,
         Box::new(move |cc| {
             trace(t0, "window + GPU context ready");
             let _ = ctx_cell.set(cc.egui_ctx.clone());
+            deep_link::set_context(&cc.egui_ctx);
             cc.egui_ctx.set_fonts(theme::font_definitions());
             let init = init.join().map_err(|_| "initialization panicked")??;
             trace(t0, "init joined (study db, library, translation decoded)");

@@ -8,6 +8,7 @@
 //! bible-rs remove <id>
 //! bible-rs export --markdown|--json [-o file]
 //! bible-rs import-notes <export.json>
+//! bible-rs open bible://jhn.3.16-18
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -72,6 +73,15 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
         }
         _ => return None,
     })
+}
+
+/// The link or reference to open the app at: `bible-rs bible://…` or `bible-rs open <link>`.
+pub fn link_argument(args: &[String]) -> Option<&str> {
+    match args {
+        [a, ..] if a.to_ascii_lowercase().starts_with("bible:") => Some(a),
+        [cmd, link] if cmd == "open" => Some(link),
+        _ => None,
+    }
 }
 
 fn library(data_dir: &Path) -> Library {
@@ -224,4 +234,24 @@ fn import_notes(rest: &[String], data_dir: &Path) -> Result<()> {
     let (h, n, b) = study.import_json(&std::fs::read_to_string(&path).with_context(|| path.clone())?)?;
     println!("Imported {h} highlights, {n} notes and {b} bookmarks");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn link_arguments() {
+        assert_eq!(link_argument(&args(&["bible://jhn.3.16"])), Some("bible://jhn.3.16"));
+        assert_eq!(link_argument(&args(&["BIBLE://jhn.3.16"])), Some("BIBLE://jhn.3.16"));
+        assert_eq!(link_argument(&args(&["open", "bible://jhn.3.16-18"])), Some("bible://jhn.3.16-18"));
+        assert_eq!(link_argument(&args(&["open", "jn 3:16"])), Some("jn 3:16"));
+        assert_eq!(link_argument(&args(&["open"])), None);
+        assert_eq!(link_argument(&args(&["read", "jn 3:16"])), None);
+        assert_eq!(link_argument(&args(&[])), None);
+    }
 }

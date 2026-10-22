@@ -187,6 +187,28 @@ chapter by chapter, and appear in parallel and compare views as their chapters l
 
 ![Keyboard shortcuts overlay](docs/screenshots/shortcuts.png)
 
+## Deep links
+
+`bible://` links open the app at a passage, selected. The path uses the same reference format as
+[route.bible](https://route.bible) URLs, so `https://route.bible/jhn.3.16-18` becomes
+`bible://jhn.3.16-18` by changing the host:
+
+| | |
+|---|---|
+| `bible://jhn.3.16` | John 3:16 |
+| `bible://jhn.3.16-18` | John 3:16–18 (a range within one chapter) |
+| `bible://rom.8` | Romans 8 |
+| `bible://1co.13.4-7?translation=web` | 1 Corinthians 13:4–7 in the WEB, if installed |
+
+Books are lower-case USFM codes (`gen`, `psa`, `mat`, `jhn`, `1co`, `php`, `phm`, `jud`, …).
+OSIS names (`John.3.16`, `1Cor.13.4-7`) and anything ⌘K understands (`bible://jn3:16`,
+`bible://John%203:16`) work too. A range that runs into another chapter (`jhn.3.16-jhn.4.2`)
+opens at its first verse.
+
+On macOS the app bundle registers the scheme, so links open the app whether or not it is
+running. From a terminal, `bible-rs open bible://jhn.3.16-18` (or `bible-rs bible://…`) starts
+the app there; `bible-rs open "jn 3:16"` takes a plain reference.
+
 ## Performance
 
 Measured on the machine bible-rs was built on: a headless Ubuntu VPS (AMD EPYC 7B13, 16 vCPUs)
@@ -334,6 +356,7 @@ bible-rs list
 bible-rs import path/to/module.zip [--abbrev X --name "…" --key UNLOCK]
 bible-rs export --markdown -o notes.md
 bible-rs import-notes notes.json
+bible-rs open bible://jhn.3.16-18
 ```
 
 ## iPhone

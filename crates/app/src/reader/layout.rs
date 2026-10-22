@@ -246,6 +246,27 @@ pub struct ChapterLayout {
 }
 
 impl ChapterLayout {
+    /// The top and bottom (relative to the chapter) of the lines verses `from..=to` of a column
+    /// are set on: what a selection of them covers. A verse's anchor can't say where it ends, as
+    /// one block may hold several paragraphs.
+    pub fn verse_span(&self, column: usize, from: u8, to: u8) -> Option<(f32, f32)> {
+        self.blocks
+            .iter()
+            .filter(|b| b.column == column)
+            .flat_map(|b| {
+                b.verses.iter().enumerate().filter(|(_, (_, _, n))| (from..=to).contains(n)).flat_map(
+                    move |(k, (start, _, _))| {
+                        let end = b.verses.get(k + 1).map_or(usize::MAX, |(s, _, _)| *s);
+                        b.char_rects(*start..end).into_iter().map(move |r| r.translate(b.pos))
+                    },
+                )
+            })
+            .fold(None, |span, r| match span {
+                None => Some((r.top(), r.bottom())),
+                Some((t, b)) => Some((r.top().min(t), r.bottom().max(b))),
+            })
+    }
+
     pub fn anchor(&self, column: usize, number: u8) -> Option<&VerseAnchor> {
         self.anchors
             .iter()

@@ -69,6 +69,7 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
+# CFBundleURLTypes registers bible:// links (src/deep_link.rs) with Launch Services.
 # The bundle ID is part of the signature's designated requirement, which the Keychain checks
 # before handing stored API keys back: changing it after a release makes every user approve
 # access again.
@@ -92,6 +93,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>NSRequiresAquaSystemAppearance</key><false/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>dev.bible-rs.passage</string>
+      <key>CFBundleURLSchemes</key><array><string>bible</string></array>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+    </dict>
+  </array>
   <key>NSHumanReadableCopyright</key><string>${COPYRIGHT}. MIT License. Bundled translations are public domain.</string>
   <key>SUFeedURL</key><string>${FEED_URL}</string>
   <key>SUPublicEDKey</key><string>${SPARKLE_PUBLIC_KEY}</string>
