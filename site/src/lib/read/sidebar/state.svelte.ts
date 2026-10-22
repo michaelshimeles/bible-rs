@@ -3,7 +3,7 @@ import type { HighlightColor } from '../core';
 
 export const STUDY_KINDS: StudyKind[] = ['bookmarks', 'highlights', 'notes'];
 
-/** What the source list remembers while search takes its place (sidebar.rs `Sidebar`). */
+/** What the source list remembers (sidebar.rs `Sidebar`). */
 export class SourceListState {
 	/** The Old and New Testament groups. */
 	testaments = $state([false, false]);

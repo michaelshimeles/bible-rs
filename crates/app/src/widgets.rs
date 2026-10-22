@@ -175,6 +175,7 @@ pub fn search_field(
     p: &Palette,
     query: &mut String,
     hint: &str,
+    shortcut: Option<&str>,
     id: egui::Id,
 ) -> (Response, bool) {
     let r = rect.height() / 2.0;
@@ -188,7 +189,13 @@ pub fn search_field(
     }
     let glass = Rect::from_min_size(pos2(rect.left() + 10.0, rect.center().y - 8.0), vec2(16.0, 16.0));
     crate::icons::search(ui.painter(), glass, p.ink_2);
-    let clear_w = if query.is_empty() { 0.0 } else { 22.0 };
+    // A key that focuses the field, as a keycap at its end while it's empty and unfocused.
+    let shortcut = shortcut.filter(|_| query.is_empty() && !focused);
+    let clear_w = match shortcut {
+        _ if !query.is_empty() => 22.0,
+        Some(k) => keycap_width(ui.painter(), k) + 4.0,
+        None => 0.0,
+    };
     let edit_rect = Rect::from_min_max(
         pos2(glass.right() + 6.0, rect.top()),
         pos2(rect.right() - 12.0 - clear_w, rect.bottom()),
@@ -206,6 +213,10 @@ pub fn search_field(
             .vertical_align(egui::Align::Center)
             .desired_width(edit_rect.width()),
     );
+    if let Some(k) = shortcut {
+        let w = keycap_width(ui.painter(), k);
+        keycap(ui.painter(), p, rect.right() - 8.0 - w, rect.center().y, k);
+    }
     let mut cleared = false;
     if !query.is_empty() {
         let c = Rect::from_center_size(pos2(rect.right() - 10.0 - 8.0, rect.center().y), vec2(16.0, 16.0));

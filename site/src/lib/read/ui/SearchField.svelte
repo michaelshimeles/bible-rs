@@ -8,6 +8,8 @@
 		/** Glass in the toolbar; the field colour inside panels and pages. */
 		glass?: boolean;
 		width?: number | string;
+		/** A key that focuses the field, shown as a keycap at its end while it's empty and unfocused. */
+		hint?: string;
 		/** Called when the clear button empties the field. */
 		oncleared?: () => void;
 		input?: HTMLInputElement;
@@ -19,6 +21,7 @@
 		placeholder = 'Search',
 		glass = true,
 		width,
+		hint,
 		oncleared,
 		input = $bindable(),
 		class: cls,
@@ -40,6 +43,9 @@
 >
 	<Icon name="search" size={16} class="glass-icon" />
 	<input bind:this={input} bind:value type="search" {placeholder} autocomplete="off" spellcheck="false" {...rest} />
+	{#if hint && !value}
+		<kbd class="hint" aria-hidden="true" title="Press {hint} to search">{hint}</kbd>
+	{/if}
 	{#if value}
 		<button type="button" class="clear" aria-label="Clear" tabindex="-1" onclick={clear}>
 			<Icon name="clear" size={16} />
@@ -100,6 +106,36 @@
 	input::-webkit-search-cancel-button,
 	input::-webkit-search-decoration {
 		appearance: none;
+	}
+
+	/* The shortcut's keycap, gone once the field has focus or text (and on touch screens). */
+	.hint {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		min-width: 18px;
+		height: 18px;
+		margin-left: 4px;
+		padding: 0 4px;
+		border-radius: 5px;
+		background: var(--fill);
+		box-shadow:
+			0 0 0 0.5px var(--border),
+			inset 0 -0.5px 0 var(--border);
+		color: var(--ink-3);
+		font: 500 11px/1 var(--font-ui);
+		pointer-events: none;
+	}
+
+	.field:focus-within .hint {
+		display: none;
+	}
+
+	@media (hover: none) {
+		.hint {
+			display: none;
+		}
 	}
 
 	.clear {

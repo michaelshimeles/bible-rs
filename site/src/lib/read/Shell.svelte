@@ -20,6 +20,7 @@
 	import ResultNavigator from './chrome/ResultNavigator.svelte';
 	import FocusChrome from './chrome/FocusChrome.svelte';
 	import Sidebar from './sidebar/Sidebar.svelte';
+	import SearchPanel from './sidebar/SearchPanel.svelte';
 	import Pages from './pages/Pages.svelte';
 	import Palette from './overlays/Palette.svelte';
 	import VerseMenu from './overlays/VerseMenu.svelte';
@@ -71,7 +72,8 @@
 	const SEARCH_BAND = 48;
 	const PAGE_TOP = 24;
 	const SIDEBAR = 256;
-	const SEARCH_SIDEBAR = 352;
+	/** The search results' panel on the right, under the search field. */
+	const SEARCH_PANEL = 352;
 	const SIDEBAR_INSET = 8;
 	const INSPECTOR = 344;
 
@@ -85,7 +87,13 @@
 	const band = $derived((parallel ? COLUMN_HEADS : 0) + (app.resultBand ? SEARCH_BAND : 0));
 	const chrome = $derived(app.focus ? FOCUS_CHROME : TOOLBAR + band);
 	const sidebarShown = $derived(s.sidebarOpen && !app.focus);
-	const sidebarWidth = $derived(app.search?.searching ? SEARCH_SIDEBAR : SIDEBAR);
+	const sidebarWidth = SIDEBAR;
+	/** The results slide in from the right while there's a query, beside the text on a wide window,
+	 *  over it on a phone. */
+	const searchShown = $derived(app.search.searching && app.page === 'reader' && !app.focus);
+	const readingRight = $derived(
+		phone ? 0 : searchShown ? SEARCH_PANEL : app.panel && app.page === 'reader' ? INSPECTOR : 0
+	);
 	const sidebarExtent = $derived((s.sidebarAttached ? 0 : SIDEBAR_INSET) + sidebarWidth);
 	const theme = $derived(s.themeSystem ? (systemDark ? 'dark' : 'light') : s.theme);
 
@@ -239,6 +247,13 @@
 		if (picked) await importer.choose(picked);
 	}
 
+	// Each change to the results goes to a match in the book being read.
+	$effect(() => {
+		void app.search.key;
+		void app.search.results;
+		untrack(() => app.search.live());
+	});
+
 	// Following a link to another chapter (a real navigation) goes there.
 	let shown = { translation: untrack(() => data.translation), chapter: untrack(() => data.chapter) };
 	$effect(() => {
@@ -290,7 +305,7 @@
 			<Sidebar />
 		</aside>
 		<main class="main" style:--left="{sidebarShown ? sidebarExtent : 0}px">
-			<div class="reading" style:right="{app.panel && app.page === 'reader' ? INSPECTOR : 0}px">
+			<div class="reading" style:right="{readingRight}px">
 				<Reader top={chrome + PAGE_TOP} {chrome} covered={app.page !== 'reader'} />
 				{#if app.page === 'reader' && band > 0}
 					<div class="bands" style:height="{TOOLBAR + band}px"></div>
@@ -305,9 +320,21 @@
 			{#if app.page !== 'reader'}
 				<Pages top={TOOLBAR} />
 			{/if}
-			{#if app.panel && app.page === 'reader'}
+			{#if app.panel && app.page === 'reader' && !searchShown}
 				<VersePanel top={TOOLBAR} width={INSPECTOR} />
 			{/if}
+			<aside
+				class="search"
+				class:shown={searchShown}
+				style:top="{TOOLBAR}px"
+				style:--width="{SEARCH_PANEL}px"
+				aria-label="Search results"
+				inert={!searchShown}
+			>
+				{#if app.search.searching}
+					<SearchPanel />
+				{/if}
+			</aside>
 			{#if app.focus}
 				<FocusChrome />
 			{:else}
@@ -370,6 +397,30 @@
 		top: 0;
 		bottom: 0;
 		left: 0;
+		transition: right var(--motion-slow) var(--motion-easing);
+	}
+
+	/* The search results: a floating panel under the toolbar's field, sliding in from the right
+	   edge as the sidebar does from the left. */
+	.search {
+		position: absolute;
+		right: 8px;
+		bottom: 8px;
+		width: calc(var(--width) - 8px);
+		display: flex;
+		flex-direction: column;
+		border-radius: var(--radius-lg);
+		background: var(--sidebar);
+		box-shadow: var(--shadow-panel);
+		color: var(--ink);
+		overflow: hidden;
+		transform: translateX(calc(100% + 16px));
+		transition: transform var(--motion-slow) var(--motion-easing);
+		z-index: 3;
+	}
+
+	.search.shown {
+		transform: none;
 	}
 
 	/* The bands under the toolbar are solid paper (the Mac can't blur what scrolls beneath). */
@@ -390,6 +441,11 @@
 	@media (max-width: 700px) {
 		.main {
 			left: 0;
+		}
+
+		.search {
+			left: 8px;
+			width: auto;
 		}
 	}
 

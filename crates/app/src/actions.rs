@@ -15,6 +15,13 @@ pub enum Action {
         verse: Option<u8>,
         flash: bool,
     },
+    /// Go to a search result and select its verse; only a search's first adds to the history,
+    /// so Back returns to where the search began.
+    JumpToResult {
+        chapter: ChapterIdx,
+        verse: u8,
+        history: bool,
+    },
     Back,
     Forward,
     PrevChapter,

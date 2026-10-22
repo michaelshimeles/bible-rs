@@ -64,7 +64,7 @@ export interface Toast {
 }
 
 export type Action =
-	| { type: 'jump'; chapter: number; verse?: number; flash?: boolean }
+	| { type: 'jump'; chapter: number; verse?: number; flash?: boolean; history?: boolean }
 	| { type: 'back' }
 	| { type: 'forward' }
 	| { type: 'prevChapter' }
@@ -559,8 +559,8 @@ export class ReadApp {
 		}
 	}
 
-	#jump(chapter: number, verse: number | undefined, flash: boolean) {
-		this.#pushHistory();
+	#jump(chapter: number, verse: number | undefined, flash: boolean, history = true) {
+		if (history) this.#pushHistory();
 		const s = this.settings;
 		this.reader?.jump(chapter, verse, flash && s.flashJumps && !s.reduceMotion);
 	}
@@ -808,7 +808,7 @@ export class ReadApp {
 		switch (a.type) {
 			case 'jump':
 				this.page = 'reader';
-				this.#jump(a.chapter, a.verse, a.flash ?? false);
+				this.#jump(a.chapter, a.verse, a.flash ?? false, a.history ?? true);
 				// Landing on a specific verse selects it, so N/B/C/1–6 act on it right away.
 				if (a.verse && a.flash) this.setSelection(this.refAt(a.chapter, a.verse));
 				break;
@@ -1016,8 +1016,8 @@ export class ReadApp {
 				this.search.step(a.delta);
 				break;
 			case 'clearSearch':
+				// The verse gone to stays selected, where the search left the reader.
 				this.search.clear();
-				this.selection = null;
 				break;
 			case 'clearSelection':
 				if (this.search.searching) this.dispatch({ type: 'clearSearch' });
@@ -1034,8 +1034,6 @@ export class ReadApp {
 				this.palette = true;
 				break;
 			case 'openSearch':
-				s.sidebarOpen = true;
-				s.sidebarTab = 'search';
 				this.search.focus(a.query);
 				break;
 			case 'toggleSidebar':

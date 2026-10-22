@@ -21,7 +21,10 @@
 {#if position}
 	<div class="navigator" style:top="{top + PAGE_TOP}px">
 		<Capsule label="Search results">
-			<span class="label" aria-live="polite">Result {position.index} of {position.total}</span>
+			<span class="label" aria-live="polite">
+				{#if position.index}Result {position.index} of {position.total}{:else}{position.total.toLocaleString('en-US')}
+					{position.total === 1 ? 'result' : 'results'}{/if}
+			</span>
 			<button
 				type="button"
 				class="stepper"

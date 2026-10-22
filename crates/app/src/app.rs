@@ -439,6 +439,11 @@ impl BibleApp {
     fn jump(&mut self, chapter: ChapterIdx, verse: Option<u8>, flash: bool) {
         let here = self.here();
         self.history.push(here);
+        self.jump_quietly(chapter, verse, flash);
+    }
+
+    /// A jump that leaves the history as it is.
+    fn jump_quietly(&mut self, chapter: ChapterIdx, verse: Option<u8>, flash: bool) {
         let flash = flash && self.settings.flash_jumps && !self.settings.reduce_motion;
         self.reader.jump(chapter, verse, flash);
     }
@@ -596,6 +601,15 @@ impl BibleApp {
                 if let (Some(v), true) = (verse, flash) {
                     self.reader.set_selection(Some(VerseRef::new(chapter.book(), chapter.chapter(), v)));
                 }
+            }
+            Action::JumpToResult { chapter, verse, history } => {
+                self.pages.open(crate::pages::Page::Reader);
+                if history {
+                    self.jump(chapter, Some(verse), true);
+                } else {
+                    self.jump_quietly(chapter, Some(verse), true);
+                }
+                self.reader.set_selection(Some(VerseRef::new(chapter.book(), chapter.chapter(), verse)));
             }
             // From a page, Back returns to the reader.
             Action::Back if !self.pages.reader() => self.pages.open(crate::pages::Page::Reader),
@@ -800,10 +814,8 @@ impl BibleApp {
                 self.library.warm(&ids);
             }
             Action::SearchStep(d) => self.sidebar.step_result(d),
-            Action::ClearSearch => {
-                self.sidebar.query.clear();
-                self.reader.selection = None;
-            }
+            // The verse the search went to stays selected, where it left the reader.
+            Action::ClearSearch => self.sidebar.query.clear(),
             Action::ClearSelection => {
                 if self.sidebar.searching() {
                     self.apply_one(ctx, Action::ClearSearch);
@@ -822,11 +834,7 @@ impl BibleApp {
                 self.reader.step_selection(&self.library, &id, -1);
             }
             Action::OpenPalette => self.palette = Some(CommandPalette::default()),
-            Action::OpenSearch(q) => {
-                self.settings.sidebar_open = true;
-                self.settings.sidebar_tab = SidebarTab::Search;
-                self.sidebar.focus_search(q);
-            }
+            Action::OpenSearch(q) => self.sidebar.focus_search(q),
             Action::ToggleSidebar => self.settings.sidebar_open = !self.settings.sidebar_open,
             Action::SidebarTab(t) => {
                 self.settings.sidebar_open = true;
@@ -1233,7 +1241,7 @@ impl BibleApp {
     /// app's setting or the system's) and offscreen rendering show and hide it at once.
     fn sidebar_open_fraction(&mut self, ctx: &egui::Context, frame: &eframe::Frame) -> f32 {
         use theme::metrics::{SIDEBAR_INSET, SIDEBAR_WIDTH};
-        let width = if self.sidebar.searching() { SEARCH_SIDEBAR_WIDTH } else { SIDEBAR_WIDTH };
+        let width = SIDEBAR_WIDTH;
         let inset = if self.settings.sidebar_attached { 0.0 } else { SIDEBAR_INSET };
         self.sidebar_extent = inset + width;
         let target = if self.settings.sidebar_open && !self.focus { 1.0 } else { 0.0 };
@@ -1263,6 +1271,19 @@ impl BibleApp {
         }
         self.sidebar_shown = open;
         open
+    }
+
+    /// How far out the search results' panel is this frame (0 hidden, 1 shown): out while
+    /// there's a query in the reader (not in focus mode), sliding as the sidebar does.
+    fn search_open_fraction(&mut self, ctx: &egui::Context) -> f32 {
+        self.sidebar.idle();
+        let target = self.sidebar.searching() && !self.focus;
+        let instant =
+            self.settings.reduce_motion || crate::offscreen_still() || crate::motion::system_reduces_motion();
+        let time = if instant { 0.0 } else { theme::motion::SLOW_MS / 1000.0 };
+        let t = ctx.animate_bool_with_time(Id::new("search-panel"), target, time);
+        // The sidebar's easing: quick out of the gate, gentle at the end.
+        1.0 - (1.0 - t).powi(3)
     }
 
     /// The toolbar over the reading area (`ds-06` in the design): back/forward (after the
@@ -1335,6 +1356,7 @@ impl BibleApp {
                 p,
                 &mut self.pages.query,
                 placeholder,
+                None,
                 Id::new("page-search"),
             );
             if cleared || (field.has_focus() && ui.input(|i| i.key_pressed(Key::Escape))) {
@@ -1392,12 +1414,9 @@ impl BibleApp {
             };
             let field_id = Id::new("toolbar-search");
             let (field, cleared) =
-                widgets::search_field(ui, search, p, &mut self.sidebar.query, "Search", field_id);
+                widgets::search_field(ui, search, p, &mut self.sidebar.query, "Search", Some("/"), field_id);
             if focus_field {
                 field.request_focus();
-            }
-            if field.changed() && self.sidebar.searching() {
-                self.settings.sidebar_open = true;
             }
             if cleared || (field.has_focus() && ui.input(|i| i.key_pressed(Key::Escape))) {
                 self.sidebar.query.clear();
@@ -1682,7 +1701,12 @@ impl BibleApp {
         let p = self.settings.theme.palette();
         let painter = ui.painter();
         let font = theme::ui_medium(theme::text::SMALL.size);
-        let label = painter.layout_no_wrap(format!("Result {at} of {of}"), font, p.ink_2);
+        let label = if at > 0 {
+            format!("Result {at} of {of}")
+        } else {
+            format!("{} {}", crate::sidebar::group(of), if of == 1 { "result" } else { "results" })
+        };
+        let label = painter.layout_no_wrap(label, font, p.ink_2);
         let hint = painter.layout_no_wrap("Esc to clear".into(), theme::text::SMALL.font(), p.ink_3);
         let w = 14.0 + label.size().x + 8.0 + 24.0 + 8.0 + 1.0 + 8.0 + hint.size().x + 8.0;
         let top = reader_rect.top() + self.chrome.height + crate::reader::layout::PAGE_TOP;
@@ -1959,11 +1983,12 @@ const COLUMN_HEADS: f32 = 66.0;
 /// Under the toolbar while searching: the result navigator (24 pt down, 32 tall) and 16 pt below.
 const SEARCH_BAND: f32 = 48.0;
 
-/// Height of the sidebar's header (traffic lights and toggle) and the search sidebar's width.
+/// Height of the sidebar's header (traffic lights and toggle).
 const SIDEBAR_HEADER: f32 = 36.0;
 /// From the sidebar's edge to the centre of the toggle in its header: 4 pt, then half its 32 pt.
 const SIDEBAR_HEADER_TOGGLE_INSET: f32 = 4.0 + 16.0;
-const SEARCH_SIDEBAR_WIDTH: f32 = 352.0;
+/// The search results' panel on the right, 8 pt in from the window's edges like the inspector.
+const SEARCH_PANEL_WIDTH: f32 = 352.0;
 
 /// The toolbar's leading group while the sidebar is `open` (0 hidden, 1 shown) of its `extent`.
 /// With the sidebar out the toggle sits in its header; hidden, in a capsule at `docked` (after the
@@ -2319,7 +2344,7 @@ impl eframe::App for BibleApp {
                         selection: self.reader.selected_refs().first().copied(),
                         page: self.pages.page,
                     };
-                    self.sidebar.show(&mut child, &env, &mut self.settings.whole_words, &mut actions);
+                    self.sidebar.show(&mut child, &env, &mut actions);
                 });
         }
         let first = self.startup.frames == 0;
@@ -2345,9 +2370,17 @@ impl eframe::App for BibleApp {
                 self.toolbar(ui, full, material, &mut actions);
                 return;
             }
-            // The reader runs the full height, beside the inspector when one is open; the
-            // toolbar floats over the top of both.
-            let inspector = if self.panel.is_some() { crate::panel::INSPECTOR_WIDTH } else { 0.0 };
+            // The reader runs the full height, beside the search results or the inspector when
+            // one is open; the toolbar floats over the top of both. The results slide in from
+            // the window's right edge, under the search field, while there's a query.
+            let search_open = self.search_open_fraction(&ctx);
+            let inspector = if search_open > 0.0 {
+                SEARCH_PANEL_WIDTH * search_open
+            } else if self.panel.is_some() {
+                crate::panel::INSPECTOR_WIDTH
+            } else {
+                0.0
+            };
             let reader_rect =
                 egui::Rect::from_min_max(full.min, egui::pos2(full.right() - inspector, full.bottom()));
             let cols = self.columns();
@@ -2381,7 +2414,7 @@ impl eframe::App for BibleApp {
                 keyboard,
                 online_generation: &self.online_gen,
                 toolbar: top,
-                resizing: self.sidebar_motion.moving(),
+                resizing: self.sidebar_motion.moving() || (search_open > 0.0 && search_open < 1.0),
             };
             let mut reader_ui = ui.new_child(egui::UiBuilder::new().max_rect(reader_rect));
             if let (Some(state), Some(retrying)) = (&self.offline, offline) {
@@ -2422,7 +2455,34 @@ impl eframe::App for BibleApp {
                 self.column_heads(ui, reader_rect, &cols, &mut actions);
             }
             self.result_navigator(ui, reader_rect.translate(vec2(0.0, heads)), &mut actions);
-            if let Some(panel) = &mut self.panel {
+            if search_open > 0.0 {
+                // At its full width, as far right of its place as it isn't out yet.
+                let r = egui::Rect::from_min_max(
+                    egui::pos2(full.right() - SEARCH_PANEL_WIDTH, full.top() + self.chrome.height),
+                    egui::pos2(
+                        full.right() - theme::metrics::SIDEBAR_INSET,
+                        full.bottom() - theme::metrics::SIDEBAR_INSET,
+                    ),
+                )
+                .translate(vec2((1.0 - search_open) * SEARCH_PANEL_WIDTH, 0.0));
+                p.shadows.panel.paint(ui.painter(), r, theme::radius::LG);
+                ui.painter().rect_filled(r, theme::radius::LG, p.sidebar);
+                if self.sidebar.searching() {
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(egui::Align::Min)),
+                    );
+                    child.set_clip_rect(r.intersect(full));
+                    self.sidebar.search_panel(
+                        &mut child,
+                        &self.library,
+                        &self.settings.translation,
+                        &mut self.settings.whole_words,
+                        self.settings.theme,
+                        self.reader.location,
+                        &mut actions,
+                    );
+                }
+            } else if let Some(panel) = &mut self.panel {
                 let r = egui::Rect::from_min_max(
                     egui::pos2(reader_rect.right(), full.top() + self.chrome.height),
                     egui::pos2(

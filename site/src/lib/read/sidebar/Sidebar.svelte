@@ -1,14 +1,13 @@
 <!--
 	The sidebar (crates/app/src/sidebar.rs): a floating source list (study, history, plans, the
-	library and the books), or the search's filters and results while there's a query. Its header
-	holds the sidebar toggle; typing over the list filters the books.
+	library and the books). Its header holds the sidebar toggle; typing over the list filters the
+	books. A search's results slide in from the right instead (Shell), leaving this in place.
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getApp } from '../app.svelte';
 	import { shortcutText } from '../keyboard';
 	import { ToolbarButton } from '../ui';
-	import SearchPanel from './SearchPanel.svelte';
 	import SourceList from './SourceList.svelte';
 	import { SourceListState } from './state.svelte';
 
@@ -19,7 +18,6 @@
 	let mounted = $state(false);
 
 	const attached = $derived(app.settings.sidebarAttached);
-	const searching = $derived(app.search.searching);
 	const label = $derived(app.settings.sidebarOpen ? 'Hide sidebar' : 'Show sidebar');
 	const keys = $derived(mounted ? shortcutText('sidebar', app.settings.shortcuts) : '');
 
@@ -28,7 +26,7 @@
 		// Typing over the list (with nothing else taking keys) starts filtering the books, ahead of
 		// the reader's single-key shortcuts.
 		const keydown = (e: KeyboardEvent) => {
-			if (!hovered || searching || st.filtering || !app.settings.sidebarOpen || app.focus) return;
+			if (!hovered || st.filtering || !app.settings.sidebarOpen || app.focus) return;
 			if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
 			if (e.key.length !== 1 || !/[\p{L}\p{N}]/u.test(e.key)) return;
 			const t = document.activeElement;
@@ -62,11 +60,7 @@
 		</div>
 	</div>
 	<div class="content">
-		{#if searching}
-			<SearchPanel />
-		{:else}
-			<SourceList {st} />
-		{/if}
+		<SourceList {st} />
 	</div>
 </div>
 

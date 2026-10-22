@@ -1,5 +1,6 @@
-//! Left sidebar: a floating source list (study collections, then the books with a chapter grid)
-//! that turns into search results while a search is active.
+//! Left sidebar: a floating source list (study collections, then the books with a chapter grid).
+//! It also keeps the search, whose results the app shows in a panel sliding in from the right,
+//! under the toolbar's search field.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -95,8 +96,16 @@ pub struct Sidebar {
     /// Steps through the results asked for by the reader's navigator.
     pending_step: i32,
     elapsed: Duration,
-    selected: usize,
+    /// The hit gone to; none until one is (a query with no match in the book being read).
+    selected: Option<usize>,
     scroll_to_selected: bool,
+    /// Where the live search looks from: the place read when the search began, then each hit
+    /// gone to. Typing goes to that book's first match at or after it.
+    anchor: Option<(ChapterIdx, u8)>,
+    /// Whether this search has added its one entry to the back history yet.
+    pushed: bool,
+    /// The results changed: go to a match in the anchor's book.
+    relive: bool,
     /// The book last revealed (testament opened, scrolled into view) in the source list.
     revealed: Option<BookId>,
     /// Chapters with highlights or notes, keyed by the study store's generation.
@@ -130,8 +139,11 @@ impl Sidebar {
             order_key: (false, BookId(0)),
             pending_step: 0,
             elapsed: Duration::ZERO,
-            selected: 0,
+            selected: None,
             scroll_to_selected: false,
+            anchor: None,
+            pushed: false,
+            relive: false,
             revealed: None,
             activity: (0, HashSet::new()),
             suggestion: None,
@@ -204,45 +216,75 @@ impl Sidebar {
         !self.query.trim().is_empty()
     }
 
-    /// The selected result and how many there are, while a search has results.
+    /// The selected result (0 before one is gone to) and how many there are, while a search
+    /// has results.
     pub fn result_position(&self) -> Option<(usize, usize)> {
-        (self.searching() && !self.results.is_empty()).then(|| (self.selected + 1, self.results.len()))
+        (self.searching() && !self.results.is_empty())
+            .then(|| (self.selected.map_or(0, |s| s + 1), self.results.len()))
     }
 
-    /// Moves to the next (`1`) or previous (`-1`) result.
+    /// With no query: the next search starts from wherever the reader is then.
+    pub fn idle(&mut self) {
+        if !self.searching() {
+            self.anchor = None;
+            self.pushed = false;
+        }
+    }
+
+    /// Goes to a result; the first of a search records where the reader was in the history.
+    fn go_to(&mut self, t: &bible_core::Translation, vi: u32, actions: &mut Vec<Action>) {
+        let Some(v) = t.verse_view(vi) else { return };
+        self.anchor = Some((v.chapter, v.number));
+        let history = !std::mem::replace(&mut self.pushed, true);
+        actions.push(Action::JumpToResult { chapter: v.chapter, verse: v.number, history });
+    }
+
+    /// The live search's pick: the anchor book's first hit at or after the anchor, else its
+    /// first hit; none when the book has no match.
+    fn live_pick(&self, t: &bible_core::Translation, anchor: (ChapterIdx, u8)) -> Option<usize> {
+        let book = anchor.0.book();
+        let mut first = None;
+        for (i, &vi) in self.results.iter().enumerate() {
+            let Some(v) = t.verse_view(vi) else { continue };
+            if v.chapter.book() != book {
+                continue;
+            }
+            if (v.chapter, v.number) >= anchor {
+                return Some(i);
+            }
+            first.get_or_insert(i);
+        }
+        first
+    }
+
+    /// Moves to the next (`1`) or previous (`-1`) result, round from the last to the first.
     pub fn step_result(&mut self, delta: i32) {
         self.pending_step += delta;
     }
 
-    pub fn show(
-        &mut self,
-        ui: &mut Ui,
-        env: &SidebarEnv<'_>,
-        whole_words: &mut bool,
-        actions: &mut Vec<Action>,
-    ) {
-        if self.searching() {
-            self.search(ui, env.library, env.translation, whole_words, env.theme, env.location, actions);
-        } else {
-            // Typing over the list (with nothing else taking keys) starts filtering the books.
-            if !self.filtering && ui.ui_contains_pointer() && !ui.ctx().egui_wants_keyboard_input() {
-                let typed: String = ui.input(|i| {
-                    i.events
-                        .iter()
-                        .filter_map(|e| match e {
-                            egui::Event::Text(t) if i.modifiers.is_none() || i.modifiers.shift_only() => {
-                                Some(t.clone())
-                            }
-                            _ => None,
-                        })
-                        .collect()
-                });
-                if typed.chars().any(char::is_alphanumeric) {
-                    self.start_filter(typed);
-                }
+    pub fn show(&mut self, ui: &mut Ui, env: &SidebarEnv<'_>, actions: &mut Vec<Action>) {
+        // Typing over the list (with nothing else taking keys) starts filtering the books.
+        if !self.filtering
+            && !self.searching()
+            && ui.ui_contains_pointer()
+            && !ui.ctx().egui_wants_keyboard_input()
+        {
+            let typed: String = ui.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Text(t) if i.modifiers.is_none() || i.modifiers.shift_only() => {
+                            Some(t.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            });
+            if typed.chars().any(char::is_alphanumeric) {
+                self.start_filter(typed);
             }
-            self.source_list(ui, env, actions);
         }
+        self.source_list(ui, env, actions);
     }
 
     fn source_list(&mut self, ui: &mut Ui, env: &SidebarEnv<'_>, actions: &mut Vec<Action>) {
@@ -734,10 +776,10 @@ impl Sidebar {
         });
     }
 
-    /// Search results (frame 06 in the design): scope, book and whole-word filters, a count, then
-    /// the hits grouped by book with the matched phrase marked.
+    /// Search results (frame 06 in the design), in the panel on the right: scope, book and
+    /// whole-word filters, a count, then the hits grouped by book with the matched phrase marked.
     #[allow(clippy::too_many_arguments)]
-    fn search(
+    pub fn search_panel(
         &mut self,
         ui: &mut Ui,
         library: &Library,
@@ -767,15 +809,23 @@ impl Sidebar {
                     step -= 1;
                 }
                 if i.key_pressed(Key::Enter) {
-                    jump_to = self.results.get(self.selected).copied();
+                    let i = self.selected.unwrap_or(0);
+                    self.selected = Some(i);
+                    jump_to = self.results.get(i).copied();
                 }
             });
         }
         if step != 0 && !self.results.is_empty() {
-            self.selected =
-                (self.selected as i64 + step as i64).clamp(0, self.results.len() as i64 - 1) as usize;
+            let n = self.results.len() as i64;
+            let from = match self.selected {
+                Some(s) => s as i64,
+                None if step > 0 => -1,
+                None => n,
+            };
+            let i = (from + step as i64).rem_euclid(n) as usize;
+            self.selected = Some(i);
             self.scroll_to_selected = true;
-            jump_to = self.results.get(self.selected).copied();
+            jump_to = self.results.get(i).copied();
         }
 
         let book = location.0.book();
@@ -858,7 +908,11 @@ impl Sidebar {
                     self.elapsed = out.elapsed;
                     self.key = Some(key);
                     self.order_key = (self.current_first, book);
-                    self.selected = 0;
+                    self.selected = None;
+                    self.relive = true;
+                    // The reader and its result navigator are drawn before this panel: once
+                    // more, so they show the new results.
+                    ui.ctx().request_repaint();
                     let query = Query::parse(&self.query, *whole_words);
                     self.entries = Arc::new(result_entries(ui, &t, &self.results, &query));
                     self.suggestion = if self.results.is_empty() {
@@ -926,6 +980,15 @@ impl Sidebar {
             },
         );
 
+        // Typing goes straight to a match in the book being read.
+        if std::mem::take(&mut self.relive) && jump_to.is_none() {
+            let anchor = *self.anchor.get_or_insert(location);
+            if let Some(i) = self.live_pick(&t, anchor) {
+                self.selected = Some(i);
+                self.scroll_to_selected = true;
+                jump_to = Some(self.results[i]);
+            }
+        }
         if self.results.is_empty() {
             self.no_results(ui, p, &t, whole_words);
             return;
@@ -936,7 +999,7 @@ impl Sidebar {
         let mut sa = ScrollArea::vertical().auto_shrink(false).id_salt("results");
         if std::mem::take(&mut self.scroll_to_selected)
             && let Some(e) =
-                entries.iter().find(|e| matches!(e.kind, EntryKind::Item(i, _) if i == self.selected))
+                entries.iter().find(|e| matches!(e.kind, EntryKind::Item(i, _) if Some(i) == self.selected))
         {
             let avail = ui.available_height();
             let cur = ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("results-offset"))).unwrap_or(0.0);
@@ -978,7 +1041,7 @@ impl Sidebar {
                         let vi = self.results[i];
                         let Some(v) = t.verse_view(vi) else { continue };
                         let resp = ui.interact(r, ui.id().with(("hit", vi)), Sense::click());
-                        let selected = i == self.selected;
+                        let selected = Some(i) == self.selected;
                         if selected {
                             ui.painter().rect_filled(r, 10.0, p.accent_soft);
                         } else if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
@@ -1010,7 +1073,7 @@ impl Sidebar {
                             snippet_job(&v.plain_text(), &query, inner.width(), rows as usize, theme);
                         paint_snippet(ui.painter(), p, pos2(inner.left(), inner.top() + 20.0), job, &hits);
                         if resp.clicked() {
-                            self.selected = i;
+                            self.selected = Some(i);
                             jump_to = Some(vi);
                         }
                     }
@@ -1018,10 +1081,8 @@ impl Sidebar {
             }
         });
         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("results-offset"), out.state.offset.y));
-        if let Some(vi) = jump_to
-            && let Some(v) = t.verse_view(vi)
-        {
-            actions.push(Action::Jump { chapter: v.chapter, verse: Some(v.number), flash: true });
+        if let Some(vi) = jump_to {
+            self.go_to(&t, vi, actions);
         }
     }
 }
@@ -1335,7 +1396,7 @@ fn chapter_grid(
     }
 }
 
-fn group(n: usize) -> String {
+pub fn group(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {

@@ -1,8 +1,12 @@
 /**
- * Search: the query in the toolbar's field, the filters and results in the sidebar, and the
- * navigator under the toolbar stepping through them (the search half of crates/app/src/sidebar.rs).
- * The core searches the whole translation in a few milliseconds; hits are fetched in pages as the
- * result list scrolls.
+ * Search: the query in the toolbar's field, the filters and results in the panel that slides in
+ * from the right under it, and the navigator under the toolbar stepping through them (the search
+ * half of crates/app/src/sidebar.rs). The core searches the whole translation in a few
+ * milliseconds; hits are fetched in pages as the result list scrolls.
+ *
+ * As the query changes, the reader goes straight to a match in the book being read (the first at
+ * or after where the search started, or the last match gone to); ↑ ↓ then step through every
+ * match, into other books.
  */
 import { untrack } from 'svelte';
 import type { ReadApp } from './app.svelte';
@@ -11,6 +15,8 @@ import type { SearchHit, SearchPage, SearchScope } from './core';
 /** Hits fetched with the count, then in pages of this many. */
 export const FIRST = 2000;
 const PAGE = 500;
+/** How far into the book's matches the live search looks for one after the anchor. */
+const LIVE_SCAN = 1000;
 
 export class Search {
 	query = $state('');
@@ -25,7 +31,12 @@ export class Search {
 	scrollRequest = $state(0);
 	/** How long the last search took, in ms (read with `results`). */
 	elapsed = 0;
-	#selected = $state({ key: '', index: 0 });
+	/** The hit gone to in the current results; -1 before one is (no match in the book read). */
+	#selected = $state({ key: '', index: -1 });
+	/** Where the live search looks from: the place read when the search began, then each hit gone to. */
+	#anchor: { chapter: number; verse: number } | null = null;
+	/** Whether this search has added its one entry to the back history yet. */
+	#pushed = false;
 	#generation = $state(0);
 	#pages = new Map<number, SearchHit[]>();
 	#pagesKey = '';
@@ -69,10 +80,12 @@ export class Search {
 		return page;
 	});
 
+	/** The selected hit, or -1 when none has been gone to yet. */
 	get index(): number {
-		return this.#selected.key === this.key ? this.#selected.index : 0;
+		return this.#selected.key === this.key ? this.#selected.index : -1;
 	}
 
+	/** For the navigator: `index` is 0 until a hit has been gone to. */
 	get position() {
 		const total = this.searching ? (this.results?.total ?? 0) : 0;
 		return total ? { index: this.index + 1, total } : null;
@@ -99,12 +112,56 @@ export class Search {
 		return hits[i - FIRST - n * PAGE] ?? null;
 	}
 
-	/** Selects a hit and goes to it. */
+	/** Selects a hit and goes to it (and selects its verse). One search adds one back entry. */
 	choose(i: number) {
 		const hit = this.hit(i);
 		if (!hit) return;
 		this.#selected = { key: this.key, index: i };
-		this.app.dispatch({ type: 'jump', chapter: hit.chapterIndex, verse: hit.verse.verse, flash: true });
+		this.#anchor = { chapter: hit.chapterIndex, verse: hit.verse.verse };
+		const history = !this.#pushed;
+		this.#pushed = true;
+		this.app.dispatch({ type: 'jump', chapter: hit.chapterIndex, verse: hit.verse.verse, flash: true, history });
+	}
+
+	/**
+	 * Called whenever the results change: goes to the anchor's book's first match at or after the
+	 * anchor (or its first match), so typing finds the words in the book being read. With no match
+	 * in that book nothing moves, and ↓ starts at the first result.
+	 */
+	live() {
+		if (!this.searching) {
+			this.#anchor = null;
+			this.#pushed = false;
+			return;
+		}
+		const page = this.results;
+		if (!page) return;
+		const app = this.app;
+		const anchor = (this.#anchor ??= { chapter: app.here.chapter, verse: app.here.verse });
+		const book = app.refAt(anchor.chapter, 1).book;
+		// The book's hits are a run in the results; `books` counts the runs in order.
+		let start = 0;
+		let count = 0;
+		for (const b of page.books) {
+			if (b.book === book) {
+				count = b.count;
+				break;
+			}
+			start += b.count;
+		}
+		if (!count) return;
+		let pick = start;
+		const end = start + Math.min(count, LIVE_SCAN);
+		for (let i = start; i < end; i++) {
+			const h = this.hit(i);
+			if (!h) break;
+			if (h.chapterIndex > anchor.chapter || (h.chapterIndex === anchor.chapter && h.verse.verse >= anchor.verse)) {
+				pick = i;
+				break;
+			}
+		}
+		this.choose(pick);
+		this.scrollRequest++;
 	}
 
 	focus(query?: string) {
@@ -112,17 +169,18 @@ export class Search {
 		this.focusRequest++;
 	}
 
+	/** ↓ / ↑: the next or previous result, wherever it is, round from the last to the first. */
 	step(delta: number) {
 		const total = this.results?.total ?? 0;
 		if (!total) return;
-		const i = Math.min(total - 1, Math.max(0, this.index + delta));
-		this.choose(i);
+		const from = this.index < 0 && delta > 0 ? -1 : this.index < 0 ? total : this.index;
+		this.choose((((from + delta) % total) + total) % total);
 		this.scrollRequest++;
 	}
 
-	/** Return in the field: the selected hit. */
+	/** Return in the field: the selected hit, or the first. */
 	open() {
-		if (this.results?.total) this.choose(this.index);
+		if (this.results?.total) this.choose(Math.max(0, this.index));
 	}
 
 	clear() {

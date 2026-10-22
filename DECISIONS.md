@@ -295,7 +295,14 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
 - **Floating source list.** The sidebar is a 256 pt panel inset 8 pt from the window's edges,
   holding the traffic lights and its own toggle in its header, then Study (bookmarks, highlights,
   notes, expandable in place) and Books (testaments → books → a chapter grid with activity dots).
-  Search moved to the toolbar's field; while it has a query the sidebar shows the results.
+  Search moved to the toolbar's field. Its results slide in from the right, under the field,
+  so the sidebar keeps its place and the source list stays in reach while searching.
+- **Search finds as you type.** Each change to the query goes straight to a match in the book
+  being read (the first at or after where the search began, then the last match gone to) and
+  selects its verse; ↑ ↓ in the field step through every match, into other books, round from the
+  last to the first. Esc clears the query and closes the results but leaves the reader on that
+  verse, selected. A search adds one entry to the back history, so Back returns to where it began.
+  The field shows a `/` keycap while it's empty, the key that focuses it.
 - **First launch** opens a 960 × 680 window with the onboarding steps (translation, then theme and
   reading size); finishing them grows it to the reader's 1280 × 800. Settings saved before
   onboarding existed count as onboarded, and the startup/scroll probes skip it. The design's

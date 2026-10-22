@@ -254,9 +254,9 @@
 				<SearchField
 					width={fieldWidth}
 					aria-label="Search"
+					hint="/"
 					bind:value={search.query}
 					bind:input={field}
-					oninput={() => search.searching && (s.sidebarOpen = true)}
 					onkeydown={fieldKeydown}
 					onfocus={() => (search.fieldFocused = true)}
 					onblur={() => {

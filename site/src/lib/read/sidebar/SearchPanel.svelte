@@ -311,7 +311,8 @@
 	.panel {
 		display: flex;
 		flex-direction: column;
-		height: 100%;
+		flex: 1;
+		min-height: 0;
 	}
 
 	/* 4 pt below, then the 6 pt the Mac leaves between it and the list. */
