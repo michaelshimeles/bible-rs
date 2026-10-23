@@ -1,5 +1,5 @@
 //! H and L, and [ and ], turn chapters like ← and →, crossing into the next or previous book,
-//! and wait while a text field has the keyboard. This is its own test binary because it sets
+//! only with no modifier held, and wait while a text field has the keyboard. This is its own test binary because it sets
 //! `BIBLE_RS_OFFSCREEN` (no macOS menu bar, which needs the main thread) before anything else runs.
 
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use bible_core::books::{BookId, ChapterIdx};
 use bible_rs::app::{BibleApp, Startup, initialize, online_counter};
 use bible_rs::theme;
-use eframe::egui::{self, Key};
+use eframe::egui::{self, Key, Modifiers};
 use egui_kittest::Harness;
 
 const MALACHI: BookId = BookId(38);
@@ -45,6 +45,22 @@ fn letter_and_bracket_keys_turn_chapters_across_books_but_not_while_typing() {
     assert_eq!(press(&mut harness, Key::H), malachi_4, "H from Matthew 1 goes back to Malachi");
     assert_eq!(press(&mut harness, Key::CloseBracket), matthew_1, "] turns to the next chapter");
     assert_eq!(press(&mut harness, Key::OpenBracket), malachi_4, "[ turns to the previous chapter");
+
+    // Only the bare keys turn chapters: not with Shift or Alt held (Alt+H opens Windows' Help
+    // menu), which egui's own matching lets through.
+    let mut turned = Vec::new();
+    for m in [Modifiers::SHIFT, Modifiers::ALT] {
+        for key in [Key::H, Key::L, Key::OpenBracket, Key::CloseBracket] {
+            let before = harness.state().reader.location.0;
+            harness.key_press_modifiers(m, key);
+            harness.run_steps(2);
+            if harness.state().reader.location.0 != before {
+                turned.push(format!("{m:?} + {key:?}"));
+            }
+        }
+    }
+    assert!(turned.is_empty(), "these turned the chapter: {turned:?}");
+    assert_eq!(harness.state().reader.location.0, malachi_4);
 
     // With the search field focused, the letters are typed rather than turning chapters.
     press(&mut harness, Key::Slash);
