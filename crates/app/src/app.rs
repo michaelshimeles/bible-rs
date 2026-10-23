@@ -629,6 +629,18 @@ impl BibleApp {
             }
             key(Modifiers::NONE, Key::Num0, Action::Highlight(None));
             key(Modifiers::NONE, Key::Backspace, Action::Highlight(None));
+            // H and L (as in vim) and [ ] turn chapters too, but only bare: `key` would also take
+            // them with Shift or Alt held, and Alt+H opens the Help menu on Windows.
+            for (k, a) in [
+                (Key::H, Action::PrevChapter),
+                (Key::L, Action::NextChapter),
+                (Key::OpenBracket, Action::PrevChapter),
+                (Key::CloseBracket, Action::NextChapter),
+            ] {
+                if consume_bare_key(i, k) {
+                    actions.push(a);
+                }
+            }
         });
     }
 
@@ -2121,6 +2133,16 @@ impl BibleApp {
             self.shortcuts_open = false;
         }
     }
+}
+
+/// Takes the presses of `k` made with no modifier held. `InputState::consume_key` ignores extra
+/// Shift and Alt, for keys some layouts type with them.
+fn consume_bare_key(i: &mut egui::InputState, k: Key) -> bool {
+    let n = i.events.len();
+    i.events.retain(
+        |e| !matches!(e, egui::Event::Key { key, modifiers, pressed: true, .. } if *key == k && modifiers.is_none()),
+    );
+    i.events.len() < n
 }
 
 /// Below this toolbar width the view tools and the search field fold into one capsule.
