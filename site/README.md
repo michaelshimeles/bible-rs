@@ -1,0 +1,55 @@
+# Bible site (SvelteKit)
+
+The landing page, privacy and support pages (`src/routes/(site)`), and the web reader at `/read`.
+
+## Landing page
+
+- Download target + version: `src/lib/config.ts` (`DOWNLOAD_URL`, `VERSION`, `SITE_URL`).
+- Names: `NAME` ("Bible") is the apps' name, in the headings and links that name them. `SITE_NAME` ("Simply My Bible") is the website's. Every page's title ends with it, and it is `og:site_name` and the WebSite's name in the JSON-LD.
+- `/download` returns a 302 to `DOWNLOAD_URL` (serverless function); the page itself is prerendered.
+- Page metadata (title, canonical, Open Graph, Twitter, JSON-LD) lives in `src/routes/(site)/+page.svelte` and is built from `SITE_URL`. `static/robots.txt` repeats the origin.
+- `/sitemap.xml` is a sitemap index of the files under `/sitemaps/` (`src/lib/read/seo/sitemap.ts`): the site's pages with the translations' and books' pages, each translation's chapters, the verse pages (in files of at most 40,000 URLs) and the topics' index and pages. Every entry's `lastmod` is the build's date.
+- The demo under the hero is drawn in HTML, not recorded: `src/lib/demo/script.ts` is its timeline (chapters, captions, sound cues), `Scene.svelte` renders one moment of it, `Showcase.svelte` adds the controls and `sound.ts` synthesises the clicks with Web Audio.
+- The feature cards are in `src/lib/cards/`, built from the app's UI pieces in `src/lib/app/` and the app's colours in `src/app.css` (`.app`).
+- Scripture shown on the site lives in `src/lib/scripture.ts`. Use only public-domain text (KJV, WEB, BSB and the other built-in translations), never the online ones.
+- Fonts: system fonts for the UI, and Literata for scripture, self-hosted from `static/fonts` (OFL). The only other origin the site loads from is the GitHub API, for the download count under the hero's button (`src/lib/DownloadCount.svelte`).
+- Share image: `static/og.jpg` (1200x630) is rendered from `scripts/og/og.html`. Edit the template, then run `sh scripts/og.sh` (macOS, needs Google Chrome).
+
+## Reader (`/read`)
+
+The Mac app in the browser. [DECISIONS.md](../DECISIONS.md#web-the-core-in-webassembly-the-reader-in-the-dom) explains the design.
+
+- `src/lib/read/wasm/` is bible-core compiled to WebAssembly by `scripts/build-web.sh` (from the repository root): `bible` for the reader and `bible_import` (with the importers) for the import worker. Both are committed; rebuild them after changing `crates/web` or what it uses of `crates/core`.
+- Importing: `src/lib/read/imports.ts` picks or takes dropped files, talks to `import.worker.ts` (which runs `bible_import`), and stores imported translations in IndexedDB (`bible-read`) with their list in `localStorage`. `overlays/importer.svelte.ts` is the import sheet's state.
+- `/read/onboarding.json` (prerendered) holds the first-visit screen's translation previews. The first visit shows it unless the address names a translation.
+- `src/lib/read/core.ts` wraps the module: on the server it reads the wasm and `data/translations/*.bbl` from disk (`node.ts`); in the browser it fetches them (`/translations/<id>.bbl`, prerendered by `src/routes/translations`).
+- Routes: `src/routes/read/+layout.server.ts` typesets the chapter with the default settings for every page; `/read/[translation]/[book]/[chapter]` is prerendered for every chapter of every bundled translation; `/read` restores the saved place and names John 1 as its canonical URL.
+- Plain pages have no app and no client-side JavaScript (`csr = false`). Each has its own layout (`+page@.svelte`) and `src/lib/read/seo/Frame.svelte` draws the frame. `/read/[translation]` lists a translation's books, `/read/[translation]/[book]` lists a book's chapters with each one's opening words, and `/read/[translation]/[book]/[chapter]/[verse]` shows a verse with the verses either side and the verse in every translation.
+- Verse pages exist for the translations in `VERSE_PAGES` (`src/lib/read/seo/meta.ts`), the KJV, BSB and WEB. All seven would nearly double the build (DECISIONS.md has the numbers). The other translations' verses link to their place in the chapter (`#v16`).
+- Titles, descriptions, canonical URLs, Open Graph and Twitter tags and the JSON-LD (a WebPage in the WebSite, with its breadcrumb trail) come from `src/lib/read/seo/` (`meta.ts`, `Meta.svelte`) for every reader page.
+- The reader's places are real links, so search engines can follow them and a modified click opens a new tab. The reader handles a plain click itself (`ui/follow.ts`). They are the sidebar's books and chapters, the book picker, the translation menu, and a chapter navigation (`chrome/PageLinks.svelte`) that stays hidden until it has keyboard focus. Every verse of the chapter in the address has an `id` (`v16`).
+- `/john/3/16` and `/john/3` redirect (308) to the verse's or the chapter's KJV page (`src/routes/[book=book]/[chapter=number]/[[verse=number]]`, served by a function).
+- `/topics` lists the 50 topic pages. `/topics/<slug>` (`src/routes/topics/[slug]`) prints a topic's verses in the KJV and the BSB, each linked to its verse pages, and the related topics. Marketing's content is in `src/lib/topics/`: `build.mjs` turns `topics.src.mjs` into `topics.json`, and `validate.mjs` checks it (see the folder's `README.md`). The file holds references only. The pages take the text from the core as they're prerendered, and the build stops on a reference the core doesn't have. A verse page links to the topics that list its verse.
+- `src/lib/read/app.svelte.ts` is the app's state and actions (the Mac's `App`); `Shell.svelte` is the window; `keyboard.ts` the shortcuts; `reader/` the continuous-scroll reader; the rest mirrors the Mac's components (`chrome/`, `sidebar/`, `overlays/`, `pages/`, `settings/`, `onboarding/`), drawn with the controls in `ui/`.
+- Settings are the Mac's `Settings` (`settings.ts`), saved in `localStorage` with the study data (the core's JSON export) and up to a few automatic backups.
+- Design tokens: `src/lib/read/tokens.css` is generated from `crates/app/assets/design-tokens.json` by `node scripts/tokens.js`. Fonts: `static/fonts/read/` is cut from the Mac app's Literata and Inter by `scripts/fonts.sh` (needs fonttools and brotli). Both outputs are committed.
+- `src/service-worker/` caches the reader for offline use. It is registered by the reader only, scoped to `/read`, and not in development.
+- The NLT is read live (`src/lib/read/nlt.ts`, `live.svelte.ts`). The translation menu offers it, and the reader asks `/api/nlt?ref=John+3` (`src/routes/api/nlt`, rules in `src/lib/server/nlt.ts`) for the chapter being read. The function calls Tyndale's API with `NLT_API_KEY`, which lives in Vercel's settings and never reaches the browser. The page keeps that one chapter in memory and shows Tyndale's credit line under it. `/read/nlt/<book>/<chapter>` shows the KJV page for the same chapter (`src/hooks.ts`) and isn't indexed. [TRANSLATIONS.md](../TRANSLATIONS.md) has the rules. In development, `NLT_API_KEY=TEST npm run dev` uses the API's anonymous access.
+- Development: `npm run dev`, then <http://localhost:5173/read>. In development the reader takes the Mac's demo steps for screenshots, for example `/read/kjv/john/1?fixture&settings={"theme":"dark"}&demo=jump:jn 3:16;select:jn 3:16` (`src/lib/read/demo.ts`): `fixture` loads sample highlights, notes and bookmarks, `settings` overrides settings, and `demo` runs steps in order. `window.readApp` is the app.
+
+## Objects in 3D (`/ark-of-the-covenant`)
+
+- The Ark of the Covenant, built from its spec in `../objects/ark.json` ([objects/README.md](../objects/README.md)): every size, the verse it comes from, and whether the text gives it or the model chooses it. `src/lib/objects/check.mjs` checks the spec against the core's KJV and BSB while the page prerenders, so a wrong reference or quote stops the build; `node src/lib/objects/check.mjs` runs the same check on its own (CI does).
+- `src/routes/ark-of-the-covenant/` is the page: the answer first, the 3D viewer, the dimensions, every part with its KJV verses, a visible FAQ (also FAQPage JSON-LD), and links to every verse and chapter it cites. `verses.json` there holds the cited verses in every bundled translation, so the viewer's hotspots read in the reader's current translation (`lib/objects/texts.ts`); one imported into this browser is read through the core. `embed` is the viewer alone, for the Mac app.
+- `src/lib/objects/Viewer.svelte` is the viewer: "Build from the text", the cubit toggle, the person for scale, See inside, Close-up, numbered hotspots and the parts list, and the rings' two readings. `scene.ts` draws it with three.js from the spec's numbers (`cherub.ts` is the cherubim's figure). It loads after the page paints and only where WebGL works; otherwise the page shows `static/ark-of-the-covenant/ark.jpg`. With reduced motion the build doesn't play by itself and nothing animates.
+- three.js stays off every other page: only the viewer imports it, and the reader's service worker leaves the viewer's files out of its offline copy (`viewerFiles` in `vite.config.ts` names them).
+- The reader puts a cube glyph after the first verse of each of the spec's sources (Exodus 25:10, 37:1) that links to the page (`lib/objects/glyphs.ts`).
+- Images: `sh scripts/ark-og.sh` (with `npm run dev` running; macOS, Google Chrome) renders the model into `static/ark-of-the-covenant/ark.jpg` and the share image `og.jpg` (template `scripts/og/ark.html`).
+- The Mac app shows the same page offline: after a build, `node scripts/app-web.mjs` copies the embed page and every file it loads into `../crates/app/web/`.
+
+## Building
+
+- Requires Node >= 22.17 (SvelteKit 3). `.npmrc` sets `engine-strict`, so on a newer Node use `npm install --engine-strict=false`.
+- `npm install && npm run build && npx vite preview`. `npm test` runs the unit tests (vitest). The build prerenders about 102,000 pages: the reader's 8,323 chapters, 469 translation and book pages, 93,286 verse pages and 51 topic pages (about 2 minutes and 2.2 GB on an M-series Mac).
+- Vercel: project `bible-rs`, team `goshen-labs`, builds from `site/` -> https://simplymybible.com (`SITE_URL`). The build reads `../data/translations`, so the project includes files outside its root directory.
+- Don't redirect the old address, bible.rasmic.xyz, yet: let it keep serving the same site. A browser keeps each address's saved data apart, so the reader's highlights, notes, bookmarks, settings and automatic backups (localStorage) and imported translations (IndexedDB) stay on bible.rasmic.xyz. A redirect would open an empty library on simplymybible.com and leave readers no way back to the old one to export it. Every page's canonical URL already names simplymybible.com, so search engines can move there without a redirect. Until the reader can carry a library across, readers move theirs by hand: Settings › Data › JSON backup › Export… on the old address, Import Backup… on the new one, then import their translations again. The redirect waits for that move step.

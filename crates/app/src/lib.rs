@@ -15,14 +15,23 @@ pub mod keymap;
 pub mod macos_menu;
 #[cfg(target_os = "macos")]
 pub mod macos_window;
+/// This platform's native menu bar.
+#[cfg(target_os = "macos")]
+pub use macos_menu as menu_bar;
+#[cfg(windows)]
+pub use windows_menu as menu_bar;
 pub mod menu;
 pub mod motion;
+#[cfg(any(target_os = "macos", windows))]
+pub mod native_menu;
 pub mod note_popover;
+pub mod objects;
 pub mod offline;
 pub mod onboarding;
 pub mod pages;
 pub mod palette;
 pub mod panel;
+pub mod platform;
 pub mod probe;
 pub mod reader;
 pub mod reading;
@@ -32,8 +41,12 @@ pub mod shortcuts_overlay;
 pub mod sidebar;
 pub mod theme;
 pub mod time;
+pub mod updater;
 pub mod verse_menu;
+pub mod webview;
 pub mod widgets;
+#[cfg(windows)]
+pub mod windows_menu;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -81,13 +94,17 @@ pub fn renderer() -> eframe::Renderer {
         // macOS: Metal. OpenGL is deprecated there, and on the macOS CI runner it held ~15 fps
         // while scrolling where Metal held the display's 60.
         _ if cfg!(target_os = "macos") => eframe::Renderer::Wgpu,
+        // Windows: Direct3D 12. Windows ships no OpenGL 3 driver of its own, so glow fails in
+        // virtual machines, remote sessions and on PCs without a vendor driver, where Direct3D
+        // still runs (in software if need be).
+        _ if cfg!(windows) => eframe::Renderer::Wgpu,
         // Elsewhere glow, which creates its context about twice as fast as wgpu.
         _ => eframe::Renderer::Glow,
     }
 }
 
-/// wgpu settings: the low-power GPU and, on macOS, only the Metal backend
-/// (`WGPU_POWER_PREF` and `WGPU_BACKEND` still override).
+/// wgpu settings: the low-power GPU and only the platform's own backend, Metal on macOS and
+/// Direct3D 12 on Windows (`WGPU_POWER_PREF` and `WGPU_BACKEND` still override).
 pub fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     let mut options = eframe::egui_wgpu::WgpuConfiguration::default();
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_setup {
@@ -97,6 +114,9 @@ pub fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
         }
         if cfg!(target_os = "macos") && std::env::var_os("WGPU_BACKEND").is_none() {
             setup.instance_descriptor.backends = eframe::wgpu::Backends::METAL;
+        }
+        if cfg!(windows) && std::env::var_os("WGPU_BACKEND").is_none() {
+            setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
         }
     }
     options
@@ -118,6 +138,24 @@ pub fn background_launch() -> Option<eframe::EventLoopBuilderHook> {
     None
 }
 
+/// The Windows build is a windowed program (no console window opens with it), so the command
+/// line's output needs the console of the shell that started it, if there is one and the output
+/// isn't already going to a file or pipe.
+#[cfg(windows)]
+fn attach_console() {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: plain Win32 calls with no pointers.
+    unsafe {
+        let out = GetStdHandle(STD_OUTPUT_HANDLE);
+        if out.is_null() || out == INVALID_HANDLE_VALUE {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
 /// Whether this process runs from inside a macOS `.app` bundle.
 fn in_app_bundle() -> bool {
     cfg!(target_os = "macos")
@@ -131,6 +169,10 @@ pub fn run() -> eframe::Result {
     let dir = data_dir();
     // First launch (no study database yet) opens at the onboarding screens' size.
     let first_run = !dir.join("study.sqlite").exists() && !probing();
+    #[cfg(windows)]
+    if !args.is_empty() {
+        attach_console();
+    }
     if let Some(result) = cli::run(&args, &dir) {
         if let Err(e) = result {
             eprintln!("error: {e:#}");
@@ -159,7 +201,7 @@ pub fn run() -> eframe::Result {
         .expect("spawn init thread");
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("bible-rs")
+        .with_title("Bible")
         .with_app_id("bible-rs")
         .with_inner_size(if first_run { onboarding::SIZE } else { egui::vec2(1280.0, 800.0) })
         .with_min_inner_size([620.0, 420.0]);
@@ -185,7 +227,7 @@ pub fn run() -> eframe::Result {
     };
     let probe = std::env::var_os("BIBLE_RS_STARTUP_PROBE").is_some();
     eframe::run_native(
-        "bible-rs",
+        "Bible",
         options,
         Box::new(move |cc| {
             trace(t0, "window + GPU context ready");

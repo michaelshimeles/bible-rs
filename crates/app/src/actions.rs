@@ -36,7 +36,8 @@ pub enum Action {
     EditSelectedNote,
     ToggleBookmark,
     RemoveBookmark(VerseRef),
-    RemoveHighlight(VerseRef),
+    /// Removes one highlight of a verse: the one stored from that char.
+    RemoveHighlight(VerseRef, u32),
     RemoveNote(VerseRef),
     /// Save a note's text (an empty text removes it).
     SaveNote(VerseRef, String),
@@ -98,6 +99,7 @@ pub enum Action {
     /// Show a page in the main area (the reader, the library, a study collection).
     OpenPage(crate::pages::Page),
     ShowShortcuts,
+    CheckForUpdates,
     ScrollLines(f32),
     ScrollPages(f32),
     Toast(String),

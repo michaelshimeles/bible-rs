@@ -1,7 +1,9 @@
 # bible-rs
 
-A very fast, native Bible reader for the Mac, written in Rust. Just the Bible — beautifully
-typeset, searchable as you type, with highlights, notes and bookmarks kept on your computer.
+Bible: a very fast, native Bible reader for the Mac, written in Rust. Just the Bible — beautifully
+typeset, searchable as you type, with highlights, notes and bookmarks kept on your computer. The
+[iPhone version](#iphone) and the [web reader](#web) share the same core, and a
+[Windows build](WINDOWS.md) runs the same app (unsigned for now).
 
 ![Reading John 1 in the King James Version](docs/screenshots/reader-light.png)
 
@@ -67,6 +69,7 @@ typeset, searchable as you type, with highlights, notes and bookmarks kept on yo
 - Click a verse (⇧-click for a range, J/K to move) to select it, then: highlight in six colours
   (1–6, 0 to clear), write a note (N), bookmark (B / ⌘D), copy (⌘C, or ⇧⌘C with the reference)
   or compare translations (C). Right-click opens the verse menu with all of these.
+- Drag across words (in a verse or across verses) to highlight or copy just them.
 - Notes and bookmarks show in the margin; the Study sidebar lists everything.
 - Export to Markdown (⌘E) or JSON (⌘⇧E); JSON imports back.
 
@@ -170,6 +173,7 @@ chapter by chapter, and appear in parallel and compare views as their chapters l
 | ↑ ↓, Space, ⇧Space, PgUp/PgDn | Scroll |
 | ⌘[ / ⌘] (⌥← / ⌥→) | Back / forward |
 | Click, ⇧-click, J / K | Select a verse, a range, next / previous verse |
+| Drag, ⇧-click | Choose words, extend them |
 | 1–6, 0 | Highlight colour, remove highlight |
 | N · B or ⌘D · ⌘C · ⇧⌘C · C | Note · bookmark · copy · copy with reference · compare |
 | ⌘1…⌘9 | Switch translation |
@@ -307,17 +311,22 @@ cargo build --release
 ./target/release/bible-rs
 ```
 
-On macOS, `scripts/bundle-macos.sh` builds `dist/bible-rs.app` (`UNIVERSAL=1` for arm64 +
+On macOS, `scripts/bundle-macos.sh` builds `dist/Bible.app` (`UNIVERSAL=1` for arm64 +
 x86_64, `SIGN_IDENTITY=…` to sign). `scripts/release-macos.sh` makes the downloadable release: the
-universal app signed with a Developer ID and notarized, a disk image, a zip and their checksums
-([RELEASING.md](RELEASING.md)). CI builds an ad-hoc signed DMG on every push and uploads it as an
-artifact.
+universal app signed with a Developer ID and notarized, a disk image, a zip, their checksums and
+the signed update feed that installed copies check with Sparkle ([RELEASING.md](RELEASING.md)).
+CI builds an ad-hoc signed DMG on every push and uploads it as an artifact.
+
+On Windows, `cargo build --release -p bible-rs` builds `bible-rs.exe` and
+`scripts/package-windows.sh` the per-user installer; [WINDOWS.md](WINDOWS.md) covers building
+(also cross-compiling from a Mac), installing, signing and what's still missing. CI builds the
+unsigned installer on every pull request and uploads it as an artifact.
 
 Other tasks:
 
 | | |
 |---|---|
-| `cargo test --workspace` | core (model, format, importers, search, references, study, online with a mock server) and typesetting tests |
+| `cargo test --workspace` | core (model, format, importers, search, references, study, online with a mock server), typesetting and FFI tests |
 | `cargo run -p xtask -- build-data` | re-download the pinned public-domain sources and regenerate `data/translations/*.bbl` |
 | `scripts/screenshots.sh` | regenerate `docs/screenshots/` under Xvfb |
 | `BIBLE_RS_HOME=/some/dir bible-rs` | use another data folder |
@@ -333,6 +342,62 @@ bible-rs export --markdown -o notes.md
 bible-rs import-notes notes.json
 ```
 
+## iPhone
+
+`apps/ios` is the iPhone app (iPad runs it too): SwiftUI around the same Rust core, through
+UniFFI (`crates/ffi`). It has the Mac's typesetting, themes and colours. You can scroll through all
+1,189 chapters, jump to a reference (`jn 3:16`), search as you type, and highlight, annotate,
+bookmark, copy or share verses. Parallel and compare views, import and online translations are
+Mac-only for now.
+
+<table>
+<tr>
+<td><img src="docs/screenshots/ios/reader-light.png" alt="John 3 on iPhone, light theme, with highlights and a note"></td>
+<td><img src="docs/screenshots/ios/psalm-dark.png" alt="Psalm 23 on iPhone, dark theme"></td>
+<td><img src="docs/screenshots/ios/search-light.png" alt="Search on iPhone"></td>
+<td><img src="docs/screenshots/ios/selection-dark.png" alt="A selected verse with highlight colours and actions"></td>
+</tr>
+</table>
+
+Requires Xcode 26 (the app targets iOS 17+), [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+(`brew install xcodegen`) and rustup; the script adds the iOS Rust targets.
+
+```sh
+scripts/build-ios.sh --run        # build, then launch in a simulator
+scripts/build-ios.sh --test       # UI tests in a simulator
+scripts/build-ios.sh --framework  # just the Rust framework and the Xcode project, then:
+open apps/ios/Bible.xcodeproj
+scripts/ios-screenshots.sh        # regenerate docs/screenshots/ios/
+scripts/ios-screenshots.sh --app-store  # full-size iPhone and iPad sets for the App Store
+```
+
+`--run` and `--test` use a simulator named "Bible iPhone", created if needed; set
+`SIMULATOR="iPhone 17 Pro"` to use another. Simulator builds need no signing. For a device, create
+`apps/ios/Config/Local.xcconfig` (git-ignored) with `DEVELOPMENT_TEAM = <your team ID>`, and
+`BIBLE_BUNDLE_ID = <your bundle ID>` if you don't own the default one. Then run
+`scripts/build-ios.sh --device` or run from Xcode.
+
+`scripts/release-ios.sh` archives, signs and uploads a build for the App Store.
+[apps/ios/APP_STORE.md](apps/ios/APP_STORE.md) covers the setup, the listing and the answers App
+Store Connect asks for.
+
+## Web
+
+[simplymybible.com/read](https://simplymybible.com/read) is the Mac app in a browser: the same
+typesetting, themes, palette, search, study tools, pages and shortcuts, with the core compiled to
+WebAssembly. Every chapter of every bundled translation is also a static page
+(`/read/kjv/john/3`). [Importing](#import-a-translation-you-own) works as on the Mac, with the same
+formats, and the conversion runs in the browser. Study data, settings and imported translations
+stay in the browser. After one visit the reader works offline. Online translations are Mac-only.
+
+The site is the SvelteKit app in `site/` ([site/README.md](site/README.md)):
+
+```sh
+scripts/build-web.sh               # after changing crates/web or the parts of bible-core it uses
+cd site && npm install && npm run dev   # http://localhost:5173/read
+npm run build                      # prerenders the 8,323 chapter pages
+```
+
 ## How it's built
 
 ```
@@ -341,6 +406,11 @@ crates/core   bible-core: canonical book grid, verse-indexed model, .bbl format,
               ESV/API.Bible providers, Keychain secrets, translation library
 crates/app    bible-rs: egui app — reader (typesetting, continuous scroll), sidebar, palette,
               panels, settings, macOS menu bar, CLI
+crates/ffi    bible-ffi: the core for mobile apps through UniFFI — chapters as styled blocks,
+              search, references, study data, design tokens
+crates/web    bible-web: the core for the browser through wasm-bindgen (built into site/)
+apps/ios      the iPhone app: SwiftUI, with a UIKit/TextKit reader; XcodeGen project.yml
+site          the website (SvelteKit): the landing page and the web reader at /read
 xtask         reproducible bundled-data build from pinned public-domain sources
 data          generated .bbl files (public domain only)
 ```
@@ -351,4 +421,7 @@ data format, search, and the licensing approach.
 ## License
 
 Code: MIT ([LICENSE](LICENSE)). Bundled translations: public domain ([LICENSES/](LICENSES/README.md)).
-Fonts: Literata and Inter, SIL Open Font License 1.1.
+Fonts: Literata and Inter, SIL Open Font License 1.1. The object specs in `objects/` and the images
+rendered from their 3D models are CC BY 4.0 ([objects/LICENSE](objects/LICENSE)). Credit them as:
+
+> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible-rs

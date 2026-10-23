@@ -3,13 +3,17 @@
 # scripts/release-macos.sh does the work; running it on a Mac is the primary path
 # (RELEASING.md), this workflow is the same steps on a GitHub runner.
 #
+# The windows job builds the Windows installer as a workflow artifact only; it attaches nothing
+# to the release (WINDOWS.md). It is unsigned until Windows signing is set up.
+#
 # Repository secrets (Settings → Secrets and variables → Actions), set up in RELEASING.md:
 #   DEVELOPER_ID_P12           base64 of the "Developer ID Application" certificate and key (.p12)
 #   DEVELOPER_ID_P12_PASSWORD  the password the .p12 was exported with
 #   NOTARY_API_KEY             contents of the App Store Connect API key file (AuthKey_….p8)
 #   NOTARY_API_KEY_ID          that key's ID
 #   NOTARY_API_ISSUER          the issuer ID shown above the keys list
-name: Release (macOS)
+#   SPARKLE_PRIVATE_KEY        the update signing key, exported with generate_keys -x
+name: Release (macOS; Windows artifact)
 
 on:
   push:
@@ -44,9 +48,10 @@ jobs:
           NOTARY_API_KEY: ${{ secrets.NOTARY_API_KEY }}
           NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
           NOTARY_API_ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
           missing=0
-          for name in DEVELOPER_ID_P12 DEVELOPER_ID_P12_PASSWORD NOTARY_API_KEY NOTARY_API_KEY_ID NOTARY_API_ISSUER; do
+          for name in DEVELOPER_ID_P12 DEVELOPER_ID_P12_PASSWORD NOTARY_API_KEY NOTARY_API_KEY_ID NOTARY_API_ISSUER SPARKLE_PRIVATE_KEY; do
             if [ -z "$(printenv "$name")" ]; then
               echo "::error::repository secret $name is not set (see RELEASING.md)"
               missing=1
@@ -94,6 +99,17 @@ jobs:
             --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$NOTARY_API_KEY_ID" --issuer "$NOTARY_API_ISSUER"
           rm -f "$RUNNER_TEMP/AuthKey.p8"
 
+      # generate_keys keeps the key in the runner's login keychain, where release-macos.sh
+      # looks for it, as on a Mac.
+      - name: Update signing key
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          sparkle="$(scripts/fetch-sparkle.sh)"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle-ed25519"
+          "$sparkle/bin/generate_keys" --account bible-rs -f "$RUNNER_TEMP/sparkle-ed25519"
+          rm -f "$RUNNER_TEMP/sparkle-ed25519"
+
       - name: Build, sign, notarize, staple
         run: NOTARY_KEYCHAIN="$KEYCHAIN" scripts/release-macos.sh
 
@@ -104,19 +120,21 @@ jobs:
             dist/bible-rs-*universal.dmg
             dist/bible-rs-*-universal.zip
             dist/bible-rs-*-SHA256SUMS.txt
+            dist/appcast.xml
           if-no-files-found: error
 
-      # bible-rs-universal.dmg is the name bible-rs.vercel.app/download points at.
+      # bible-rs-universal.dmg is the name simplymybible.com/download points at, and appcast.xml
+      # the feed installed copies check.
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          assets=(dist/bible-rs-*universal.dmg dist/bible-rs-*-universal.zip dist/bible-rs-*-SHA256SUMS.txt)
+          assets=(dist/bible-rs-*universal.dmg dist/bible-rs-*-universal.zip dist/bible-rs-*-SHA256SUMS.txt dist/appcast.xml)
           draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null || echo none)"
           case "$draft" in
             none)
               gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes \
-                --title "bible-rs ${GITHUB_REF_NAME#v}" "${assets[@]}" ;;
+                --title "Bible ${GITHUB_REF_NAME#v}" "${assets[@]}" ;;
             true) # a draft made by hand keeps its notes; only the files change
               gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber ;;
             *) # never swap the files of a published release behind a maintainer's back
@@ -126,3 +144,86 @@ jobs:
       - name: Remove the signing keychain
         if: always()
         run: if [ -n "${KEYCHAIN:-}" ]; then security delete-keychain "$KEYCHAIN" || true; fi
+
+  # The Windows installer, as a workflow artifact. It never touches the GitHub Release.
+  windows:
+    name: Windows installer (artifact only)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Tag matches the workspace version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version (expected v$version)"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+
+      - name: NSIS
+        run: choco install nsis --version=3.13.0 --no-progress -y
+
+      # Signing hook (WINDOWS.md, "Signing"). Skipped until the repository variable
+      # WINDOWS_SIGNING is "artifact-signing". Then it needs the variables
+      # ARTIFACT_SIGNING_ENDPOINT, ARTIFACT_SIGNING_ACCOUNT and ARTIFACT_SIGNING_PROFILE, and the
+      # secrets AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET of an app registration
+      # with the "Artifact Signing Certificate Profile Signer" role.
+      - name: Signing tools (Azure Artifact Signing)
+        if: vars.WINDOWS_SIGNING == 'artifact-signing'
+        env:
+          ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+        run: |
+          tools="$(cygpath -u "$RUNNER_TEMP")/signing"
+          mkdir -p "$tools"
+          curl -fsSL -o "$tools/nuget.exe" https://dist.nuget.org/win-x86-commandline/v6.14.0/nuget.exe
+          "$tools/nuget.exe" install Microsoft.Windows.SDK.BuildTools -Version 10.0.28000.2705 -ExcludeVersion -OutputDirectory "$(cygpath -w "$tools")"
+          "$tools/nuget.exe" install Microsoft.ArtifactSigning.Client -Version 1.0.146 -ExcludeVersion -OutputDirectory "$(cygpath -w "$tools")"
+          signtool="$tools/Microsoft.Windows.SDK.BuildTools/bin/10.0.28000.0/x64/signtool.exe"
+          dlib="$(cygpath -w "$tools/Microsoft.ArtifactSigning.Client/bin/x64/Azure.CodeSigning.Dlib.dll")"
+          # Sign with the app registration's secret (EnvironmentCredential) and nothing else.
+          cat > "$tools/metadata.json" <<JSON
+          {
+            "Endpoint": "$ENDPOINT",
+            "CodeSigningAccountName": "$ACCOUNT",
+            "CertificateProfileName": "$PROFILE",
+            "ExcludeCredentials": ["ManagedIdentityCredential", "WorkloadIdentityCredential",
+              "SharedTokenCacheCredential", "VisualStudioCredential", "VisualStudioCodeCredential",
+              "AzureCliCredential", "AzurePowerShellCredential", "AzureDeveloperCliCredential",
+              "InteractiveBrowserCredential"]
+          }
+          JSON
+          metadata="$(cygpath -w "$tools/metadata.json")"
+          {
+            echo "SIGNTOOL=$signtool"
+            echo "WINDOWS_SIGN_COMMAND=\"$(cygpath -w "$signtool")\" sign /v /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib \"$dlib\" /dmdf \"$metadata\""
+          } >> "$GITHUB_ENV"
+
+      - name: Build and package
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: MAKENSIS="/c/Program Files (x86)/NSIS/makensis.exe" scripts/package-windows.sh
+
+      - name: Installer contents
+        run: 7z l dist/bible-rs-*-windows-x64-setup.exe
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bible-rs-${{ github.ref_name }}-windows-x64${{ vars.WINDOWS_SIGNING != 'artifact-signing' && '-unsigned' || '' }}
+          path: |
+            dist/bible-rs-*-windows-x64-setup.exe
+            dist/bible-rs-*-windows-x64-SHA256SUMS.txt
+          if-no-files-found: error

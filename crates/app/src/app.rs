@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use bible_core::books::{BookId, ChapterIdx, VerseRef};
-use bible_core::library::Library;
-use bible_core::study::StudyStore;
+use bible_core::library::{Chapter, Library};
+use bible_core::study::{HighlightColor, StudyStore, TextSpan};
 use eframe::egui::{self, Align2, Frame, Id, Key, Modifiers, Sense, Stroke, Ui, vec2};
 use serde::{Deserialize, Serialize};
 
@@ -117,7 +117,7 @@ impl Settings {
         study.setting("app").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
 
-    pub fn save(&self, study: &StudyStore) {
+    pub fn save(&self, study: &mut StudyStore) {
         if let Ok(s) = serde_json::to_string(self) {
             let _ = study.set_setting("app", &s);
         }
@@ -273,6 +273,9 @@ pub struct BibleApp {
     reminded: Option<i64>,
     /// The page in the main area (the reader unless a library or study page is open).
     pub pages: crate::pages::Pages,
+    /// The Ark page's webview, and the area it covers this frame (under the toolbar).
+    pub object_view: crate::webview::ObjectView,
+    object_rect: Option<egui::Rect>,
     /// `BIBLE_RS_DEMO`: steps that put the window into a given state (screenshots), one per frame.
     demo: std::collections::VecDeque<String>,
     chrome: Chrome,
@@ -281,8 +284,11 @@ pub struct BibleApp {
     toolbar_items: Vec<egui::Rect>,
     #[cfg(target_os = "macos")]
     no_drag: crate::macos_window::NoDragAreas,
-    #[cfg(target_os = "macos")]
-    menu: Option<crate::macos_menu::AppMenu>,
+    #[cfg(any(target_os = "macos", windows))]
+    menu: Option<crate::menu_bar::AppMenu>,
+    /// Windows: whether the window had the focus last frame.
+    #[cfg(windows)]
+    was_focused: bool,
 }
 
 /// Toolbar geometry for the current frame.
@@ -396,6 +402,8 @@ impl BibleApp {
             focus_reveal: false,
             backup_checked: None,
             pages: Default::default(),
+            object_view: Default::default(),
+            object_rect: None,
             demo: std::env::var("BIBLE_RS_DEMO")
                 .map(|s| s.split(';').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
                 .unwrap_or_default(),
@@ -404,9 +412,17 @@ impl BibleApp {
             toolbar_items: Vec::new(),
             #[cfg(target_os = "macos")]
             no_drag: Default::default(),
-            settings,
             #[cfg(target_os = "macos")]
             menu: if crate::offscreen() { None } else { crate::macos_menu::AppMenu::install() },
+            #[cfg(windows)]
+            menu: if crate::offscreen() {
+                None
+            } else {
+                crate::windows_menu::AppMenu::install(cc, settings.theme == Theme::Dark)
+            },
+            #[cfg(windows)]
+            was_focused: false,
+            settings,
         }
     }
 
@@ -556,6 +572,27 @@ impl BibleApp {
         }
     }
 
+    /// Translation `id`'s text of chapter `c`: where chosen words are counted.
+    fn chapter_text(&self, id: &str, c: ChapterIdx) -> Option<Arc<bible_core::Translation>> {
+        match self.library.chapter(id, c) {
+            Chapter::Ready(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The colour all of the selection has (the chosen words, else the selected verses whole).
+    fn selection_color(&self) -> Option<HighlightColor> {
+        let (span, id) = match self.reader.text_span() {
+            Some((span, id)) => (span, id.to_string()),
+            None => {
+                let refs = self.reader.selected_refs();
+                (TextSpan::verses(*refs.first()?, *refs.last()?), self.settings.translation.clone())
+            }
+        };
+        let t = self.chapter_text(&id, span.first.chapter_idx());
+        self.study.span_color(&span, |r| t.as_ref().and_then(|t| t.find(r)).map(|v| v.text.to_string()))
+    }
+
     fn selection_or_location(&self) -> Vec<VerseRef> {
         let sel = self.reader.selected_refs();
         if sel.is_empty() {
@@ -571,10 +608,11 @@ impl BibleApp {
             Action::Jump { chapter, verse, flash } => {
                 self.pages.open(crate::pages::Page::Reader);
                 self.jump(chapter, verse, flash);
-                // Landing on a specific verse selects it, so N/B/C/1–6 act on it right away.
-                if let (Some(v), true) = (verse, flash) {
-                    self.reader.set_selection(Some(VerseRef::new(chapter.book(), chapter.chapter(), v)));
-                }
+                // Landing on a specific verse selects it, so N/B/C/1–6 act on it right away. Anywhere
+                // else, a selection left from before would send J/K back to where it was.
+                let landed =
+                    verse.filter(|_| flash).map(|v| VerseRef::new(chapter.book(), chapter.chapter(), v));
+                self.reader.set_selection(landed);
             }
             // From a page, Back returns to the reader.
             Action::Back if !self.pages.reader() => self.pages.open(crate::pages::Page::Reader),
@@ -662,6 +700,15 @@ impl BibleApp {
                 self.settings.parallel.retain(|p| *p != id);
             }
             Action::Highlight(color) => {
+                // Chosen words: just those, placed in the text they were chosen in.
+                if let Some((span, id)) = self.reader.text_span() {
+                    let t = self.chapter_text(id, span.first.chapter_idx());
+                    let text = |r: VerseRef| t.as_ref().and_then(|t| t.find(r)).map(|v| v.text.to_string());
+                    if let Err(e) = self.study.highlight_span(&span, color, text) {
+                        self.toast(ctx, format!("Couldn't save highlight: {e:#}"));
+                    }
+                    return;
+                }
                 let refs = self.reader.selected_refs();
                 if refs.is_empty() {
                     return;
@@ -694,8 +741,8 @@ impl BibleApp {
                     self.toast(ctx, format!("{e:#}"));
                 }
             }
-            Action::RemoveHighlight(v) => {
-                if let Err(e) = self.study.set_highlight(v, None) {
+            Action::RemoveHighlight(v, start) => {
+                if let Err(e) = self.study.remove_highlight(v, start) {
                     self.toast(ctx, format!("{e:#}"));
                 }
             }
@@ -708,6 +755,14 @@ impl BibleApp {
                 }
             }
             Action::CopyText => {
+                if let Some((span, id)) = self.reader.text_span() {
+                    let t = self.chapter_text(id, span.first.chapter_idx());
+                    if let Some(text) = t.and_then(|t| bible_core::copy::span_text(&t, &span)) {
+                        ctx.copy_text(text);
+                        self.toast(ctx, "Copied");
+                    }
+                    return;
+                }
                 let refs = self.reader.selected_refs();
                 if let Ok(t) = self.library.load(&self.settings.translation) {
                     let text: Vec<String> =
@@ -730,6 +785,14 @@ impl BibleApp {
                 }
             }
             Action::Copy => {
+                if let Some((span, id)) = self.reader.text_span() {
+                    let t = self.chapter_text(id, span.first.chapter_idx());
+                    if let Some(text) = t.and_then(|t| bible_core::copy::format_span(&t, &span)) {
+                        ctx.copy_text(text);
+                        self.toast(ctx, "Copied with reference");
+                    }
+                    return;
+                }
                 let refs = self.reader.selected_refs();
                 if refs.is_empty() {
                     return;
@@ -892,6 +955,7 @@ impl BibleApp {
                 }
             }
             Action::ShowShortcuts => self.shortcuts_open = !self.shortcuts_open,
+            Action::CheckForUpdates => crate::updater::check_for_updates(),
             Action::ScrollLines(n) => {
                 let lh = self.settings.typo.size * self.settings.typo.line_height;
                 self.reader.scroll_by(n * lh);
@@ -1125,7 +1189,7 @@ impl BibleApp {
     }
 
     fn import_study(&mut self, ctx: &egui::Context) {
-        let Some(path) = rfd::FileDialog::new().add_filter("bible-rs export", &["json"]).pick_file() else {
+        let Some(path) = rfd::FileDialog::new().add_filter("Bible export", &["json"]).pick_file() else {
             return;
         };
         let r = std::fs::read_to_string(&path)
@@ -1274,7 +1338,12 @@ impl BibleApp {
         }
         items.push(nav_rect);
 
-        // On a page: a wider field that filters it, and nothing else.
+        // On a page: a wider field that filters it, and nothing else (the Ark has nothing to filter).
+        if self.pages.page == crate::pages::Page::Ark {
+            #[cfg(target_os = "macos")]
+            self.toolbar_items.extend(items);
+            return;
+        }
         if !self.pages.reader() {
             let w = PAGE_SEARCH_WIDTH;
             let search = egui::Rect::from_min_size(
@@ -1479,7 +1548,7 @@ impl BibleApp {
             let chord = crate::keymap::ALL
                 .iter()
                 .find(|s| s.id == "focus")
-                .map(|s| crate::keymap::keycaps(s, &self.settings.shortcuts).concat())
+                .map(|s| crate::keymap::caps_label(&crate::keymap::keycaps(s, &self.settings.shortcuts)))
                 .unwrap_or_default();
             let hint = format!("Exit Focus {chord}");
             let hint_w = ui
@@ -1684,7 +1753,7 @@ impl BibleApp {
             crate::keymap::ALL
                 .iter()
                 .find(|s| s.id == id)
-                .map(|s| crate::keymap::keycaps(s, &self.settings.shortcuts).concat())
+                .map(|s| crate::keymap::caps_label(&crate::keymap::keycaps(s, &self.settings.shortcuts)))
                 .unwrap_or_default()
         };
         let sidebar = if self.settings.sidebar_open { "Hide Sidebar" } else { "Show Sidebar" };
@@ -1784,6 +1853,57 @@ impl BibleApp {
             _ => {
                 self.offline = None;
                 None
+            }
+        }
+    }
+
+    /// Places the Ark page's webview over its page, or closes it once another page is open, and
+    /// turns what the page asks for into actions.
+    fn object_view(&mut self, ctx: &egui::Context, frame: &eframe::Frame, actions: &mut Vec<Action>) {
+        let Some(rect) = self.object_rect.take().filter(|_| crate::webview::AVAILABLE) else {
+            self.object_view.close();
+            return;
+        };
+        // egui draws everything in one layer under the native view, so anything it shows over the
+        // page (the palette, a sheet, a menu) needs the view out of the way. Tooltips and toasts
+        // are left under it rather than make the page blink.
+        let over_page = ctx.memory(|m| {
+            m.areas().visible_layer_ids().into_iter().any(|layer| {
+                !matches!(layer.order, egui::Order::Background | egui::Order::Tooltip)
+                    && m.area_rect(layer.id).is_some_and(|r| r.intersects(rect))
+            })
+        });
+        let covered = over_page
+            || self.palette.is_some()
+            || self.shortcuts_open
+            || self.import_sheet.is_some()
+            || self.share_sheet.is_some();
+        self.object_view.show(
+            frame,
+            ctx,
+            crate::objects::ark(),
+            rect,
+            covered,
+            self.settings.theme,
+            &self.settings.translation,
+            &self.library,
+        );
+        if !covered && ctx.input(|i| i.key_pressed(Key::Escape)) {
+            actions.push(Action::Back);
+        }
+        for m in self.object_view.messages() {
+            match m {
+                crate::webview::Message::Read(v) => {
+                    actions.push(Action::Jump { chapter: v.chapter_idx(), verse: Some(v.verse), flash: true })
+                }
+                crate::webview::Message::Close => actions.push(Action::Back),
+                crate::webview::Message::Ready => {
+                    if let Some(t) = self.object_view.first_draw
+                        && std::env::var_os("BIBLE_RS_TRACE_WEBVIEW").is_some()
+                    {
+                        eprintln!("webview: first draw {:.0} ms", t.as_secs_f64() * 1000.0);
+                    }
+                }
             }
         }
     }
@@ -1976,7 +2096,8 @@ fn sidebar_toggle(
     }
     let icon = egui::Rect::from_center_size(rect.center(), vec2(ICON, ICON));
     crate::icons::sidebar(ui.painter(), icon, p.ink_2.lerp_to_gamma(p.ink, capsule));
-    let resp = resp.on_hover_text(if open { "Hide sidebar (⌘B)" } else { "Show sidebar (⌘B)" });
+    let tip = if open { "Hide sidebar (⌘B)" } else { "Show sidebar (⌘B)" };
+    let resp = resp.on_hover_text(crate::keymap::shown(tip).as_ref());
     if resp.clicked() {
         actions.push(Action::ToggleSidebar);
     }
@@ -1988,7 +2109,8 @@ fn translation_menu(ui: &mut Ui, library: &Library, settings: &Settings, actions
     for (i, e) in library.entries().iter().enumerate() {
         let m = &e.meta;
         let current = m.id == settings.translation;
-        let shortcut = if i < 9 { format!("⌘{}", i + 1) } else { String::new() };
+        let shortcut =
+            if i < 9 { crate::keymap::shown(&format!("⌘{}", i + 1)).into_owned() } else { String::new() };
         let resp = ui.add(
             egui::Button::selectable(current, egui::RichText::new(format!("{}  {}", m.abbrev, m.name)))
                 .shortcut_text(shortcut),
@@ -2019,6 +2141,31 @@ fn translation_menu(ui: &mut Ui, library: &Library, settings: &Settings, actions
     if ui.button("Manage translations…").clicked() {
         actions.push(Action::OpenSettings(SettingsTab::Translations));
         ui.close();
+    }
+}
+
+impl BibleApp {
+    /// Windows: the menu bar follows the app's theme (dark for Dark, light for Light and Sepia),
+    /// focus mode hides it, and onboarding greys out Focus Mode. egui gives the title bar the app's theme when that changes, but
+    /// winit puts it back to the system's whenever a system setting changes, so it is set again
+    /// when the window gets the focus back.
+    #[cfg(windows)]
+    fn match_window_chrome(&mut self, ctx: &egui::Context) {
+        if crate::offscreen() {
+            return;
+        }
+        let dark = self.settings.theme == Theme::Dark;
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.was_focused {
+            let theme = if dark { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(theme));
+        }
+        self.was_focused = focused;
+        if let Some(menu) = &mut self.menu {
+            menu.set_dark(dark);
+            menu.set_shown(!self.focus);
+            menu.set_focus_enabled(self.onboarding.is_none());
+        }
     }
 }
 
@@ -2084,6 +2231,9 @@ impl BibleApp {
                 self.library.entries().iter().filter(|e| e.is_local()).map(|e| e.meta.id.clone()).take(3),
             );
             self.library.warm(&ids);
+            if !crate::offscreen() && !crate::probing() {
+                crate::updater::start();
+            }
             if self.startup.probe {
                 let presented = self.startup.t0.elapsed();
                 let epoch_ms = std::time::SystemTime::now()
@@ -2166,7 +2316,7 @@ impl eframe::App for BibleApp {
         if self.onboarding.is_none() {
             self.shortcuts(&ctx, &mut actions);
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(menu) = &self.menu {
             menu.poll(&mut actions);
         }
@@ -2188,6 +2338,8 @@ impl eframe::App for BibleApp {
                 actions.push(Action::SetTheme(t));
             }
         }
+        #[cfg(windows)]
+        self.match_window_chrome(&ctx);
         let p = self.settings.theme.palette();
 
         self.chrome = chrome(frame, &ctx);
@@ -2287,6 +2439,12 @@ impl eframe::App for BibleApp {
                     toolbar: self.chrome.height,
                 };
                 self.pages.show(ui, full, &env, &mut actions);
+                if self.pages.page == crate::pages::Page::Ark {
+                    self.object_rect = Some(egui::Rect::from_min_max(
+                        egui::pos2(full.left(), full.top() + self.chrome.height),
+                        full.max,
+                    ));
+                }
                 let material = ctx.animate_bool_with_time(
                     Id::new("toolbar-material"),
                     self.pages.scrolled,
@@ -2357,7 +2515,7 @@ impl eframe::App for BibleApp {
                     self.reader.furthest_in_view,
                     &self.settings.translation,
                     &self.library,
-                    &self.study,
+                    &mut self.study,
                 );
             }
             if band > 0.0 {
@@ -2434,9 +2592,10 @@ impl eframe::App for BibleApp {
                 }
             }
         }
+        let current = self.verse_menu.as_ref().and_then(|_| self.selection_color());
         if let Some(menu) = &mut self.verse_menu {
             let refs = self.reader.selected_refs();
-            if menu.show(&ctx, p, &self.study, &refs, &self.settings, &mut actions) {
+            if menu.show(&ctx, p, &self.study, &refs, current, &self.settings, &mut actions) {
                 self.verse_menu = None;
             }
         }
@@ -2496,14 +2655,9 @@ impl eframe::App for BibleApp {
                 }
                 crate::share_sheet::Outcome::Close => self.share_sheet = None,
                 crate::share_sheet::Outcome::Toast(msg) => self.toast(&ctx, msg),
+                #[cfg(target_os = "macos")]
                 crate::share_sheet::Outcome::Share { path, anchor } => {
-                    #[cfg(target_os = "macos")]
                     crate::macos_window::share_file(frame, &path, anchor, ctx.zoom_factor());
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        let _ = anchor;
-                        self.toast(&ctx, format!("Saved the image to {}", path.display()));
-                    }
                 }
             }
         }
@@ -2511,14 +2665,15 @@ impl eframe::App for BibleApp {
         self.plan_reminder(&ctx);
         self.auto_backup(&ctx);
         self.toasts(&ctx);
+        self.object_view(&ctx, frame, &mut actions);
         self.end_frame(&ctx, frame, frame_start, actions);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.reading.finish(&self.study);
+        self.reading.finish(&mut self.study);
         self.settings.chapter = self.reader.location.0.0;
         self.settings.verse = self.reader.location.1;
-        self.settings.save(&self.study);
+        self.settings.save(&mut self.study);
     }
 }
 
@@ -2554,14 +2709,57 @@ pub fn last_backup(data_dir: &std::path::Path) -> Option<(i64, u64)> {
 
 /// Opens a folder in the system's file browser.
 pub fn reveal(path: &std::path::Path) {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let _ = std::process::Command::new(opener).arg(path).spawn();
+    #[cfg(windows)]
+    shell_open(path.as_os_str());
+    #[cfg(not(windows))]
+    {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let _ = std::process::Command::new(opener).arg(path).spawn();
+    }
 }
 
 /// Opens a web page in the browser.
 pub fn open_url(url: &str) {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let _ = std::process::Command::new(opener).arg(url).spawn();
+    #[cfg(windows)]
+    shell_open(std::ffi::OsStr::new(url));
+    #[cfg(not(windows))]
+    {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let _ = std::process::Command::new(opener).arg(url).spawn();
+    }
+}
+
+/// Windows: opens a folder in File Explorer or a link in the default browser, as a double-click
+/// would.
+#[cfg(windows)]
+pub fn shell_open(target: &std::ffi::OsStr) {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+    };
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide: Vec<u16> = target.encode_wide().chain([0]).collect();
+    let open: Vec<u16> = "open".encode_utf16().chain([0]).collect();
+    // SAFETY: both strings are NUL-terminated and outlive the call. ShellExecute wants COM on the
+    // calling thread (the update check calls this from its own); a successful CoInitializeEx is
+    // balanced, one that finds COM already set up in another mode changes nothing.
+    unsafe {
+        let com =
+            CoInitializeEx(std::ptr::null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32);
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            open.as_ptr(),
+            wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+        if com >= 0 {
+            CoUninitialize();
+        }
+    }
 }
 
 pub fn online_counter() -> Arc<AtomicU64> {
