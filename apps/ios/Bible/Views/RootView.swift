@@ -106,15 +106,21 @@ struct TopBar: View {
                 Button {
                     store.sheet = .books
                 } label: {
-                    Text(store.title)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .padding(.leading, 16)
-                        .padding(.trailing, 10)
-                        .frame(minHeight: 44)
+                    ViewThatFits(in: .horizontal) {
+                        referenceLabel(store.title)
+                        referenceLabel(shortReference)
+                        // Narrower still, as in a Slide Over window on iPad: the short form
+                        // truncates, as the full title did before, rather than push the bar
+                        // past the screen.
+                        referenceLabel(shortReference, truncates: true)
+                    }
+                    .font(.headline)
+                    // Keep the bar compact; long-press presents the uncapped full title.
+                    .dynamicTypeSize(...DynamicTypeSize.xxLarge)
                 }
                 .accessibilityLabel("\(store.title). Choose a book and chapter")
                 .accessibilityIdentifier("reference")
+                .accessibilityShowsLargeContentViewer { Text(store.title) }
 
                 Rectangle()
                     .fill(Color(theme.separator))
@@ -132,15 +138,22 @@ struct TopBar: View {
                 } label: {
                     Text(store.translation?.abbrev ?? "")
                         .font(.subheadline.weight(.semibold))
+                        // Leave room for the reference in this compact control, even at
+                        // accessibility sizes. The reader text still follows Dynamic Type.
+                        .dynamicTypeSize(...DynamicTypeSize.large)
+                        .fixedSize(horizontal: true, vertical: false)
                         .padding(.leading, 10)
                         .padding(.trailing, 16)
                         .frame(minHeight: 44)
                 }
                 .accessibilityLabel("Translation: \(store.translation?.name ?? "")")
                 .accessibilityIdentifier("translation")
+                .accessibilityShowsLargeContentViewer { Text(store.translation?.name ?? "") }
             }
             .foregroundStyle(Color(theme.ink))
             .glass(in: Capsule(), theme: theme)
+            // Offer the reference all free width before considering its abbreviation.
+            .layoutPriority(1)
 
             Spacer(minLength: 0)
 
@@ -155,6 +168,22 @@ struct TopBar: View {
         .padding(.horizontal, 16)
     }
 
+    private var shortReference: String {
+        let book = store.book(of: store.position.chapter)
+        return "\(book.abbrev) \(store.position.chapter - Int(book.firstChapter) + 1)"
+    }
+
+    private func referenceLabel(_ title: String, truncates: Bool = false) -> some View {
+        Text(title)
+            .lineLimit(1)
+            .fixedSize(horizontal: !truncates, vertical: false)
+            // Fit and size the entire candidate, including its hit target and padding.
+            .padding(.leading, 16)
+            .padding(.trailing, 10)
+            .frame(minWidth: 44, minHeight: 44)
+            .accessibilityValue(title)
+    }
+
     private func tool(_ symbol: String, _ label: String, id: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
@@ -165,5 +194,6 @@ struct TopBar: View {
         .foregroundStyle(Color(theme.ink))
         .accessibilityLabel(label)
         .accessibilityIdentifier(id)
+        .accessibilityShowsLargeContentViewer { Label(label, systemImage: symbol) }
     }
 }
