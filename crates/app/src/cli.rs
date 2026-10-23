@@ -132,7 +132,10 @@ fn search_cmd(rest: &[String], data_dir: &Path) -> Result<()> {
     let built = std::time::Instant::now();
     t.search_index();
     let index_ms = built.elapsed().as_secs_f64() * 1000.0;
-    let out = search::run(&t, &query, scope, rest.iter().any(|a| a == "--whole-words"));
+    let whole_words = rest.iter().any(|a| a == "--whole-words");
+    let mut out = search::run(&t, &query, scope, whole_words);
+    // Best match first, as the app lists them.
+    t.search_index().rank(&search::Query::parse(&query, whole_words), &mut out.verses);
     println!(
         "{} verses in {:.3} ms ({}; index built in {:.1} ms)",
         out.verses.len(),

@@ -91,6 +91,60 @@ impl SearchIndex {
         hits
     }
 
+    /// Reorders `verses` best match first: by the longest run of the query's words, in the order
+    /// typed, that a verse has back to back ("and the keeper of the pri" puts "And the keeper of the
+    /// prison" ahead of verses that only share "the keeper of the" or "and the"). Between runs of the
+    /// same length, longer query words win, then runs closer to the words typed ("keeper" over
+    /// "keepers"; the last word may run on, as it is likely still being typed), then runs nearer the start of the verse. Equal matches keep their order, so a
+    /// one-word query stays canonical.
+    pub fn rank(&self, query: &Query, verses: &mut [u32]) {
+        let words: Vec<(&[u8], bool)> = query
+            .terms
+            .iter()
+            .flat_map(|t| {
+                let n = t.words.len();
+                t.words.iter().enumerate().map(move |(k, w)| (w.as_bytes(), k + 1 == n && !t.whole_last))
+            })
+            .collect();
+        if words.len() < 2 || verses.len() < 2 {
+            return;
+        }
+        verses.sort_by_cached_key(|&v| std::cmp::Reverse(self.best_run(v, &words)));
+    }
+
+    /// The best run of consecutive query `words` (each a whole word, or a prefix when flagged; the
+    /// query's bare words are all prefixes) found back to back in verse `v`, scored as `rank` orders.
+    fn best_run(
+        &self,
+        v: u32,
+        words: &[(&[u8], bool)],
+    ) -> (usize, usize, std::cmp::Reverse<usize>, std::cmp::Reverse<usize>) {
+        use std::cmp::Reverse;
+        // Runs ending at the previous verse word: run[j + 1] ends at query word j, as
+        // (words, query bytes, letters beyond the query, verse word it starts at).
+        let mut run = vec![(0usize, 0usize, 0usize, 0usize); words.len() + 1];
+        let mut next = run.clone();
+        let mut best = (0, 0, Reverse(0), Reverse(0));
+        let verse_words = self.verse_bytes(v).split(|b| *b == b' ').filter(|w| !w.is_empty());
+        for (i, w) in verse_words.enumerate() {
+            for (j, (q, prefix)) in words.iter().enumerate() {
+                let hit = if *prefix { w.starts_with(q) } else { w == *q };
+                next[j + 1] = if hit {
+                    let (n, bytes, extra, start) = run[j];
+                    // The last word is still being typed: completing it costs nothing.
+                    let more = if j + 1 < words.len() { w.len() - q.len() } else { 0 };
+                    (n + 1, bytes + q.len(), extra + more, if n == 0 { i } else { start })
+                } else {
+                    (0, 0, 0, 0)
+                };
+                let (n, bytes, extra, start) = next[j + 1];
+                best = best.max((n, bytes, Reverse(extra), Reverse(start)));
+            }
+            std::mem::swap(&mut run, &mut next);
+        }
+        best
+    }
+
     fn verse_bytes(&self, v: u32) -> &[u8] {
         &self.corpus[self.starts[v as usize] as usize..self.starts[v as usize + 1] as usize]
     }
@@ -510,6 +564,38 @@ mod tests {
         // Phrases never match across verse boundaries.
         assert_eq!(refs(&t, "\"earth and the\"", Scope::All), Vec::<String>::new());
         assert_eq!(refs(&t, "\"son for god\"", Scope::All), Vec::<String>::new());
+    }
+
+    #[test]
+    fn rank_puts_the_longest_phrase_match_first() {
+        let mut b = TranslationBuilder::new(TranslationMeta::default());
+        b.begin_book(BookId(0));
+        b.begin_chapter(39);
+        b.begin_verse(21, 21);
+        b.text("But the LORD was with Joseph, and shewed him mercy, and gave him favour in the sight of the keeper of the prison.");
+        b.begin_verse(22, 22);
+        b.text("And the keeper of the prison committed to Joseph's hand all the prisoners that were in the prison.");
+        b.begin_verse(23, 23);
+        b.text("The keeper of the prison looked not to any thing that was under his hand; because the LORD was with him, and that which he did, the LORD made it to prosper.");
+        b.begin_book(BookId(11));
+        b.begin_chapter(23);
+        b.begin_verse(4, 4);
+        b.text("And the king commanded Hilkiah the high priest, and the priests of the second order, and the keepers of the door.");
+        let t = b.finish();
+        let q = Query::parse("and the keeper of the pri", false);
+        let index = t.search_index();
+        let mut hits = index.search(&t, &q, Scope::All);
+        assert_eq!(hits.len(), 4);
+        index.rank(&q, &mut hits);
+        let got: Vec<String> =
+            hits.iter().map(|&i| t.verse_view(i).unwrap().reference().to_string()).collect();
+        assert_eq!(got, ["Genesis 39:22", "Genesis 39:23", "Genesis 39:21", "2 Kings 23:4"]);
+        // A single word ranks nothing: canonical order stays.
+        let q = Query::parse("keeper", false);
+        let mut hits = index.search(&t, &q, Scope::All);
+        let canonical = hits.clone();
+        index.rank(&q, &mut hits);
+        assert_eq!(hits, canonical);
     }
 
     #[test]
