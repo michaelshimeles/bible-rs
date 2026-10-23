@@ -138,8 +138,11 @@ impl State {
             glyph: icons::note,
             tone: Tone::Accent,
             title: "Your notes will live here",
-            body: "Select a verse and press N, or right-click it and choose Add Note. Notes stay on this \
-                       Mac and export to Markdown.",
+            body: concat!(
+                "Select a verse and press N, or right-click it and choose Add Note. Notes stay on ",
+                crate::platform::this_computer!(),
+                " and export to Markdown."
+            ),
             buttons: &[
                 Button::new(Kind::Primary, "Open John 1"),
                 Button::new(Kind::Ghost, "Import a backup"),
@@ -410,10 +413,6 @@ impl State {
                             if ui.button("Copy as Markdown").clicked() {
                                 ui.ctx().copy_text(to_markdown(&e.text));
                             }
-                            crate::menu::separator(ui);
-                            if ui.button("Delete Note").clicked() {
-                                remove = true;
-                            }
                         });
                     }
                     _ => {}
@@ -470,14 +469,11 @@ impl State {
             ];
             let mut bx = bar.left();
             let mut clicked = None;
+            let n = tools.len();
             for (i, (tool, on)) in tools.into_iter().enumerate() {
                 let b = Rect::from_min_size(pos2(bx, y), vec2(32.0, 32.0));
                 let resp = ui.interact(b, ui.id().with(("tool", i)), Sense::click());
-                if on {
-                    painter.circle_filled(b.center(), 16.0, p.accent_soft);
-                } else if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
-                    painter.circle_filled(b.center(), 16.0, fill);
-                }
+                widgets::segment_fill(ui, &resp, b, p, on, (i > 0, i + 1 < n));
                 let ink = if on { p.accent } else { p.ink };
                 let icon = Rect::from_center_size(b.center(), vec2(16.0, 16.0));
                 match tool {
