@@ -1342,6 +1342,13 @@ fn filter_field(ui: &mut Ui, p: &Palette, value: &mut String, focus: bool) -> bo
         edit_rect.size(),
         egui::TextEdit::singleline(value)
             .id(id)
+            // Handle Escape here, before egui releases focus and the reader consumes it.
+            .event_filter(egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+                ..Default::default()
+            })
             .hint_text("Filter books")
             .font(text::UI.font())
             .frame(egui::Frame::NONE)
@@ -1358,6 +1365,9 @@ fn filter_field(ui: &mut Ui, p: &Palette, value: &mut String, focus: bool) -> bo
         state.store(ui.ctx(), id);
     }
     let escape = resp.has_focus() && ui.input(|i| i.key_pressed(Key::Escape));
+    if escape {
+        resp.surrender_focus();
+    }
     // Leaving the field empty ends filtering, but not when the window itself loses focus.
     let left = resp.lost_focus() && ui.input(|i| i.focused);
     escape || (left && value.trim().is_empty())
