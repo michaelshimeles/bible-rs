@@ -4,6 +4,7 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 
@@ -12,6 +13,10 @@ use super::release::{Error, LATEST, MAX_SUMS, Release, Update, sum_for};
 
 /// GitHub's answer about a release is a few kilobytes per file it lists.
 const MAX_ANSWER: u64 = 1024 * 1024;
+
+/// Numbers each download's temporary file. A download the user has left can still be waiting
+/// for GitHub when the next one starts, and must not write over or delete that one's file.
+static DOWNLOADS: AtomicU64 = AtomicU64::new(0);
 
 /// HTTPS requests, behind a trait so the tests can answer them.
 pub trait Net {
@@ -39,7 +44,8 @@ pub fn fetch(
     let sha256 = expected_sha256(net, update)?;
     fs::create_dir_all(dir).map_err(disk)?;
     let path = dir.join(&update.installer);
-    let part = dir.join(format!("{}.part", update.installer));
+    let n = DOWNLOADS.fetch_add(1, Ordering::Relaxed);
+    let part = dir.join(format!("{}.{}-{n}.part", update.installer, std::process::id()));
     let saved = save(net, update, &part, sha256, progress, stop)
         .and_then(|()| fs::rename(&part, &path).map_err(disk));
     if saved.is_err() {
@@ -75,6 +81,9 @@ fn save(
     stop: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
     let mut body = net.body(&update.url)?;
+    if stop() {
+        return Err(Error::Cancelled);
+    }
     let mut file = File::create(part).map_err(disk)?;
     let mut hash = Sha256::new();
     let mut buf = vec![0; 64 * 1024];
@@ -177,6 +186,44 @@ mod tests {
             let n = self.chunk.min(buf.len()).min(self.data.len() - self.at);
             buf[..n].copy_from_slice(&self.data[self.at..self.at + n]);
             self.at += n;
+            Ok(n)
+        }
+    }
+
+    type Hook = Box<dyn FnOnce()>;
+
+    /// Answers like `net`, and runs `hook` once: before sending the body, or after its first
+    /// chunk.
+    struct Hooked {
+        net: Mock,
+        before_body: bool,
+        hook: RefCell<Option<Hook>>,
+    }
+
+    impl Net for Hooked {
+        fn text(&self, url: &str, limit: u64) -> Result<String, Error> {
+            self.net.text(url, limit)
+        }
+
+        fn body(&self, url: &str) -> Result<Box<dyn Read>, Error> {
+            let hook = self.hook.borrow_mut().take();
+            if self.before_body {
+                hook.into_iter().for_each(|h| h());
+                return self.net.body(url);
+            }
+            Ok(Box::new(AfterFirstRead { inner: self.net.body(url)?, hook }))
+        }
+    }
+
+    struct AfterFirstRead {
+        inner: Box<dyn Read>,
+        hook: Option<Hook>,
+    }
+
+    impl Read for AfterFirstRead {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.hook.take().into_iter().for_each(|h| h());
             Ok(n)
         }
     }
@@ -339,5 +386,51 @@ mod tests {
         let r = fetch(&net, &update(Some(sha256(&data)), false), &dir, &Progress::new(0), &stop);
         assert_eq!(r, Err(Error::Cancelled));
         assert!(files_in(&dir).is_empty());
+    }
+
+    #[test]
+    fn a_download_the_user_left_cannot_spoil_the_next_one() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, mpsc};
+
+        let data = installer();
+        let dir = folder("overlap");
+        let left = Arc::new(AtomicBool::new(false));
+        let (go_on, wait) = mpsc::channel();
+        let (ended, end) = mpsc::channel();
+        // GitHub is slow to answer the first download…
+        let first = {
+            let (data, dir, left) = (data.clone(), dir.clone(), left.clone());
+            std::thread::spawn(move || {
+                let hook: Hook = Box::new(move || wait.recv().unwrap());
+                let net = Hooked {
+                    net: Mock::new(&[(EXE_URL, data.clone())]),
+                    before_body: true,
+                    hook: RefCell::new(Some(hook)),
+                };
+                let stop = || left.load(Ordering::SeqCst);
+                let r = fetch(&net, &update(Some(sha256(&data)), false), &dir, &Progress::new(0), &stop);
+                ended.send(()).unwrap();
+                r
+            })
+        };
+        // …so the user leaves it and starts another, and the first answer arrives while the second
+        // is downloading.
+        left.store(true, Ordering::SeqCst);
+        let hook: Hook = Box::new(move || {
+            go_on.send(()).unwrap();
+            end.recv().unwrap();
+        });
+        let net = Hooked {
+            net: Mock::new(&[(EXE_URL, data.clone())]),
+            before_body: false,
+            hook: RefCell::new(Some(hook)),
+        };
+        let second = fetch(&net, &update(Some(sha256(&data)), false), &dir, &Progress::new(0), &|| false);
+        assert_eq!(first.join().unwrap(), Err(Error::Cancelled));
+        assert_eq!(second, Ok(dir.join(EXE)));
+        assert_eq!(std::fs::read(dir.join(EXE)).unwrap(), data);
+        assert_eq!(files_in(&dir), [EXE]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
