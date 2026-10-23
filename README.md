@@ -2,7 +2,8 @@
 
 Bible: a very fast, native Bible reader for the Mac, written in Rust. Just the Bible — beautifully
 typeset, searchable as you type, with highlights, notes and bookmarks kept on your computer. The
-[iPhone version](#iphone) and the [web reader](#web) share the same core.
+[iPhone version](#iphone) and the [web reader](#web) share the same core, and a
+[Windows build](WINDOWS.md) runs the same app (unsigned for now).
 
 ![Reading John 1 in the King James Version](docs/screenshots/reader-light.png)
 
@@ -316,6 +317,11 @@ universal app signed with a Developer ID and notarized, a disk image, a zip, the
 the signed update feed that installed copies check with Sparkle ([RELEASING.md](RELEASING.md)).
 CI builds an ad-hoc signed DMG on every push and uploads it as an artifact.
 
+On Windows, `cargo build --release -p bible-rs` builds `bible-rs.exe` and
+`scripts/package-windows.sh` the per-user installer; [WINDOWS.md](WINDOWS.md) covers building
+(also cross-compiling from a Mac), installing, signing and what's still missing. CI builds the
+unsigned installer on every pull request and uploads it as an artifact.
+
 Other tasks:
 
 | | |
@@ -377,7 +383,7 @@ Store Connect asks for.
 
 ## Web
 
-[bible.rasmic.xyz/read](https://bible.rasmic.xyz/read) is the Mac app in a browser: the same
+[simplymybible.com/read](https://simplymybible.com/read) is the Mac app in a browser: the same
 typesetting, themes, palette, search, study tools, pages and shortcuts, with the core compiled to
 WebAssembly. Every chapter of every bundled translation is also a static page
 (`/read/kjv/john/3`). [Importing](#import-a-translation-you-own) works as on the Mac, with the same
@@ -415,4 +421,7 @@ data format, search, and the licensing approach.
 ## License
 
 Code: MIT ([LICENSE](LICENSE)). Bundled translations: public domain ([LICENSES/](LICENSES/README.md)).
-Fonts: Literata and Inter, SIL Open Font License 1.1.
+Fonts: Literata and Inter, SIL Open Font License 1.1. The object specs in `objects/` and the images
+rendered from their 3D models are CC BY 4.0 ([objects/LICENSE](objects/LICENSE)). Credit them as:
+
+> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible-rs

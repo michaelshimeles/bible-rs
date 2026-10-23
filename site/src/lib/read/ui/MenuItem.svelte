@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import Icon from './Icon.svelte';
+	import { follow } from './follow';
 	import type { IconName } from './icons';
 
 	interface Props {
@@ -15,9 +16,14 @@
 		checkColumn?: boolean;
 		/** The current choice in a quiet menu: the selection colour behind it, no check. */
 		selected?: boolean;
+		/** The place the row opens (a chapter in another translation): a real link, which the
+		 *  click still handles. */
+		href?: string;
 		onclick: (e: MouseEvent) => void;
 		/** Something drawn before the label instead of an icon (a swatch). */
 		lead?: Snippet;
+		/** Something drawn at the trailing edge (a badge). */
+		trailing?: Snippet;
 	}
 
 	let {
@@ -28,20 +34,43 @@
 		checked,
 		checkColumn = false,
 		selected,
+		href,
 		onclick,
-		lead
+		lead,
+		trailing
 	}: Props = $props();
+
+	const role = $derived(checked === undefined && selected === undefined ? 'menuitem' : 'menuitemradio');
+	const press = (e: MouseEvent) => !disabled && onclick(e);
 </script>
 
-<button
-	type="button"
-	class={['item', { selected }]}
-	role={checked === undefined && selected === undefined ? 'menuitem' : 'menuitemradio'}
-	aria-checked={checked ?? selected}
-	aria-disabled={disabled || undefined}
-	tabindex="-1"
-	onclick={(e) => !disabled && onclick(e)}
->
+{#if href}
+	<a
+		{href}
+		class={['item', 'follow', { selected }]}
+		{role}
+		aria-checked={checked ?? selected}
+		aria-disabled={disabled || undefined}
+		tabindex="-1"
+		use:follow={press}
+	>
+		{@render content()}
+	</a>
+{:else}
+	<button
+		type="button"
+		class={['item', { selected }]}
+		{role}
+		aria-checked={checked ?? selected}
+		aria-disabled={disabled || undefined}
+		tabindex="-1"
+		onclick={press}
+	>
+		{@render content()}
+	</button>
+{/if}
+
+{#snippet content()}
 	{#if lead}
 		{@render lead()}
 	{:else if icon}
@@ -51,7 +80,8 @@
 	{/if}
 	<span class="label">{label}</span>
 	{#if shortcut}<span class="shortcut">{shortcut}</span>{/if}
-</button>
+	{@render trailing?.()}
+{/snippet}
 
 <style>
 	.item {

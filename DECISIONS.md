@@ -318,7 +318,9 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
   disk cache still holds, as the design's frame 33. Its error toast stays until clicked away or
   the chapter loads. Parallel columns keep their one-line message.
 - **Toasts are the design's inverse capsules** at the bottom centre of the main area, 4 s for
-  messages; errors stay.
+  messages; errors stay. On the Mac a message fades out over its last 0.2 s and the toasts above
+  slide down into its place, each keeping to the centre line. Toggling a bookmark replaces the
+  verse's toast still showing, so a few quick toggles show one toast with the latest state.
 - **Menus share one frame and one text column** (`menu.rs`, the `menu` group added to the token
   file). The design system's menu sheet (ds-12) gives the radius 12, 28 pt rows with radius 6
   highlights, 24 pt section headers and 9 pt separators; its 6 pt padding felt cramped, so row
@@ -442,7 +444,36 @@ also a static page that search engines can index.
   `/read/<translation>/<book>/<chapter>`, with its title, a description taken from its first
   verses, a canonical URL and a sitemap entry. The server runs the same wasm module in Node to typeset
   the chapter with the default settings, so the page is readable before any script runs.
-  `/read` itself restores the saved place.
+  `/read` itself restores the saved place, and names John 1 as its canonical URL.
+- **The reader's places are real links that it follows itself.** Its controls were buttons, so a
+  chapter page had no `<a href>` at all. The sidebar's books and chapters (rendered on the server
+  for the book being read), the book picker and the translation menu are now links
+  (`ui/follow.ts`). A plain click still moves the reader in place; a modified click opens a new
+  tab. Previous and next chapter, the trail up to the book and translation, and the chapter in the
+  other translations had no control to turn into a link. They are a navigation that stays out of
+  sight until it has keyboard focus (`chrome/PageLinks.svelte`). The window looks and behaves as
+  before.
+- **Translations, books and verses have plain pages** (`/read/kjv`, `/read/kjv/john`,
+  `/read/kjv/john/3/16`). They are text and links in the reader's type and theme, prerendered
+  without the app or any client-side JavaScript. Every reader page carries JSON-LD (a WebPage of
+  the site, with its breadcrumb trail), and `/sitemap.xml` is an index of a file per kind of page.
+  Verse pages exist for the KJV, BSB and WEB only, and the other four translations' verses link to
+  their place in the chapter (`#v16`). All seven would nearly double the output and triple the
+  build time:
+
+  | Verse pages for | Pages | Files | Static output | Local build (M-series) |
+  |---|---|---|---|---|
+  | none (chapters only, before) | 8,327 | 16,712 | 0.6 GB | 18 s |
+  | **KJV, BSB, WEB** ✔ | 102,082 | 110,499 | 2.2 GB | about 2 min |
+  | all seven | 226,471 | 234,892 | 4.2 GB | about 6 min |
+- **Topic pages keep references, not text.** Marketing's 50 topics (`site/src/lib/topics/`) list
+  each verse by book, chapter and verse; the page takes the KJV and BSB text from the core as it's
+  prerendered, so a topic can never quote a verse differently from its verse page. A reference
+  the core doesn't have, or a title that doesn't end in the site's name, stops the build. Each verse
+  links to its verse pages, and each verse page links back to the topics that list it.
+- **The site and the apps have different names.** The apps are "Bible" (`NAME`). The website is
+  "Simply My Bible" (`SITE_NAME`, at simplymybible.com). It ends every title and is `og:site_name`
+  and the WebSite's name in the JSON-LD.
 - **Hydration never shows a wrong layout.** The first client render matches the server's.
   Saved settings are applied after mount. An inline script in `app.html` sets the theme and
   accent before the first paint. When saved settings change the typesetting (verse per line,
@@ -468,17 +499,98 @@ also a static page that search engines can index.
   Zefania, SWORD, locked modules included) take their files from memory as well as from disk
   (`import::peek_files`, `import::import_files`). They sit behind bible-core's `import` feature,
   which brings the zip and gzip readers but not SQLite or the HTTP client. `scripts/build-web.sh`
-  builds `bible-web` twice: the reader's module without the importers (612 KB) and
-  `bible_import` with them (906 KB). Only `import.worker.ts` loads the second module, the first
+  builds `bible-web` twice: the reader's module without the importers (710 KB) and
+  `bible_import` with them (964 KB). Only `import.worker.ts` loads the second module, the first
   time someone imports, so the reader doesn't pay for it and a long conversion never blocks the
   page. On wasm the `.bbl` is compressed with ruzstd's fastest level, since zstd's C library
   isn't available there. The converted bytes go to IndexedDB, and the list of imports to
   `localStorage` next to the settings. An imported translation has no static page, so while it
   is the reading translation the address stays `/read`.
-- **No online translations on the web.** ESV, API.Bible, NLT and NET need an API key that
-  would either be exposed in the page or call for a proxy that relays licensed text. Their APIs
-  also aren't all open to browsers (CORS). The web reader offers the bundled translations and
-  files you import.
+- **The NLT is the web's one online translation, through the site's own proxy.** ESV, API.Bible
+  and NET still aren't offered: they need the reader's own key, which a page would expose, and
+  their APIs aren't all open to browsers (CORS). The NLT has a site key (`NLT_API_KEY`, set in
+  Vercel), so `/api/nlt` (`site/src/routes/api/nlt`) asks Tyndale for a chapter or less at a
+  time and returns the verses' HTML with Tyndale's credit line. It refuses whole books and
+  passages across chapters, and allows 20 chapters a minute and 300 a day for each address. Each
+  function instance counts these on its own, so they slow one client down rather than cap the site.
+  Browsers get `Cache-Control: no-store`, and Vercel's edge keeps a chapter for a day
+  (`Vercel-CDN-Cache-Control`), but nothing from a one-chapter book, which could be the whole book. The page
+  parses the HTML with the core's NLT parser (`bible_core::nlt_html`, shared with the Mac's
+  `online::nlt`), and the core holds that one chapter until the reader moves on. So the reader
+  shows one NLT chapter at a time, ending in Tyndale's credit line and links to the chapters
+  either side, instead of scrolling on. Nothing of it is prerendered, stored or cached offline.
+  Search, the study lists and exports use the translation read before the NLT, and a highlight
+  of some words in the NLT colours their verses whole, since a partial highlight keeps the words
+  it covers. `/read/nlt/<book>/<chapter>` shows the KJV page for that chapter (a `reroute`
+  hook), with its canonical address and description. Vercel adds `X-Robots-Tag: noindex`, and the
+  reader adds the robots meta tag while it shows the NLT. Offline, rate-limited or failing, the
+  reader goes back to the translation read before, with a toast to retry.
+
+## Windows
+
+The Windows app is the same egui app with the macOS-only pieces given Windows counterparts
+(`cfg(windows)`); on macOS nothing changes. [WINDOWS.md](WINDOWS.md) is the user-facing side.
+
+- **The native Win32 menu bar**, through muda as on the Mac, rather than menus drawn in the
+  window. Alt and access keys, screen readers and the look of other Windows programs come with it.
+  The app installs no accelerator table, so the keys still reach egui, a shortcut changed in
+  Settings works, and nothing fires twice. It costs two things. The drop-down menus stay light in
+  the dark theme, because Windows has no public dark menu API and muda draws only the bar dark.
+  And the menus show the default shortcuts.
+- **The standard title bar.** A title bar drawn by the app, as on the Mac, would lose Snap
+  layouts on the maximize button unless the app answered Windows' hit tests itself. egui already
+  gives it the app's theme (dark for Dark). winit puts it back to the system's theme whenever a
+  system setting changes, so the app sets it again when the window gets the focus back. The menu
+  bar follows the theme too.
+- **Direct3D 12 through wgpu**, not glow. Windows ships no OpenGL 3 driver, so glow depends on the
+  GPU vendor's driver and fails in virtual machines and remote sessions; Direct3D 12 falls back to
+  Windows' software renderer (WARP). Only the DX12 backend is enabled, as only Metal is on macOS,
+  so wgpu doesn't spend start-up time probing Vulkan.
+- **Shortcuts are the Mac's with Ctrl for ⌘**, and the UI writes them that way ("Ctrl+Shift+P").
+  egui reports Ctrl as the command key on Windows, so ⌃⌘F (focus mode) would also be Ctrl+F
+  (search); focus mode is F11 there, the usual full-screen key.
+- **NSIS, a per-user installer.** No administrator prompt, an entry in Installed apps, a Start
+  menu shortcut. NSIS also runs on macOS and Linux, so the installer is built and inspected off
+  Windows too; MSI (WiX) and Inno Setup need Windows to build, and MSIX can't be installed
+  unsigned. The C runtime is linked statically (`.cargo/config.toml`), so no Visual C++
+  Redistributable is needed.
+- **Updates check GitHub's latest release**, daily and on demand, and open the new installer in
+  the browser. Sparkle is Mac-only; WinSparkle or Velopack would install by
+  themselves, but both want signed builds and an update feed, which can wait for signing.
+- **Share Verse copies the image** to the clipboard (eframe's clipboard does images) instead of
+  calling Windows' share sheet, which needs WinRT and an asynchronous handshake for one button.
+- **API keys in the Credential Manager** through the same `keyring` crate as the Keychain on
+  macOS.
+
+## Objects in 3D: open specs, three.js, and the same page in the Mac app
+
+The first object is the Ark of the Covenant (`/ark-of-the-covenant`), from Marketing's spec and
+prototype.
+
+- **The spec is data, checked against the text.** `objects/ark.json` gives every part and every
+  number with the verse it comes from and the KJV and BSB words that state it, or marks it
+  interpretive with a note ([objects/README.md](objects/README.md)). The check
+  (`site/src/lib/objects/check.mjs`) finds each quote in its verse in the repository's own text,
+  so the spec can't cite a verse for a number the verse doesn't hold. CI runs it, and so does the
+  page's build.
+- **Plain three.js, not Threlte.** Marketing's spec suggested Threlte. The model is procedural
+  geometry with a timeline (the assembly), camera moves and picking, all imperative, which is
+  what their prototype already did in three.js. Threlte would add a declarative layer and tie the
+  scene to Svelte's version for none of that. `scene.ts` has no Svelte in it, and the page and
+  the app's embed load the same module.
+- **three.js loads only on the object's page, after it paints.** It is a 156 KB (gzipped) dynamic
+  import. The reader's service worker precaches every immutable file, so a build plugin
+  (`viewerFiles` in `site/vite.config.ts`) names the viewer's chunks for the worker to skip, and
+  reading offline never downloads them. A chapter page grew by 1.7 KB of gzipped script for the
+  glyph.
+- **Hotspots read in the reader's translation without the core.** The 25 cited verses in each
+  bundled translation are prerendered into `verses.json` (26 KB, 4 KB gzipped); only a
+  translation imported into the browser loads the core. The page's HTML carries the KJV, the
+  text search engines index.
+- **No figure for scale.** The floor's grid shows the scale, one square to a cubit, as the
+  viewer's hint says. The first version also stood a 5 ft 9 in figure beside the ark, with a
+  toggle, and Micky chose to drop it. The scene draws the model in cubits, so the Common/Royal
+  switch changes only the inches and centimetres in the panel.
 
 ## What was traded away
 
