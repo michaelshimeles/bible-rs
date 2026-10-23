@@ -10,7 +10,7 @@
 	import { parseReference, type VerseRef } from '../core';
 	import ListItem from '../sidebar/ListItem.svelte';
 	import { ago, shortDate } from '../time';
-	import { Icon, Menu, MenuItem, MenuSeparator, Popover, RoundButton, Segmented, TextField } from '../ui';
+	import { Icon, Menu, MenuItem, Popover, RoundButton, Segmented, TextField } from '../ui';
 	import { apply, lines, mentioned, notesPage, plain, sameVerse, stylesAt, type Tool } from './notes.svelte';
 
 	let { top }: { top: number } = $props();
@@ -21,8 +21,8 @@
 	const notes = $derived(app.studyItems('notes'));
 	const index = (v: VerseRef) => app.chapterIndex(v);
 	const verseText = (v: VerseRef) =>
-		app.core?.verse(app.settings.translation, v)?.runs.map((r) => r.text).join('').trim() ?? '';
-	const marks = (v: VerseRef) => app.marks(app.settings.translation, index(v)).get(v.verse);
+		app.core?.verse(app.textTranslation(), v)?.runs.map((r) => r.text).join('').trim() ?? '';
+	const marks = (v: VerseRef) => app.marks(app.textTranslation(), index(v)).get(v.verse);
 
 	// The demo's `note-select:<reference>` opens a note.
 	$effect(() => {
@@ -168,7 +168,7 @@
 	const words = $derived(text.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length);
 	const linked = $derived(mentioned(text));
 	const meta = $derived.by(() => {
-		const name = app.info(app.settings.translation)?.name ?? '';
+		const name = app.info(app.textTranslation())?.name ?? '';
 		if (!note) return `${name} · New note`;
 		const c = new Date(note.created * 1000);
 		const edited = ago(note.updated);
@@ -334,8 +334,6 @@
 					onclick={() => ((more = false), app.dispatch({ type: 'jump', chapter: index(v), verse: v.verse, flash: true }))}
 				/>
 				<MenuItem label="Copy as Markdown" onclick={() => ((more = false), copy(text))} />
-				<MenuSeparator />
-				<MenuItem label="Delete Note" onclick={() => ((more = false), remove())} />
 			</Menu>
 		{/if}
 	{/if}

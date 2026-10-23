@@ -6,13 +6,19 @@ import { self } from '$app/service-worker';
  * The reader works offline. Its scripts, wasm and fonts are cached when the worker installs (from
  * the reader only, see Shell.svelte); translations and reader pages the first time they load, and
  * the importers' module the first time a translation is imported. Each deploy starts a fresh
- * cache, since a page refers to its own build's scripts.
+ * cache, since a page refers to its own build's scripts. Nothing from /api (the NLT, read live) is
+ * kept: Tyndale's terms allow no more than a chapter at a time (src/lib/read/nlt.ts). The object
+ * pages' 3D viewer isn't cached either: the reader never uses it.
  */
 const CACHE = `read-${version}`;
+/** The viewer's files, which vite.config.ts names as it builds the worker (none in development). */
+declare const __VIEWER_FILES__: string[];
+const VIEWER = new Set<string>(typeof __VIEWER_FILES__ === 'undefined' ? [] : __VIEWER_FILES__);
 const PRECACHE = [
-	...immutable.filter((f) => !f.path.includes('bible_import')).map((f) => `/${f.path}`),
+	...immutable.filter((f) => !f.path.includes('bible_import') && !VIEWER.has(f.path)).map((f) => `/${f.path}`),
 	...assets.filter((f) => f.path.startsWith('fonts/read/') && f.path.endsWith('.woff2')).map((f) => `/${f.path}`),
 	'/favicon.png',
+	'/logo.png',
 	'/read'
 ];
 const precached = new Set(PRECACHE);

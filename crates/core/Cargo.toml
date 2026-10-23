@@ -27,7 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 memchr.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"], optional = true }
-zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 flate2 = { version = "1", optional = true }
 ureq = { version = "3", default-features = false, features = ["gzip"], optional = true }
 
@@ -40,8 +40,9 @@ ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 # The clock: std has none on wasm32-unknown-unknown.
 js-sys = "0.3"
 
-# API keys live in the macOS Keychain; other platforms use a 0600 file.
-[target.'cfg(target_os = "macos")'.dependencies]
+# API keys live in the macOS Keychain or the Windows Credential Manager; other platforms use a
+# 0600 file.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
 keyring = "4"
 
 [dev-dependencies]

@@ -293,6 +293,9 @@ pub struct BibleApp {
     reminded: Option<i64>,
     /// The page in the main area (the reader unless a library or study page is open).
     pub pages: crate::pages::Pages,
+    /// The Ark page's webview, and the area it covers this frame (under the toolbar).
+    pub object_view: crate::webview::ObjectView,
+    object_rect: Option<egui::Rect>,
     /// `BIBLE_RS_DEMO`: steps that put the window into a given state (screenshots), one per frame.
     demo: std::collections::VecDeque<String>,
     chrome: Chrome,
@@ -301,8 +304,11 @@ pub struct BibleApp {
     toolbar_items: Vec<egui::Rect>,
     #[cfg(target_os = "macos")]
     no_drag: crate::macos_window::NoDragAreas,
-    #[cfg(target_os = "macos")]
-    menu: Option<crate::macos_menu::AppMenu>,
+    #[cfg(any(target_os = "macos", windows))]
+    menu: Option<crate::menu_bar::AppMenu>,
+    /// Windows: whether the window had the focus last frame.
+    #[cfg(windows)]
+    was_focused: bool,
 }
 
 /// Toolbar geometry for the current frame.
@@ -417,6 +423,8 @@ impl BibleApp {
             focus_reveal: false,
             backup_checked: None,
             pages: Default::default(),
+            object_view: Default::default(),
+            object_rect: None,
             demo: std::env::var("BIBLE_RS_DEMO")
                 .map(|s| s.split(';').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
                 .unwrap_or_default(),
@@ -425,9 +433,17 @@ impl BibleApp {
             toolbar_items: Vec::new(),
             #[cfg(target_os = "macos")]
             no_drag: Default::default(),
-            settings,
             #[cfg(target_os = "macos")]
             menu: if crate::offscreen() { None } else { crate::macos_menu::AppMenu::install() },
+            #[cfg(windows)]
+            menu: if crate::offscreen() {
+                None
+            } else {
+                crate::windows_menu::AppMenu::install(cc, settings.theme == Theme::Dark)
+            },
+            #[cfg(windows)]
+            was_focused: false,
+            settings,
         }
     }
 
@@ -632,10 +648,11 @@ impl BibleApp {
             Action::Jump { chapter, verse, flash } => {
                 self.pages.open(crate::pages::Page::Reader);
                 self.jump(chapter, verse, flash);
-                // Landing on a specific verse selects it, so N/B/C/1–6 act on it right away.
-                if let (Some(v), true) = (verse, flash) {
-                    self.reader.set_selection(Some(VerseRef::new(chapter.book(), chapter.chapter(), v)));
-                }
+                // Landing on a specific verse selects it, so N/B/C/1–6 act on it right away. Anywhere
+                // else, a selection left from before would send J/K back to where it was.
+                let landed =
+                    verse.filter(|_| flash).map(|v| VerseRef::new(chapter.book(), chapter.chapter(), v));
+                self.reader.set_selection(landed);
             }
             // From a page, Back returns to the reader.
             Action::Back if !self.pages.reader() => self.pages.open(crate::pages::Page::Reader),
@@ -1363,7 +1380,12 @@ impl BibleApp {
         }
         items.push(nav_rect);
 
-        // On a page: a wider field that filters it, and nothing else.
+        // On a page: a wider field that filters it, and nothing else (the Ark has nothing to filter).
+        if self.pages.page == crate::pages::Page::Ark {
+            #[cfg(target_os = "macos")]
+            self.toolbar_items.extend(items);
+            return;
+        }
         if !self.pages.reader() {
             let w = PAGE_SEARCH_WIDTH;
             let search = egui::Rect::from_min_size(
@@ -1510,8 +1532,9 @@ impl BibleApp {
             tmeta.as_ref().map(|m| m.abbrev.clone()).unwrap_or_default()
         };
         let show_translation = self.settings.toolbar_translation;
-        let book = widgets::Picker::new(ui, &title, 14.0, if show_translation { 10.0 } else { 12.0 });
-        let translation = widgets::Picker::new(ui, &abbrev, 10.0, 12.0);
+        let book = widgets::Picker::new(ui, &title, 14.0, if show_translation { 10.0 } else { 12.0 })
+            .flat(false, show_translation);
+        let translation = widgets::Picker::new(ui, &abbrev, 10.0, 12.0).flat(true, false);
         let width = book.width() + if show_translation { 1.0 + translation.width() } else { 0.0 };
         let pad_left = LEADING_INSET + (GROUP_GAP - LEADING_INSET) * open;
         let centre = (bar.left() + pad_left + bar.right() - TRAILING_INSET) / 2.0;
@@ -1568,7 +1591,7 @@ impl BibleApp {
             let chord = crate::keymap::ALL
                 .iter()
                 .find(|s| s.id == "focus")
-                .map(|s| crate::keymap::keycaps(s, &self.settings.shortcuts).concat())
+                .map(|s| crate::keymap::caps_label(&crate::keymap::keycaps(s, &self.settings.shortcuts)))
                 .unwrap_or_default();
             let hint = format!("Exit Focus {chord}");
             let hint_w = ui
@@ -1773,7 +1796,7 @@ impl BibleApp {
             crate::keymap::ALL
                 .iter()
                 .find(|s| s.id == id)
-                .map(|s| crate::keymap::keycaps(s, &self.settings.shortcuts).concat())
+                .map(|s| crate::keymap::caps_label(&crate::keymap::keycaps(s, &self.settings.shortcuts)))
                 .unwrap_or_default()
         };
         let sidebar = if self.settings.sidebar_open { "Hide Sidebar" } else { "Show Sidebar" };
@@ -1873,6 +1896,57 @@ impl BibleApp {
             _ => {
                 self.offline = None;
                 None
+            }
+        }
+    }
+
+    /// Places the Ark page's webview over its page, or closes it once another page is open, and
+    /// turns what the page asks for into actions.
+    fn object_view(&mut self, ctx: &egui::Context, frame: &eframe::Frame, actions: &mut Vec<Action>) {
+        let Some(rect) = self.object_rect.take().filter(|_| crate::webview::AVAILABLE) else {
+            self.object_view.close();
+            return;
+        };
+        // egui draws everything in one layer under the native view, so anything it shows over the
+        // page (the palette, a sheet, a menu) needs the view out of the way. Tooltips and toasts
+        // are left under it rather than make the page blink.
+        let over_page = ctx.memory(|m| {
+            m.areas().visible_layer_ids().into_iter().any(|layer| {
+                !matches!(layer.order, egui::Order::Background | egui::Order::Tooltip)
+                    && m.area_rect(layer.id).is_some_and(|r| r.intersects(rect))
+            })
+        });
+        let covered = over_page
+            || self.palette.is_some()
+            || self.shortcuts_open
+            || self.import_sheet.is_some()
+            || self.share_sheet.is_some();
+        self.object_view.show(
+            frame,
+            ctx,
+            crate::objects::ark(),
+            rect,
+            covered,
+            self.settings.theme,
+            &self.settings.translation,
+            &self.library,
+        );
+        if !covered && ctx.input(|i| i.key_pressed(Key::Escape)) {
+            actions.push(Action::Back);
+        }
+        for m in self.object_view.messages() {
+            match m {
+                crate::webview::Message::Read(v) => {
+                    actions.push(Action::Jump { chapter: v.chapter_idx(), verse: Some(v.verse), flash: true })
+                }
+                crate::webview::Message::Close => actions.push(Action::Back),
+                crate::webview::Message::Ready => {
+                    if let Some(t) = self.object_view.first_draw
+                        && std::env::var_os("BIBLE_RS_TRACE_WEBVIEW").is_some()
+                    {
+                        eprintln!("webview: first draw {:.0} ms", t.as_secs_f64() * 1000.0);
+                    }
+                }
             }
         }
     }
@@ -2061,7 +2135,7 @@ impl Leading {
 }
 
 /// The sidebar toggle centred at `centre_x` on the toolbar's line. In the sidebar's header it is a
-/// borderless 32 pt button in secondary ink; after the traffic lights, a 40 pt glass capsule in
+/// borderless 32 pt button in secondary ink; after the traffic lights, a 32 pt glass circle in
 /// ink. `capsule` (0–1) blends the two while the sidebar slides. Painted over the sidebar, whose
 /// edge it follows, so it isn't clipped to the main area.
 fn sidebar_toggle(
@@ -2079,6 +2153,7 @@ fn sidebar_toggle(
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
     ui.set_clip_rect(ui.ctx().content_rect());
     let resp = ui.interact(rect, Id::new("sidebar-toggle"), Sense::click());
+    widgets::pointer_on_hover(&ui, &resp);
     let radius = rect.height() / 2.0;
     if capsule > 0.0 {
         let mut glass = ui.painter().clone();
@@ -2090,7 +2165,8 @@ fn sidebar_toggle(
     }
     let icon = egui::Rect::from_center_size(rect.center(), vec2(ICON, ICON));
     crate::icons::sidebar(ui.painter(), icon, p.ink_2.lerp_to_gamma(p.ink, capsule));
-    let resp = resp.on_hover_text(if open { "Hide sidebar (⌘B)" } else { "Show sidebar (⌘B)" });
+    let tip = if open { "Hide sidebar (⌘B)" } else { "Show sidebar (⌘B)" };
+    let resp = resp.on_hover_text(crate::keymap::shown(tip).as_ref());
     if resp.clicked() {
         actions.push(Action::ToggleSidebar);
     }
@@ -2102,7 +2178,8 @@ fn translation_menu(ui: &mut Ui, library: &Library, settings: &Settings, actions
     for (i, e) in library.entries().iter().enumerate() {
         let m = &e.meta;
         let current = m.id == settings.translation;
-        let shortcut = if i < 9 { format!("⌘{}", i + 1) } else { String::new() };
+        let shortcut =
+            if i < 9 { crate::keymap::shown(&format!("⌘{}", i + 1)).into_owned() } else { String::new() };
         let resp = ui.add(
             egui::Button::selectable(current, egui::RichText::new(format!("{}  {}", m.abbrev, m.name)))
                 .shortcut_text(shortcut),
@@ -2133,6 +2210,31 @@ fn translation_menu(ui: &mut Ui, library: &Library, settings: &Settings, actions
     if ui.button("Manage translations…").clicked() {
         actions.push(Action::OpenSettings(SettingsTab::Translations));
         ui.close();
+    }
+}
+
+impl BibleApp {
+    /// Windows: the menu bar follows the app's theme (dark for Dark, light for Light and Sepia),
+    /// focus mode hides it, and onboarding greys out Focus Mode. egui gives the title bar the app's theme when that changes, but
+    /// winit puts it back to the system's whenever a system setting changes, so it is set again
+    /// when the window gets the focus back.
+    #[cfg(windows)]
+    fn match_window_chrome(&mut self, ctx: &egui::Context) {
+        if crate::offscreen() {
+            return;
+        }
+        let dark = self.settings.theme == Theme::Dark;
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.was_focused {
+            let theme = if dark { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(theme));
+        }
+        self.was_focused = focused;
+        if let Some(menu) = &mut self.menu {
+            menu.set_dark(dark);
+            menu.set_shown(!self.focus);
+            menu.set_focus_enabled(self.onboarding.is_none());
+        }
     }
 }
 
@@ -2283,7 +2385,7 @@ impl eframe::App for BibleApp {
         if self.onboarding.is_none() {
             self.shortcuts(&ctx, &mut actions);
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(menu) = &self.menu {
             menu.poll(&mut actions);
         }
@@ -2305,6 +2407,8 @@ impl eframe::App for BibleApp {
                 actions.push(Action::SetTheme(t));
             }
         }
+        #[cfg(windows)]
+        self.match_window_chrome(&ctx);
         let p = self.settings.theme.palette();
 
         self.chrome = chrome(frame, &ctx);
@@ -2404,6 +2508,12 @@ impl eframe::App for BibleApp {
                     toolbar: self.chrome.height,
                 };
                 self.pages.show(ui, full, &env, &mut actions);
+                if self.pages.page == crate::pages::Page::Ark {
+                    self.object_rect = Some(egui::Rect::from_min_max(
+                        egui::pos2(full.left(), full.top() + self.chrome.height),
+                        full.max,
+                    ));
+                }
                 let material = ctx.animate_bool_with_time(
                     Id::new("toolbar-material"),
                     self.pages.scrolled,
@@ -2614,14 +2724,9 @@ impl eframe::App for BibleApp {
                 }
                 crate::share_sheet::Outcome::Close => self.share_sheet = None,
                 crate::share_sheet::Outcome::Toast(msg) => self.toast(&ctx, msg),
+                #[cfg(target_os = "macos")]
                 crate::share_sheet::Outcome::Share { path, anchor } => {
-                    #[cfg(target_os = "macos")]
                     crate::macos_window::share_file(frame, &path, anchor, ctx.zoom_factor());
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        let _ = anchor;
-                        self.toast(&ctx, format!("Saved the image to {}", path.display()));
-                    }
                 }
             }
         }
@@ -2629,6 +2734,7 @@ impl eframe::App for BibleApp {
         self.plan_reminder(&ctx);
         self.auto_backup(&ctx);
         self.toasts(&ctx);
+        self.object_view(&ctx, frame, &mut actions);
         self.end_frame(&ctx, frame, frame_start, actions);
     }
 
@@ -2672,14 +2778,57 @@ pub fn last_backup(data_dir: &std::path::Path) -> Option<(i64, u64)> {
 
 /// Opens a folder in the system's file browser.
 pub fn reveal(path: &std::path::Path) {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let _ = std::process::Command::new(opener).arg(path).spawn();
+    #[cfg(windows)]
+    shell_open(path.as_os_str());
+    #[cfg(not(windows))]
+    {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let _ = std::process::Command::new(opener).arg(path).spawn();
+    }
 }
 
 /// Opens a web page in the browser.
 pub fn open_url(url: &str) {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let _ = std::process::Command::new(opener).arg(url).spawn();
+    #[cfg(windows)]
+    shell_open(std::ffi::OsStr::new(url));
+    #[cfg(not(windows))]
+    {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let _ = std::process::Command::new(opener).arg(url).spawn();
+    }
+}
+
+/// Windows: opens a folder in File Explorer or a link in the default browser, as a double-click
+/// would.
+#[cfg(windows)]
+pub fn shell_open(target: &std::ffi::OsStr) {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+    };
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide: Vec<u16> = target.encode_wide().chain([0]).collect();
+    let open: Vec<u16> = "open".encode_utf16().chain([0]).collect();
+    // SAFETY: both strings are NUL-terminated and outlive the call. ShellExecute wants COM on the
+    // calling thread (the update check calls this from its own); a successful CoInitializeEx is
+    // balanced, one that finds COM already set up in another mode changes nothing.
+    unsafe {
+        let com =
+            CoInitializeEx(std::ptr::null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32);
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            open.as_ptr(),
+            wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+        if com >= 0 {
+            CoUninitialize();
+        }
+    }
 }
 
 pub fn online_counter() -> Arc<AtomicU64> {
@@ -2705,9 +2854,9 @@ mod tests {
         // 8 pt after the sidebar.
         let shown = Leading::new(1.0, EXTENT, 0.0, DOCKED);
         assert_eq!(shown, Leading { toggle_x: 244.0, capsule: 0.0, nav_x: 272.0 });
-        // Hidden: the 40 pt toggle capsule after the traffic lights, then back and forward.
+        // Hidden: the 32 pt toggle circle after the traffic lights, then back and forward.
         let hidden = Leading::new(0.0, EXTENT, 0.0, DOCKED);
-        assert_eq!(hidden, Leading { toggle_x: 116.0, capsule: 1.0, nav_x: 144.0 });
+        assert_eq!(hidden, Leading { toggle_x: 112.0, capsule: 1.0, nav_x: 136.0 });
     }
 
     #[test]
