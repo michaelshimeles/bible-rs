@@ -15,6 +15,7 @@ struct ReaderSettings: Codable, Equatable {
     var versePerLine = false
     var headings = true
     var wholeWords = false
+    var bookLayout = BookLayout.sections
 
     static let textSizes: ClosedRange<Double> = 14...32
     static let lineSpacings: ClosedRange<Double> = 1.3...2.0
@@ -37,6 +38,7 @@ struct ReaderSettings: Codable, Equatable {
         versePerLine = value(.versePerLine, d.versePerLine)
         headings = value(.headings, d.headings)
         wholeWords = value(.wholeWords, d.wholeWords)
+        bookLayout = value(.bookLayout, d.bookLayout)
     }
 }
 
@@ -79,6 +81,7 @@ enum Sheet: Identifiable, Equatable {
 final class Store {
     @ObservationIgnored let bible: Bible
     @ObservationIgnored let bookList: [BookInfo]
+    @ObservationIgnored let sections: [BibleSection]
     private(set) var translations: [TranslationInfo]
 
     var settings: ReaderSettings {
@@ -119,6 +122,7 @@ final class Store {
         }
         self.bible = bible
         self.bookList = bookList
+        sections = bibleSections()
         self.translations = translations
         self.settings = settings
         self.position = position
@@ -173,6 +177,10 @@ final class Store {
 
     func book(of chapter: Int) -> BookInfo {
         bookList.last { Int($0.firstChapter) <= chapter } ?? bookList[0]
+    }
+
+    func section(of book: BookInfo) -> BibleSection {
+        sections.first { $0.contains(book) } ?? sections[0]
     }
 
     func ref(chapter: Int, verse: Int) -> VerseRef {
