@@ -28,6 +28,14 @@ fn books_and_references() {
     assert!(!books[38].new_testament && books[39].new_testament);
     assert_eq!(books[1].first_chapter, 50);
 
+    let sections = bible_sections();
+    let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names[0], "Pentateuch");
+    assert_eq!(names[7], "General Epistles");
+    let spans: Vec<(u8, u8)> = sections.iter().map(|s| (s.first_book, s.last_book)).collect();
+    assert_eq!(spans, [(0, 4), (5, 16), (17, 21), (22, 26), (27, 38), (39, 43), (44, 56), (57, 65)]);
+    assert!(sections.iter().all(|s| s.new_testament == books[s.first_book as usize].new_testament));
+
     let r = parse_reference("jn 3:16".into()).unwrap();
     assert_eq!((r.book, r.chapter, r.verse, r.label.as_str()), (42, 3, Some(16), "John 3:16"));
     assert_eq!(chapter_label(r.chapter_index), "John 3");

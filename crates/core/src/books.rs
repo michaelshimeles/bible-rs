@@ -117,6 +117,45 @@ pub const CHAPTER_COUNT: usize = 1189;
 /// First New Testament book (Matthew).
 pub const FIRST_NT_BOOK: BookId = BookId(39);
 
+/// A run of consecutive books the pickers browse by: the Pentateuch, History, the Gospels and
+/// Acts, …
+#[derive(Debug, PartialEq, Eq)]
+pub struct BibleSection {
+    pub name: &'static str,
+    pub first: BookId,
+    pub last: BookId,
+}
+
+/// Number of sections in [`BIBLE_SECTIONS`].
+pub const SECTION_COUNT: usize = 8;
+
+/// The canon in eight sections, in order; every book is in exactly one. Hebrews, which tradition
+/// sometimes counts with Paul's letters, starts the General Epistles.
+pub static BIBLE_SECTIONS: [BibleSection; SECTION_COUNT] = [
+    BibleSection { name: "Pentateuch", first: BookId(0), last: BookId(4) }, // Genesis–Deuteronomy
+    BibleSection { name: "History", first: BookId(5), last: BookId(16) },   // Joshua–Esther
+    BibleSection { name: "Wisdom and Poetry", first: BookId(17), last: BookId(21) }, // Job–Song of Solomon
+    BibleSection { name: "Major Prophets", first: BookId(22), last: BookId(26) }, // Isaiah–Daniel
+    BibleSection { name: "Minor Prophets", first: BookId(27), last: BookId(38) }, // Hosea–Malachi
+    BibleSection { name: "Gospels and Acts", first: BookId(39), last: BookId(43) }, // Matthew–Acts
+    BibleSection { name: "Pauline Epistles", first: BookId(44), last: BookId(56) }, // Romans–Philemon
+    BibleSection { name: "General Epistles", first: BookId(57), last: BookId(65) }, // Hebrews–Revelation
+];
+
+impl BibleSection {
+    pub fn contains(&self, book: BookId) -> bool {
+        (self.first..=self.last).contains(&book)
+    }
+
+    pub fn books(&self) -> impl Iterator<Item = BookId> {
+        (self.first.0..=self.last.0).map(BookId)
+    }
+
+    pub fn testament(&self) -> Testament {
+        self.first.testament()
+    }
+}
+
 impl BookId {
     pub const GENESIS: BookId = BookId(0);
     pub const PSALMS: BookId = BookId(18);
@@ -351,6 +390,40 @@ mod tests {
         let john3 = ChapterIdx::new(BookId::from_code("JHN").unwrap(), 3).unwrap();
         assert_eq!(john3.display(), "John 3");
         assert_eq!(ChapterIdx::new(BookId::PSALMS, 151), None);
+    }
+
+    #[test]
+    fn sections_cover_every_book_once_in_order() {
+        let books: Vec<BookId> = BIBLE_SECTIONS.iter().flat_map(BibleSection::books).collect();
+        assert_eq!(books, BookId::all().collect::<Vec<_>>());
+        for b in BookId::all() {
+            assert_eq!(BIBLE_SECTIONS.iter().filter(|s| s.contains(b)).count(), 1, "{}", b.name());
+        }
+        // No section straddles the testaments.
+        assert!(BIBLE_SECTIONS.iter().all(|s| s.first.testament() == s.last.testament()));
+    }
+
+    #[test]
+    fn sections_match_store_the_word() {
+        // Store the Word numbers books from 1; BookId counts from 0.
+        let spans: Vec<(&str, &str, &str)> =
+            BIBLE_SECTIONS.iter().map(|s| (s.name, s.first.name(), s.last.name())).collect();
+        assert_eq!(
+            spans,
+            [
+                ("Pentateuch", "Genesis", "Deuteronomy"),
+                ("History", "Joshua", "Esther"),
+                ("Wisdom and Poetry", "Job", "Song of Solomon"),
+                ("Major Prophets", "Isaiah", "Daniel"),
+                ("Minor Prophets", "Hosea", "Malachi"),
+                ("Gospels and Acts", "Matthew", "Acts"),
+                ("Pauline Epistles", "Romans", "Philemon"),
+                ("General Epistles", "Hebrews", "Revelation"),
+            ]
+        );
+        let numbered: Vec<(usize, usize)> =
+            BIBLE_SECTIONS.iter().map(|s| (s.first.index() + 1, s.last.index() + 1)).collect();
+        assert_eq!(numbered, [(1, 5), (6, 17), (18, 22), (23, 27), (28, 39), (40, 44), (45, 57), (58, 66)]);
     }
 
     #[test]
