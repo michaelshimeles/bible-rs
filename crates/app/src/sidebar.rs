@@ -5,7 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bible_core::books::{BookId, ChapterIdx, FIRST_NT_BOOK, VerseRef};
+use bible_core::books::{
+    BIBLE_SECTIONS, BookId, ChapterIdx, FIRST_NT_BOOK, SECTION_COUNT, Testament, VerseRef,
+};
 use bible_core::library::Library;
 use bible_core::search::{Query, Scope};
 use bible_core::study::{HighlightColor, StudyStore};
@@ -70,10 +72,10 @@ pub struct SidebarEnv<'a> {
 }
 
 pub struct Sidebar {
-    /// Which testaments are expanded (OT, NT), and which of those the reader's position opened
-    /// (rather than a click): moving to the other testament closes those again.
-    testaments: [bool; 2],
-    auto_opened: [bool; 2],
+    /// Which canon sections are expanded, and which the reader's position opened (rather than
+    /// a click): moving to another section closes those again.
+    sections: [bool; SECTION_COUNT],
+    auto_opened: [bool; SECTION_COUNT],
     /// The book whose chapter grid is open.
     expanded: Option<BookId>,
     /// The pinned book whose chapter grid is open under its pinned row (apart from `expanded`).
@@ -108,7 +110,7 @@ pub struct Sidebar {
     elapsed: Duration,
     selected: usize,
     scroll_to_selected: bool,
-    /// The book last revealed (testament opened, scrolled into view) in the source list.
+    /// The book last revealed (section opened, scrolled into view) in the source list.
     revealed: Option<BookId>,
     /// Highlights and notes by chapter and by book, keyed by the study store's generation.
     activity: (u64, Activity),
@@ -119,8 +121,8 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn new(_tab: SidebarTab) -> Self {
         Self {
-            testaments: [false, false],
-            auto_opened: [false, false],
+            sections: [false; SECTION_COUNT],
+            auto_opened: [false; SECTION_COUNT],
             expanded: None,
             pinned_expanded: None,
             study_open: [false; 3],
@@ -265,11 +267,11 @@ impl Sidebar {
         let current_book = env.location.0.book();
         let reading = env.page == crate::pages::Page::Reader;
         if !reading {
-            // No reader to follow: the testaments it opened close, and reopen on return.
-            for t in 0..2 {
-                if self.auto_opened[t] {
-                    self.testaments[t] = false;
-                    self.auto_opened[t] = false;
+            // No reader to follow: the sections it opened close, and reopen on return.
+            for i in 0..SECTION_COUNT {
+                if self.auto_opened[i] {
+                    self.sections[i] = false;
+                    self.auto_opened[i] = false;
                 }
             }
             self.revealed = None;
@@ -277,14 +279,16 @@ impl Sidebar {
         let reveal = reading && self.revealed != Some(current_book);
         if reveal {
             self.revealed = Some(current_book);
-            let t = usize::from(current_book >= FIRST_NT_BOOK);
-            if !self.testaments[t] {
-                self.testaments[t] = true;
-                self.auto_opened[t] = true;
-            }
-            if self.auto_opened[1 - t] {
-                self.testaments[1 - t] = false;
-                self.auto_opened[1 - t] = false;
+            for (i, section) in BIBLE_SECTIONS.iter().enumerate() {
+                if section.contains(current_book) {
+                    if !self.sections[i] {
+                        self.sections[i] = true;
+                        self.auto_opened[i] = true;
+                    }
+                } else if self.auto_opened[i] {
+                    self.sections[i] = false;
+                    self.auto_opened[i] = false;
+                }
             }
             self.expanded = Some(current_book);
         }
@@ -452,10 +456,12 @@ impl Sidebar {
                         }
                     }
 
-                    section(ui, p, "Books", false);
+                    if env.pinned.iter().any(|b| matches(*b)) {
+                        section(ui, p, "Pinned", false);
+                    }
                     // Pinned books, above the testaments: a click opens the book's chapters right
-                    // under it (leaving the testaments as they are); the pin, or a right-click,
-                    // unpins it. Book rows in the testaments pin from their own pin or right-click.
+                    // under it (leaving the sections as they are); the pin, or a right-click,
+                    // unpins it. Book rows in sections pin from their own pin or right-click.
                     for &b in env.pinned.iter().filter(|b| matches(**b)) {
                         let name = book_name(b);
                         let open = self.pinned_expanded == Some(b) && b.chapters() > 1;
@@ -485,7 +491,7 @@ impl Sidebar {
                                     verse: None,
                                     flash: false,
                                 });
-                                // Jumping from here leaves the testaments as they are.
+                                // Jumping from here leaves the sections as they are.
                                 self.revealed = Some(b);
                             } else {
                                 self.pinned_expanded = if open { None } else { Some(b) };
@@ -513,95 +519,122 @@ impl Sidebar {
                             }
                         }
                     }
-                    for (t, (label, range)) in
-                        [("Old Testament", 0..FIRST_NT_BOOK.0), ("New Testament", FIRST_NT_BOOK.0..66)]
-                            .into_iter()
-                            .enumerate()
+                    for (title, testament) in
+                        [("Old Testament", Testament::Old), ("New Testament", Testament::New)]
                     {
-                        let books: Vec<BookId> = range.clone().map(BookId).filter(|b| matches(*b)).collect();
-                        if books.is_empty() {
+                        let sections: Vec<(usize, Vec<BookId>)> = BIBLE_SECTIONS
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, s)| s.testament() == testament)
+                            .map(|(i, s)| (i, s.books().filter(|b| matches(*b)).collect::<Vec<_>>()))
+                            .filter(|(_, books)| !books.is_empty())
+                            .collect();
+                        if sections.is_empty() {
                             continue;
                         }
-                        let open = self.testaments[t] || !filter.is_empty();
-                        let r = row(
-                            ui,
-                            p,
-                            &Row {
-                                icon: Some(crate::icons::book),
-                                label,
-                                count: Some(books.len().to_string()),
-                                disclosure: Some(open),
-                                ..Row::default()
-                            },
-                        );
-                        if r.clicked() {
-                            self.testaments[t] = !open;
-                            self.auto_opened[t] = false;
-                        }
-                        if !open {
-                            continue;
-                        }
-                        for b in books {
-                            let name = book_name(b);
-                            let here = b == current_book && reading;
-                            let marked = self.activity.1.books.get(&b);
-                            let mut resp = row(
+                        section(ui, p, title, false);
+                        for (i, books) in sections {
+                            let open = self.sections[i] || !filter.is_empty();
+                            let r = row(
                                 ui,
                                 p,
                                 &Row {
-                                    label: &name,
-                                    indent: BOOK_INDENT - ROW_PAD,
-                                    count: here.then(|| b.chapters().to_string()),
-                                    selected: here,
-                                    marks: marked.map(|m| &m.marks[..]),
-                                    pin_lane: true,
+                                    icon: Some(crate::icons::book),
+                                    label: BIBLE_SECTIONS[i].name,
+                                    count: Some(books.len().to_string()),
+                                    disclosure: Some(open),
                                     ..Row::default()
                                 },
                             );
-                            if let Some(m) = marked {
-                                resp = resp.on_hover_text(m.summary());
-                            }
-                            if here && reveal && !self.filtering {
-                                resp.scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
-                            }
-                            let pinned = env.pinned.contains(&b);
-                            // The pin (on hover, or kept while pinned) pins without opening the book.
-                            let pin = pin_toggle(ui, p, resp.rect, b, pinned, false);
-                            if pin.clicked() {
-                                actions.push(if pinned { Action::UnpinBook(b) } else { Action::PinBook(b) });
-                            }
-                            resp.context_menu(|ui| {
-                                let (label, a) = if pinned {
-                                    ("Unpin", Action::UnpinBook(b))
-                                } else {
-                                    ("Pin to Top", Action::PinBook(b))
-                                };
-                                if ui.button(label).clicked() {
-                                    actions.push(a);
-                                    ui.close();
-                                }
+                            r.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::CollapsingHeader,
+                                    ui.is_enabled(),
+                                    BIBLE_SECTIONS[i].name,
+                                )
                             });
-                            if resp.clicked() && !pin.clicked() {
-                                if b.chapters() == 1 {
-                                    actions.push(Action::Jump {
-                                        chapter: b.first_chapter(),
-                                        verse: None,
-                                        flash: false,
-                                    });
-                                } else {
-                                    self.expanded = if self.expanded == Some(b) { None } else { Some(b) };
-                                }
+                            ui.ctx().accesskit_node_builder(r.id, |node| node.set_expanded(open));
+                            if r.has_focus() {
+                                ui.painter().rect_stroke(
+                                    r.rect,
+                                    theme::radius::SM,
+                                    Stroke::new(2.0, p.accent),
+                                    egui::StrokeKind::Inside,
+                                );
                             }
-                            if self.expanded == Some(b) && b.chapters() > 1 {
-                                chapter_grid(
+                            if r.clicked() {
+                                self.sections[i] = !open;
+                                self.auto_opened[i] = false;
+                            }
+                            if !open {
+                                continue;
+                            }
+                            for b in books {
+                                let name = book_name(b);
+                                let here = b == current_book && reading;
+                                let marked = self.activity.1.books.get(&b);
+                                let mut resp = row(
                                     ui,
                                     p,
-                                    ui.id().with(("chapters", b)),
-                                    b,
-                                    env.location.0,
-                                    &self.activity.1.chapters,
-                                    actions,
+                                    &Row {
+                                        label: &name,
+                                        indent: BOOK_INDENT - ROW_PAD,
+                                        count: here.then(|| b.chapters().to_string()),
+                                        selected: here,
+                                        marks: marked.map(|m| &m.marks[..]),
+                                        pin_lane: true,
+                                        ..Row::default()
+                                    },
                                 );
+                                if let Some(m) = marked {
+                                    resp = resp.on_hover_text(m.summary());
+                                }
+                                if here && reveal && !self.filtering {
+                                    resp.scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
+                                }
+                                let pinned = env.pinned.contains(&b);
+                                // The pin (on hover, or kept while pinned) pins without opening the book.
+                                let pin = pin_toggle(ui, p, resp.rect, b, pinned, false);
+                                if pin.clicked() {
+                                    actions.push(if pinned {
+                                        Action::UnpinBook(b)
+                                    } else {
+                                        Action::PinBook(b)
+                                    });
+                                }
+                                resp.context_menu(|ui| {
+                                    let (label, a) = if pinned {
+                                        ("Unpin", Action::UnpinBook(b))
+                                    } else {
+                                        ("Pin to Top", Action::PinBook(b))
+                                    };
+                                    if ui.button(label).clicked() {
+                                        actions.push(a);
+                                        ui.close();
+                                    }
+                                });
+                                if resp.clicked() && !pin.clicked() {
+                                    if b.chapters() == 1 {
+                                        actions.push(Action::Jump {
+                                            chapter: b.first_chapter(),
+                                            verse: None,
+                                            flash: false,
+                                        });
+                                    } else {
+                                        self.expanded = if self.expanded == Some(b) { None } else { Some(b) };
+                                    }
+                                }
+                                if self.expanded == Some(b) && b.chapters() > 1 {
+                                    chapter_grid(
+                                        ui,
+                                        p,
+                                        ui.id().with(("chapters", b)),
+                                        b,
+                                        env.location.0,
+                                        &self.activity.1.chapters,
+                                        actions,
+                                    );
+                                }
                             }
                         }
                     }
@@ -1214,7 +1247,7 @@ fn row(ui: &mut Ui, p: &Palette, r: &Row<'_>) -> Response {
 
 /// The pin in a book row's chevron lane (like the Open in star): drawn filled while `pinned`,
 /// otherwise outlined while the row is hovered; returns its click response.
-/// `pinned_row` tells a pinned row's pin from the same book's pin in its testament.
+/// `pinned_row` tells a pinned row's pin from the same book's pin in its section.
 fn pin_toggle(ui: &Ui, p: &Palette, row: Rect, book: BookId, pinned: bool, pinned_row: bool) -> Response {
     let lane = Rect::from_min_size(
         pos2(row.right() - ROW_PAD - ICON_LANE, row.center().y - ICON_LANE / 2.0),
@@ -1418,7 +1451,9 @@ fn colour_filter(ui: &mut Ui, p: &Palette, filter: &mut Option<HighlightColor>) 
 /// sections).
 fn section(ui: &mut Ui, p: &Palette, label: &str, first: bool) {
     let (top, h) = if first { (8.0, 28.0) } else { (16.0, 36.0) };
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, ui.is_enabled(), label));
+    ui.ctx().accesskit_node_builder(resp.id, |node| node.set_role(egui::accesskit::Role::Heading));
     let y = rect.top() + top + (h - top) / 2.0;
     ui.painter().text(
         pos2(rect.left() + ROW_PAD, y),
@@ -1584,7 +1619,7 @@ fn paint_ring(
 /// The open book's chapters: 24 pt chips, the current one solid accent. A chapter with
 /// highlights or notes gets a segmented ring (one segment per highlight or note, in its colour) and
 /// its number on a disc tinted with its main highlight colour. The chips' ids come from `id`: a
-/// pinned book can show its chapters twice (under its pinned row and in its testament).
+/// pinned book can show its chapters twice (under its pinned row and in its section).
 fn chapter_grid(
     ui: &mut Ui,
     p: &Palette,

@@ -1,5 +1,5 @@
-//! Pinning books in the running app: right-clicking a book in a testament pins it above the
-//! testaments, the pinned row opens the book's chapters right under it (the testaments stay as
+//! Pinning books in the running app: right-clicking a book in a section pins it above the
+//! testaments, the pinned row opens the book's chapters right under it (the sections stay as
 //! they are), and its pin or a right-click unpins it. Pinning the book being read shows its
 //! chapters twice, and both grids take clicks; a pinned book's highlights show as its ring. Its
 //! own test binary because it sets `BIBLE_RS_OFFSCREEN` (see `book_picker_app.rs`).
@@ -102,6 +102,17 @@ fn click(h: &mut Harness<'_, BibleApp>, at: Pos2, button: PointerButton) {
     h.run_steps(4);
 }
 
+fn scroll(h: &mut Harness<'_, BibleApp>, delta: f32) {
+    h.event(Event::PointerMoved(egui::pos2(150.0, 900.0)));
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, delta),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(8);
+}
+
 #[test]
 fn a_pinned_book_sits_above_the_testaments() {
     // SAFETY: the only test in this binary, so nothing else reads the environment meanwhile.
@@ -117,13 +128,16 @@ fn a_pinned_book_sits_above_the_testaments() {
     init.settings.chapter = john3.0;
     let startup =
         Startup { t0: Instant::now(), probe: false, init: Duration::ZERO, first_ui: None, frames: 0 };
-    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 1000.0)).build_eframe(|cc| {
+    // Compare pinned and ordinary rows together here; exercise scrolling at 1000 pt below.
+    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 1800.0)).build_eframe(|cc| {
         cc.egui_ctx.set_fonts(theme::font_definitions());
         BibleApp::new(cc, init, online_counter(), startup)
     });
     h.run_steps(8);
 
-    // Reading John opens the New Testament; right-click Philippians and pin it.
+    // Reading John opens Gospels and Acts; open Pauline Epistles and pin Philippians.
+    let pauline = one(&h, "Pauline Epistles");
+    click(&mut h, pauline, PointerButton::Primary);
     let row = one(&h, "Philippians");
     click(&mut h, row, PointerButton::Secondary);
     let pin = one(&h, "Pin to Top");
@@ -179,16 +193,17 @@ fn a_pinned_book_sits_above_the_testaments() {
     let old = one(&h, "Old Testament");
     assert!(john[0].y < old.y && find(&h, "Philippians")[0].y < john[0].y);
 
-    // Pinned rows carry a filled pin where other rows have their chevron: the New Testament's
-    // count ends 8 pt before its 16 pt chevron lane.
-    let nt = one(&h, "New Testament");
-    let count = *find_rects(&h, "27").iter().find(|r| (r.center().y - nt.y).abs() < 2.0).expect("NT count");
+    // Pinned rows carry a filled pin where sections have their chevron: the section's count
+    // ends 8 pt before its 16 pt chevron lane.
+    let gospels = one(&h, "Gospels and Acts");
+    let count =
+        *find_rects(&h, "5").iter().find(|r| (r.center().y - gospels.y).abs() < 2.0).expect("section count");
     let pin_at = |y: f32| egui::pos2(count.right() + 16.0, y);
     let lane = |y: f32| egui::Rect::from_center_size(pin_at(y), egui::vec2(16.0, 16.0));
     assert!(fills_in(&h, lane(john[0].y)) >= 3, "a filled pin on the pinned row");
     assert_eq!(fills_in(&h, lane(old.y)), 0, "no pin on the testament rows");
-    // And a filled book on the left, where the testaments keep the outline.
-    let label = find_rects(&h, "Old Testament")[0];
+    // And a filled book on the left, where sections keep the outline.
+    let label = find_rects(&h, "Gospels and Acts")[0];
     let left = |y: f32| {
         egui::Rect::from_min_max(
             egui::pos2(label.left() - 30.0, y - 10.0),
@@ -196,7 +211,7 @@ fn a_pinned_book_sits_above_the_testaments() {
         )
     };
     assert!(fills_in(&h, left(john[0].y)) >= 1, "a filled book on the pinned row");
-    assert_eq!(fills_in(&h, left(old.y)), 0, "an outline book on the testament rows");
+    assert_eq!(fills_in(&h, left(gospels.y)), 0, "an outline book on the section rows");
 
     // Right-clicking a pinned row unpins it.
     let pinned = find(&h, "Philippians")[0];
@@ -277,5 +292,33 @@ fn a_pinned_book_sits_above_the_testaments() {
     assert_eq!(h.state().reader.location.0, ChapterIdx::new(JOHN, 7).unwrap(), "the testament's grid");
     click(&mut h, pinned_5, PointerButton::Primary);
     assert_eq!(h.state().reader.location.0, ChapterIdx::new(JOHN, 5).unwrap(), "the pinned grid again");
+
+    // At the original window height, reach an offscreen book by scrolling, pin it through its
+    // context menu, then return to the top and navigate using its pinned chapter grid.
+    h.set_size(egui::vec2(1280.0, 1000.0));
+    h.run_steps(6);
+    assert!(find(&h, "Philippians").is_empty(), "Paul's letters start below the viewport");
+    scroll(&mut h, -600.0);
+    let philippians = one(&h, "Philippians");
+    click(&mut h, philippians, PointerButton::Secondary);
+    let pin = one(&h, "Pin to Top");
+    click(&mut h, pin, PointerButton::Primary);
+    assert_eq!(h.state().settings.pinned(), [MARK, JOHN, PHILIPPIANS]);
+    scroll(&mut h, 2000.0);
+    let pinned = one(&h, "Philippians");
+    assert!(one(&h, "Pinned").y < pinned.y && pinned.y < one(&h, "Old Testament").y);
+    click(&mut h, pinned, PointerButton::Primary);
+    let pinned = one(&h, "Philippians");
+    let old = one(&h, "Old Testament");
+    let chapter2 = *find(&h, "2")
+        .iter()
+        .find(|c| c.x < 300.0 && c.y > pinned.y && c.y < old.y)
+        .expect("Philippians' pinned grid is visible in the normal viewport");
+    click(&mut h, chapter2, PointerButton::Primary);
+    assert_eq!(h.state().reader.location.0, ChapterIdx::new(PHILIPPIANS, 2).unwrap());
+    click(&mut h, pinned, PointerButton::Secondary);
+    let unpin = one(&h, "Unpin");
+    click(&mut h, unpin, PointerButton::Primary);
+    assert_eq!(h.state().settings.pinned(), [MARK, JOHN]);
     let _ = std::fs::remove_dir_all(&dir);
 }
