@@ -30,10 +30,17 @@
 	const activePlans = $derived(app.plans().filter((p) => p.finished === null).length);
 	const abbrev = $derived(app.info(app.textTranslation())?.abbrev ?? '');
 	const filter = $derived(st.filter.trim().toLowerCase());
+	const sections = $derived(
+		app.sections.map((section, index) => ({
+			...section,
+			index,
+			books: section.books.map((i) => books[i]).filter((b) => !filter || b.name.toLowerCase().includes(filter))
+		}))
+	);
 	const testaments = $derived(
 		(['Old Testament', 'New Testament'] as const).map((label, t) => ({
 			label,
-			books: books.filter((b) => +b.newTestament === t && (!filter || b.name.toLowerCase().includes(filter)))
+			sections: sections.filter((s) => +s.newTestament === t && s.books.length > 0)
 		}))
 	);
 
@@ -50,17 +57,17 @@
 		return out;
 	});
 
-	// The book being read: its testament opens, its chapters show and it scrolls into view. With
-	// no reader to follow, the testaments it opened close, and reopen on return.
+	// The book being read: its section opens, its chapters show and it scrolls into view. With
+	// no reader to follow, the sections it opened close, and reopen on return.
 	$effect(() => {
 		const book = currentBook;
 		const r = reading;
 		untrack(() => {
 			if (!r) {
-				for (const t of [0, 1]) {
-					if (st.autoOpened[t]) {
-						st.testaments[t] = false;
-						st.autoOpened[t] = false;
+				for (let s = 0; s < st.sections.length; s++) {
+					if (st.autoOpened[s]) {
+						st.sections[s] = false;
+						st.autoOpened[s] = false;
 					}
 				}
 				st.revealed = null;
@@ -68,14 +75,17 @@
 			}
 			if (book < 0 || st.revealed === book) return;
 			st.revealed = book;
-			const t = +books[book].newTestament;
-			if (!st.testaments[t]) {
-				st.testaments[t] = true;
-				st.autoOpened[t] = true;
-			}
-			if (st.autoOpened[1 - t]) {
-				st.testaments[1 - t] = false;
-				st.autoOpened[1 - t] = false;
+			const section = app.sections.findIndex((s) => s.books.includes(book));
+			for (let s = 0; s < st.sections.length; s++) {
+				if (s === section) {
+					if (!st.sections[s]) {
+						st.sections[s] = true;
+						st.autoOpened[s] = true;
+					}
+				} else if (st.autoOpened[s]) {
+					st.sections[s] = false;
+					st.autoOpened[s] = false;
+				}
 			}
 			st.expanded = book;
 			if (!st.filtering) void tick().then(reveal);
@@ -213,57 +223,59 @@
 		/>
 	{/if}
 
-	<h3 class="section">Books</h3>
-	{#each testaments as group, t (group.label)}
-		{#if group.books.length}
-			{@const open = st.testaments[t] || filter !== ''}
-			<Row
-				icon="book"
-				label={group.label}
-				count={group.books.length}
-				disclosure={open}
-				onclick={() => {
-					st.testaments[t] = !open;
-					st.autoOpened[t] = false;
-				}}
-			/>
-			{#if open}
-				{#each group.books as b (b.index)}
-					{@const here = b.index === currentBook && reading}
-					{@const marked = activity.books.get(b.index)}
-					{#if here}
-						<Row
-							bind:el={currentRow}
-							label={b.name}
-							indent={24}
-							count={b.chapters}
-							marks={marked?.marks}
-							title={marked && summary(marked)}
-							selected
-							href={app.bookHref(b)}
-							onclick={() => pickBook(b)}
-						/>
-					{:else}
-						<Row
-							label={b.name}
-							indent={24}
-							marks={marked?.marks}
-							title={marked && summary(marked)}
-							href={app.bookHref(b)}
-							onclick={() => pickBook(b)}
-						/>
-					{/if}
-					{#if st.expanded === b.index && b.chapters > 1}
-						<ChapterGrid
-							book={b}
-							current={app.here.chapter}
-							activity={activity.chapters}
-							href={(chapter) => app.chapterHref(chapter)}
-							onpick={(chapter) => app.dispatch({ type: 'jump', chapter })}
-						/>
-					{/if}
-				{/each}
-			{/if}
+	{#each testaments as testament (testament.label)}
+		{#if testament.sections.length}
+			<h3 class="section">{testament.label}</h3>
+			{#each testament.sections as group (group.index)}
+				{@const open = st.sections[group.index] || filter !== ''}
+				<Row
+					icon="book"
+					label={group.name}
+					count={group.books.length}
+					disclosure={open}
+					onclick={() => {
+						st.sections[group.index] = !open;
+						st.autoOpened[group.index] = false;
+					}}
+				/>
+				{#if open}
+					{#each group.books as b (b.index)}
+						{@const here = b.index === currentBook && reading}
+						{@const marked = activity.books.get(b.index)}
+						{#if here}
+							<Row
+								bind:el={currentRow}
+								label={b.name}
+								indent={24}
+								count={b.chapters}
+								marks={marked?.marks}
+								title={marked && summary(marked)}
+								selected
+								href={app.bookHref(b)}
+								onclick={() => pickBook(b)}
+							/>
+						{:else}
+							<Row
+								label={b.name}
+								indent={24}
+								marks={marked?.marks}
+								title={marked && summary(marked)}
+								href={app.bookHref(b)}
+								onclick={() => pickBook(b)}
+							/>
+						{/if}
+						{#if st.expanded === b.index && b.chapters > 1}
+							<ChapterGrid
+								book={b}
+								current={app.here.chapter}
+								activity={activity.chapters}
+								href={(chapter) => app.chapterHref(chapter)}
+								onpick={(chapter) => app.dispatch({ type: 'jump', chapter })}
+							/>
+						{/if}
+					{/each}
+				{/if}
+			{/each}
 		{/if}
 	{/each}
 </div>

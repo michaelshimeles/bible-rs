@@ -40,6 +40,13 @@ export interface Book {
 	newTestament: boolean;
 }
 
+/** The core's canonical sections, with zero-based book indices. */
+export interface BibleSection {
+	name: string;
+	books: number[];
+	newTestament: boolean;
+}
+
 /** A verse in the canonical grid: book 0–65, chapter and verse from 1. */
 export interface VerseRef {
 	book: number;
@@ -234,6 +241,7 @@ export type CopyFormat = 'plain' | 'reference' | 'markdown';
 export class Core {
 	readonly bible = new wasm.Bible();
 	readonly books: Book[] = wasm.books();
+	readonly sections: BibleSection[] = wasm.bibleSections();
 	readonly bundled: string[] = wasm.bundledTranslations();
 	readonly #loading = new Map<string, Promise<TranslationInfo>>();
 	readonly #info = new Map<string, TranslationInfo>();
