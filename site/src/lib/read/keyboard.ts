@@ -223,6 +223,11 @@ function typing(): boolean {
 	return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 }
 
+/** Whether the book picker (chrome/BookPicker.svelte) has the keyboard. */
+function inBookPicker(): boolean {
+	return !!(document.activeElement as HTMLElement | null)?.closest('.book-picker');
+}
+
 /**
  * Whether Space should press the focused control rather than scroll: one in a menu or popover, or
  * one reached from the keyboard (a button clicked keeps focus, and Space still scrolls then).
@@ -287,8 +292,11 @@ export function handleKey(app: ReadApp, e: KeyboardEvent): boolean {
 	}
 	if (!plain) return false;
 	const shift = e.shiftKey;
-	if (!shift && (key === 'ArrowLeft' || key === 'H' || key === '[')) return go({ type: 'prevChapter' });
-	if (!shift && (key === 'ArrowRight' || key === 'L' || key === ']')) return go({ type: 'nextChapter' });
+	if (!shift && key === 'ArrowLeft') return go({ type: 'prevChapter' });
+	if (!shift && key === 'ArrowRight') return go({ type: 'nextChapter' });
+	// H L and [ ] too, except in the book picker, which keeps ← → for itself.
+	if (!shift && (key === 'H' || key === '[') && !inBookPicker()) return go({ type: 'prevChapter' });
+	if (!shift && (key === 'L' || key === ']') && !inBookPicker()) return go({ type: 'nextChapter' });
 	if (!shift && key === 'ArrowDown') return go({ type: 'scrollLines', n: 3 });
 	if (!shift && key === 'ArrowUp') return go({ type: 'scrollLines', n: -3 });
 	if (key === 'PageDown') return go({ type: 'scrollPages', n: 1 });
