@@ -1,0 +1,69 @@
+# PR #66 evidence, on a scratch branch that is never merged: the update check on main and the
+# one-click update on this branch, run on GitHub's Windows desktop against a local stand-in for
+# GitHub's API and release downloads.
+name: One-click update evidence
+
+on:
+  push:
+    branches: [agent/oneclick-update-7b3e2-evidence]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tools
+        run: |
+          choco install nsis --version=3.13.0 --no-progress -y
+          choco install ffmpeg --no-progress -y
+      - name: Before (main, its update check pointed at the local server)
+        run: |
+          git worktree add ../before-src origin/main
+          sed -i 's|https://api.github.com/repos/michaelshimeles/bible-rs/releases/latest|http://127.0.0.1:8765/latest.json|' ../before-src/crates/app/src/updater.rs
+          git -C ../before-src diff
+          (cd ../before-src && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo build --release -p bible-rs)
+          mkdir -p before && cp target/release/bible-rs.exe before/
+      - name: After (this branch, pointed at the local server), 0.2.0 and 0.3.0
+        run: |
+          sed -i 's|"https://github.com/michaelshimeles/bible-rs/releases/download"|"http://127.0.0.1:8765/releases/download"|; s|"https://api.github.com/repos/michaelshimeles/bible-rs/releases/latest"|"http://127.0.0.1:8765/latest.json"|' crates/app/src/updater/release.rs
+          sed -i 's|\.https_only(true)|.https_only(false)|' crates/app/src/updater/windows.rs
+          git diff -- crates/
+          export MAKENSIS="/c/Program Files (x86)/NSIS/makensis.exe"
+          cargo build --release -p bible-rs
+          BIN=target/release/bible-rs.exe scripts/package-windows.sh
+          sed -i '0,/^version = "0.2.0"/s//version = "0.3.0"/' Cargo.toml
+          cargo build --release -p bible-rs
+          BIN=target/release/bible-rs.exe scripts/package-windows.sh
+          ls -l dist
+      - name: Install 0.2.0, seed data, start the local server, drive the updates
+        run: |
+          mkdir -p out
+          dist/bible-rs-0.2.0-windows-x64-setup.exe //S
+          python evidence/seed.py "$RUNNER_TEMP/home-before" "$RUNNER_TEMP/home-after"
+          python evidence/mock.py dist mock 0.3.0
+          python evidence/serve.py mock 8765 "$(cygpath -w "$PWD/out/server.log")" &
+          sleep 3
+          curl -sf http://127.0.0.1:8765/latest.json > /dev/null
+          python evidence/evidence.py doctor | tee out/doctor.txt || true
+          record=()
+          if grep -q '^capture_ready: yes' out/doctor.txt; then record=(-Record); fi
+          pwsh -NoProfile -File evidence/e2e.ps1 -Out "$(cygpath -w "$PWD/out")" "${record[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oneclick-evidence
+          path: |
+            out/
+            !out/**/raw.ts
