@@ -27,20 +27,33 @@ pub struct NotePopover {
     saved_at: Option<i64>,
     edited_at: f64,
     focus: bool,
+    /// The colour a new note gives its verse when the verse isn't highlighted yet.
+    colour: HighlightColor,
 }
 
 impl NotePopover {
-    pub fn new(verse: VerseRef, study: &StudyStore) -> Self {
+    pub fn new(verse: VerseRef, study: &StudyStore, colour: HighlightColor) -> Self {
         let existing = study.note(verse);
         let note = existing.map(|n| n.body.clone()).unwrap_or_default();
         let saved_at = existing.map(|n| n.updated);
-        Self { verse, saved: note.clone(), note, saved_at, edited_at: 0.0, focus: true }
+        Self { verse, saved: note.clone(), note, saved_at, edited_at: 0.0, focus: true, colour }
     }
 
     pub fn save(&mut self, study: &mut StudyStore, actions: &mut Vec<Action>) {
         if self.note != self.saved {
             match study.set_note(self.verse, &self.note) {
                 Ok(()) => {
+                    // A new note on an unhighlighted verse highlights it too, so the verse shows
+                    // that something is there.
+                    if self.saved.is_empty()
+                        && !self.note.trim().is_empty()
+                        && study.highlight(self.verse).is_none()
+                    {
+                        let colour = self.colour;
+                        if let Err(e) = study.set_highlight(self.verse, Some(colour)) {
+                            actions.push(Action::Toast(format!("Couldn't save highlight: {e:#}")));
+                        }
+                    }
                     self.saved = self.note.clone();
                     self.saved_at = Some(bible_core::study::now());
                 }
