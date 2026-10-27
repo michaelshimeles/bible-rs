@@ -42,7 +42,7 @@ struct ChapterSource: Sendable {
 /// moves the content (with the offset) when it adds or drops above, so scrolling never ends
 /// until Genesis 1 or Revelation 22. Text is drawn into fixed-height tiles, so only what's on
 /// screen is ever drawn.
-final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+final class ReaderView: UIScrollView, UIScrollViewDelegate {
     weak var readerDelegate: ReaderViewDelegate?
 
     var source: ChapterSource?
@@ -82,6 +82,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerD
     private var lastOffset: CGFloat = 0
     private var travel: CGFloat = 0
     private var accessibilityCache: [UIAccessibilityElement]?
+    private lazy var tapGate = TapGate(reader: self)
 
     private let tileHeight: CGFloat = 256
     private var tileOrigin: CGFloat = 0
@@ -109,7 +110,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerD
         decelerationRate = .normal
         contentInset = UIEdgeInsets(top: readingLine, left: 0, bottom: 0, right: 0)
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
-        tap.delegate = self
+        tap.delegate = tapGate
         addGestureRecognizer(tap)
         isAccessibilityElement = false
     }
@@ -460,9 +461,17 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerD
 
     // MARK: Taps
 
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        // A tap that stops a fling only stops it.
-        !isDecelerating
+    /// The tap's delegate: a tap that stops a fling only stops it. It isn't the reader itself,
+    /// because a scroll view is also its own pan's delegate. Refused a touch mid-fling, the pan
+    /// leaves the reader stuck, and it never scrolls again.
+    private final class TapGate: NSObject, UIGestureRecognizerDelegate {
+        weak var reader: UIScrollView?
+
+        init(reader: UIScrollView) { self.reader = reader }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            reader?.isDecelerating != true
+        }
     }
 
     @objc private func tapped(_ tap: UITapGestureRecognizer) {

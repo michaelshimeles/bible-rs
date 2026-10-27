@@ -13,6 +13,10 @@ final class BibleUITests: XCTestCase {
         XCTAssertTrue(reference.waitForExistence(timeout: 10))
     }
 
+    override func tearDown() {
+        restoreIdleWaits()
+    }
+
     private var reference: XCUIElement { app.buttons["reference"] }
 
     private func verse(_ id: String) -> XCUIElement { app.staticTexts[id] }
@@ -293,6 +297,82 @@ final class BibleUITests: XCTestCase {
         measure(metrics: [XCTOSSignpostMetric.scrollDecelerationMetric], options: options) {
             app.swipeUp(velocity: .fast)
         }
+    }
+
+    func testTouchesMidGlideKeepScrolling() throws {
+        try skipIdleWaits()
+        // Each flick lands while the one before still glides.
+        for _ in 0..<3 { expectScroll { flick() } }
+        expectScroll {
+            flick()
+            drag()
+        }
+        // And once it has settled.
+        sleep(2)
+        expectScroll { drag() }
+    }
+
+    private func flick() {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
+        start.press(
+            forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -220)), withVelocity: .fast,
+            thenHoldForDuration: 0)
+    }
+
+    private func drag() {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
+        start.press(
+            forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -220)), withVelocity: .slow,
+            thenHoldForDuration: 0.3)
+    }
+
+    /// Checks that a gesture moves the text, by the first verse of the chapter in the toolbar.
+    private func expectScroll(_ gesture: () -> Void, file: StaticString = #filePath, line: UInt = #line) {
+        let chapter = reference.label.components(separatedBy: ".").first ?? ""
+        let anchor = verse(chapter + ":1")
+        XCTAssertTrue(anchor.exists, "no \(chapter):1 to measure by", file: file, line: line)
+        let before = anchor.frame.minY
+        gesture()
+        XCTAssertGreaterThan(before - anchor.frame.minY, 20, "the text didn't move", file: file, line: line)
+    }
+
+    private var skippedWaits: [(method: Method, original: IMP)] = []
+
+    /// XCTest waits for the app to go still before each gesture, so it never touches the reader
+    /// mid-glide, as a thumb often does. This turns the wait off, in the test runner only, until
+    /// the test ends. It's private to XCTest: if a version of Xcode renames it, the test skips.
+    private func skipIdleWaits() throws {
+        let names = [
+            "waitForQuiescenceIncludingAnimationsIdle:",
+            "waitForQuiescenceIncludingAnimationsIdle:isPreEvent:",
+            "waitForQuiescenceIncludingAnimationsIdle:usingActivity:isPreEvent:",
+        ]
+        let process: AnyClass? = NSClassFromString("XCUIApplicationProcess")
+        for name in names {
+            guard let process, let method = class_getInstanceMethod(process, NSSelectorFromString(name)) else { continue }
+            // Each takes one to three flags, after self and the selector.
+            let noWait: AnyObject
+            switch method_getNumberOfArguments(method) {
+            case 3:
+                let block: @convention(block) (AnyObject, Bool) -> Void = { _, _ in }
+                noWait = block as AnyObject
+            case 4:
+                let block: @convention(block) (AnyObject, Bool, Bool) -> Void = { _, _, _ in }
+                noWait = block as AnyObject
+            case 5:
+                let block: @convention(block) (AnyObject, Bool, Bool, Bool) -> Void = { _, _, _, _ in }
+                noWait = block as AnyObject
+            default:
+                continue
+            }
+            skippedWaits.append((method, method_setImplementation(method, imp_implementationWithBlock(noWait))))
+        }
+        if skippedWaits.isEmpty { throw XCTSkip("XCTest's idle wait has changed; this test can't turn it off") }
+    }
+
+    private func restoreIdleWaits() {
+        for wait in skippedWaits { method_setImplementation(wait.method, wait.original) }
+        skippedWaits = []
     }
 
     private func row(_ reference: String) -> XCUIElement {
