@@ -11,6 +11,8 @@ export type Mode = 'paragraph' | 'versePerLine';
 export type CardStyle = 'paper' | 'sepia' | 'night' | 'ink';
 export type CardShape = 'square' | 'portrait' | 'wide';
 export type ShareCopy = 'plain' | 'reference' | 'markdown';
+/** The sidebar's books in their testaments, or in the canon's sections. */
+export type BookGrouping = 'testament' | 'section';
 
 export const ACCENTS: Accent[] = ['ink', 'oxblood', 'forest', 'plum', 'graphite'];
 export const THEMES: Theme[] = ['light', 'sepia', 'dark'];
@@ -67,6 +69,7 @@ export interface Settings {
 	share: ShareOptions;
 	planReminder: boolean;
 	onboarded: boolean;
+	bookGrouping: BookGrouping;
 }
 
 export const defaultTypography = (): Typography => ({
@@ -111,7 +114,8 @@ export const defaultSettings = (): Settings => ({
 		copy: 'reference'
 	},
 	planReminder: false,
-	onboarded: false
+	onboarded: false,
+	bookGrouping: 'testament'
 });
 
 /** What the core needs of the typography to break a chapter into blocks. */

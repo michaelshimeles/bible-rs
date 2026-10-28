@@ -30,18 +30,22 @@
 	const activePlans = $derived(app.plans().filter((p) => p.finished === null).length);
 	const abbrev = $derived(app.info(app.textTranslation())?.abbrev ?? '');
 	const filter = $derived(st.filter.trim().toLowerCase());
-	const sections = $derived(
-		app.sections.map((section, index) => ({
-			...section,
-			index,
-			books: section.books.map((i) => books[i]).filter((b) => !filter || b.name.toLowerCase().includes(filter))
-		}))
+	const groups = $derived(
+		st.groups
+			.map((group, index) => ({
+				...group,
+				index,
+				books: group.books.map((i) => books[i]).filter((b) => !filter || b.name.toLowerCase().includes(filter))
+			}))
+			.filter((group) => group.books.length > 0)
 	);
-	const testaments = $derived(
-		(['Old Testament', 'New Testament'] as const).map((label, t) => ({
-			label,
-			sections: sections.filter((s) => +s.newTestament === t && s.books.length > 0)
-		}))
+	// Testaments sit under Books; sections under a header for their testament.
+	const headed = $derived(
+		st.grouping === 'section'
+			? (['Old Testament', 'New Testament'] as const)
+					.map((label, t) => ({ label, groups: groups.filter((g) => +g.newTestament === t) }))
+					.filter((h) => h.groups.length > 0)
+			: [{ label: 'Books', groups }]
 	);
 
 	/** Highlights and notes by chapter and by book (rings on chapter chips and book rows). */
@@ -57,17 +61,19 @@
 		return out;
 	});
 
-	// The book being read: its section opens, its chapters show and it scrolls into view. With
-	// no reader to follow, the sections it opened close, and reopen on return.
+	// The book being read: its group opens, its chapters show and it scrolls into view. With no
+	// reader to follow, the groups it opened close, and reopen on return.
 	$effect(() => {
 		const book = currentBook;
 		const r = reading;
+		const grouping = app.settings.bookGrouping;
 		untrack(() => {
+			if (grouping !== st.grouping) st.regroup(grouping);
 			if (!r) {
-				for (let s = 0; s < st.sections.length; s++) {
-					if (st.autoOpened[s]) {
-						st.sections[s] = false;
-						st.autoOpened[s] = false;
+				for (let g = 0; g < st.open.length; g++) {
+					if (st.autoOpened[g]) {
+						st.open[g] = false;
+						st.autoOpened[g] = false;
 					}
 				}
 				st.revealed = null;
@@ -75,16 +81,16 @@
 			}
 			if (book < 0 || st.revealed === book) return;
 			st.revealed = book;
-			const section = app.sections.findIndex((s) => s.books.includes(book));
-			for (let s = 0; s < st.sections.length; s++) {
-				if (s === section) {
-					if (!st.sections[s]) {
-						st.sections[s] = true;
-						st.autoOpened[s] = true;
+			const group = st.groups.findIndex((g) => g.books.includes(book));
+			for (let g = 0; g < st.open.length; g++) {
+				if (g === group) {
+					if (!st.open[g]) {
+						st.open[g] = true;
+						st.autoOpened[g] = true;
 					}
-				} else if (st.autoOpened[s]) {
-					st.sections[s] = false;
-					st.autoOpened[s] = false;
+				} else if (st.autoOpened[g]) {
+					st.open[g] = false;
+					st.autoOpened[g] = false;
 				}
 			}
 			st.expanded = book;
@@ -223,60 +229,58 @@
 		/>
 	{/if}
 
-	{#each testaments as testament (testament.label)}
-		{#if testament.sections.length}
-			<h3 class="section">{testament.label}</h3>
-			{#each testament.sections as group (group.index)}
-				{@const open = st.sections[group.index] || filter !== ''}
-				<Row
-					icon="book"
-					label={group.name}
-					count={group.books.length}
-					disclosure={open}
-					onclick={() => {
-						st.sections[group.index] = !open;
-						st.autoOpened[group.index] = false;
-					}}
-				/>
-				{#if open}
-					{#each group.books as b (b.index)}
-						{@const here = b.index === currentBook && reading}
-						{@const marked = activity.books.get(b.index)}
-						{#if here}
-							<Row
-								bind:el={currentRow}
-								label={b.name}
-								indent={24}
-								count={b.chapters}
-								marks={marked?.marks}
-								title={marked && summary(marked)}
-								selected
-								href={app.bookHref(b)}
-								onclick={() => pickBook(b)}
-							/>
-						{:else}
-							<Row
-								label={b.name}
-								indent={24}
-								marks={marked?.marks}
-								title={marked && summary(marked)}
-								href={app.bookHref(b)}
-								onclick={() => pickBook(b)}
-							/>
-						{/if}
-						{#if st.expanded === b.index && b.chapters > 1}
-							<ChapterGrid
-								book={b}
-								current={app.here.chapter}
-								activity={activity.chapters}
-								href={(chapter) => app.chapterHref(chapter)}
-								onpick={(chapter) => app.dispatch({ type: 'jump', chapter })}
-							/>
-						{/if}
-					{/each}
-				{/if}
-			{/each}
-		{/if}
+	{#each headed as header (header.label)}
+		<h3 class="section">{header.label}</h3>
+		{#each header.groups as group (group.index)}
+			{@const open = st.open[group.index] || filter !== ''}
+			<Row
+				icon="book"
+				label={group.name}
+				count={group.books.length}
+				disclosure={open}
+				onclick={() => {
+					st.open[group.index] = !open;
+					st.autoOpened[group.index] = false;
+				}}
+			/>
+			{#if open}
+				{#each group.books as b (b.index)}
+					{@const here = b.index === currentBook && reading}
+					{@const marked = activity.books.get(b.index)}
+					{#if here}
+						<Row
+							bind:el={currentRow}
+							label={b.name}
+							indent={24}
+							count={b.chapters}
+							marks={marked?.marks}
+							title={marked && summary(marked)}
+							selected
+							href={app.bookHref(b)}
+							onclick={() => pickBook(b)}
+						/>
+					{:else}
+						<Row
+							label={b.name}
+							indent={24}
+							marks={marked?.marks}
+							title={marked && summary(marked)}
+							href={app.bookHref(b)}
+							onclick={() => pickBook(b)}
+						/>
+					{/if}
+					{#if st.expanded === b.index && b.chapters > 1}
+						<ChapterGrid
+							book={b}
+							current={app.here.chapter}
+							activity={activity.chapters}
+							href={(chapter) => app.chapterHref(chapter)}
+							onpick={(chapter) => app.dispatch({ type: 'jump', chapter })}
+						/>
+					{/if}
+				{/each}
+			{/if}
+		{/each}
 	{/each}
 </div>
 

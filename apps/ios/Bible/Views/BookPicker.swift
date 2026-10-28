@@ -1,15 +1,15 @@
 import SwiftUI
 
-/// How the book picker lists the books: by section of the canon, or all 66 under their testaments.
+/// How the book picker lists the books: all 66 under their testaments, or by section of the canon.
 enum BookLayout: String, Codable, CaseIterable, Identifiable {
-    case sections, allBooks
+    case allBooks, sections
 
     var id: Self { self }
 
     var label: String {
         switch self {
-        case .sections: "Sections"
         case .allBooks: "All books"
+        case .sections: "Sections"
         }
     }
 }

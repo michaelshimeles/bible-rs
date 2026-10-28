@@ -161,6 +161,30 @@ final class BibleUITests: XCTestCase {
 
     func testPicksABookAndChapter() {
         reference.tap()
+        let layout = app.buttons["book-layout"]
+        XCTAssertTrue(layout.waitForExistence(timeout: 3))
+        XCTAssertEqual(layout.value as? String, "All books", "the default")
+        let romans = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Romans'")).firstMatch
+        XCTAssertTrue(romans.waitForExistence(timeout: 3))
+        romans.tap()
+        let twelve = app.buttons["Romans 12"]
+        XCTAssertTrue(twelve.waitForExistence(timeout: 3))
+        twelve.tap()
+        expectChapter("Romans 12")
+        XCTAssertTrue(verse("Romans 12:1").label.contains("living sacrifice"))
+    }
+
+    /// Opens the Books sheet and switches it to sections.
+    private func showSections() {
+        reference.tap()
+        let layout = app.buttons["book-layout"]
+        XCTAssertTrue(layout.waitForExistence(timeout: 3))
+        layout.tap()
+        app.buttons["Sections"].tap()
+    }
+
+    func testPicksFromSections() {
+        showSections()
         // Sections open on John's: the Gospels and Acts unfolded, with John's chapters.
         XCTAssertTrue(app.buttons["John 3"].waitForExistence(timeout: 3))
         XCTAssertEqual(app.buttons["Gospels and Acts"].value as? String, "Expanded, has the chapter you're reading")
@@ -178,36 +202,20 @@ final class BibleUITests: XCTestCase {
         five.tap()
         expectChapter("Galatians 5")
         XCTAssertTrue(verse("Galatians 5:22").label.contains("fruit of the Spirit"))
+
+        // The choice is kept.
+        reference.tap()
+        XCTAssertTrue(app.buttons["book-layout"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["book-layout"].value as? String, "Sections")
     }
 
     func testOneChapterBooksOpenFromTheirSection() {
-        reference.tap()
+        showSections()
         let general = app.buttons["General Epistles"]
         XCTAssertTrue(general.waitForExistence(timeout: 3))
         general.tap()
         app.buttons["Jude"].tap()
         expectChapter("Jude 1")
-    }
-
-    func testPicksFromAllBooks() {
-        reference.tap()
-        let layout = app.buttons["book-layout"]
-        XCTAssertTrue(layout.waitForExistence(timeout: 3))
-        layout.tap()
-        app.buttons["All books"].tap()
-        let romans = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Romans'")).firstMatch
-        XCTAssertTrue(romans.waitForExistence(timeout: 3))
-        romans.tap()
-        let twelve = app.buttons["Romans 12"]
-        XCTAssertTrue(twelve.waitForExistence(timeout: 3))
-        twelve.tap()
-        expectChapter("Romans 12")
-        XCTAssertTrue(verse("Romans 12:1").label.contains("living sacrifice"))
-
-        // The choice is kept.
-        reference.tap()
-        XCTAssertTrue(app.buttons["book-layout"].waitForExistence(timeout: 3))
-        XCTAssertEqual(app.buttons["book-layout"].value as? String, "All books")
     }
 
     func testPsalmsOpenFromAReference() {

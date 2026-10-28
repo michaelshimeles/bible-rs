@@ -1121,6 +1121,9 @@ pub fn segmented_tight(
     for (i, (label, w)) in labels.iter().zip(widths).enumerate() {
         let r = Rect::from_min_size(pos2(x, track.top() + 2.0), vec2(w, 28.0));
         let resp = ui.interact(r, id.with(i), Sense::click());
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::RadioButton, ui.is_enabled(), i == selected, *label)
+        });
         if i == selected {
             p.shadows.knob.paint(ui.painter(), r, 14.0);
             ui.painter().rect_filled(r, 14.0, p.raised);

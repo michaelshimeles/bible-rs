@@ -1,11 +1,13 @@
-//! Canon sections in the running app: disclosure rows, reader following, chapter navigation,
-//! filtering and pins. Its own test binary because it sets `BIBLE_RS_OFFSCREEN` before startup.
+//! Canon sections in the running app: the testaments by default, then, once the setting asks for
+//! sections, disclosure rows, reader following, chapter navigation, filtering and pins, and back.
+//! Its own test binary because it sets `BIBLE_RS_OFFSCREEN` before startup.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bible_core::books::{BookId, ChapterIdx};
 use bible_rs::app::{BibleApp, Startup, initialize, online_counter};
+use bible_rs::sidebar::BookGrouping;
 use bible_rs::theme::{self, Theme};
 use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, Shape};
 use egui_kittest::Harness;
@@ -88,6 +90,11 @@ fn book_label(h: &Harness<'_, BibleApp>, book: BookId) -> String {
     h.state().library.get("kjv").unwrap().meta.book_short(book).into()
 }
 
+/// Whether each disclosure row is expanded, as assistive tech sees it.
+fn expanded(h: &Harness<'_, BibleApp>, label: &str) -> Option<bool> {
+    h.get_by_role_and_label(egui::accesskit::Role::Button, label).accesskit_node().data().is_expanded()
+}
+
 fn has_focus_outline(h: &Harness<'_, BibleApp>, label: &str) -> bool {
     fn walk(shape: &Shape, rect: egui::Rect, color: egui::Color32) -> bool {
         match shape {
@@ -122,6 +129,16 @@ fn books_are_grouped_by_section_and_follow_the_reader() {
     });
     h.run_steps(8);
 
+    // Testaments by default: both under Books, the reader's one open on John.
+    assert_eq!(h.state().settings.book_grouping, BookGrouping::Testament);
+    assert_eq!(find(&h, "Books").len(), 1);
+    assert_eq!(expanded(&h, "Old Testament"), Some(false));
+    assert_eq!(expanded(&h, "New Testament"), Some(true));
+    assert!(books(&h, "Gospels and Acts").is_empty());
+    assert!(one(&h, "John").y > one(&h, "New Testament").y);
+
+    h.state_mut().settings.book_grouping = BookGrouping::Section;
+    h.run_steps(8);
     assert!(find(&h, "Books").is_empty());
     assert!(find(&h, "Pinned").is_empty(), "no empty pinned group");
     for label in ["Old Testament", "New Testament"] {
@@ -266,5 +283,22 @@ fn books_are_grouped_by_section_and_follow_the_reader() {
     assert!(find(&h, "Pinned").is_empty(), "hide the header when no pins match the filter");
     assert!(books(&h, "John").is_empty());
     one(&h, "Philippians");
+
+    // Back to testaments: Books heads the pins again, and only the reader's testament reopens.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.key_press(Key::Backspace);
+    h.run_steps(4);
+    h.state_mut().settings.book_grouping = BookGrouping::Testament;
+    h.run_steps(8);
+    assert!(find(&h, "Pinned").is_empty());
+    assert!(books(&h, "Gospels and Acts").is_empty());
+    let header = find(&h, "Books");
+    assert_eq!(header.len(), 1);
+    let john = find(&h, "John");
+    assert_eq!(john.len(), 2, "pinned, and in the New Testament");
+    assert!(header[0].y < john[0].y && john[0].y < one(&h, "Old Testament").y);
+    assert!(john[1].y > one(&h, "New Testament").y);
+    assert_eq!(expanded(&h, "Old Testament"), Some(false));
+    assert_eq!(expanded(&h, "New Testament"), Some(true));
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -19,6 +19,7 @@ use crate::actions::{Action, ExportKind, SettingsTab};
 use crate::app::{Settings, TaskResult};
 use crate::icons;
 use crate::reader::layout::{Mode, Typography};
+use crate::sidebar::BookGrouping;
 use crate::theme::{self, Palette, Theme, text};
 use crate::widgets::{self, Button, Kind};
 
@@ -1613,12 +1614,12 @@ fn theme_cards(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) 
         }
     }
 }
-/// Appearance (frame 24): theme, accent colour, the toolbar's translation, the sidebar; names
-/// for the highlight colours; motion.
+/// Appearance (frame 24): theme, accent colour, the toolbar's translation, the sidebar and how it
+/// groups the books; names for the highlight colours; motion.
 fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
     let p = settings.theme.palette();
     group_title(ui, p, "Appearance");
-    rows_card(ui, p, &[44.0, 64.0, 44.0, 44.0], |ui, i, r| match i {
+    rows_card(ui, p, &[44.0, 64.0, 44.0, 44.0, 44.0], |ui, i, r| match i {
         0 => {
             row_label(ui, p, r, "Theme", None);
             let items: [(IconFn, &str); 4] =
@@ -1680,7 +1681,7 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
                 &mut settings.toolbar_translation,
             );
         }
-        _ => {
+        3 => {
             row_label(ui, p, r, "Sidebar", None);
             let right = pos2(r.right() - 16.0, r.center().y);
             let (_, pick) = widgets::segmented_tight(
@@ -1693,6 +1694,21 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
             );
             if let Some(k) = pick {
                 settings.sidebar_attached = k == 1;
+            }
+        }
+        _ => {
+            row_label(ui, p, r, "Group books by", None);
+            let right = pos2(r.right() - 16.0, r.center().y);
+            let (_, pick) = widgets::segmented_tight(
+                ui,
+                p,
+                right,
+                ui.id().with("book-grouping"),
+                &BookGrouping::ALL.map(BookGrouping::label),
+                settings.book_grouping as usize,
+            );
+            if let Some(k) = pick {
+                settings.book_grouping = BookGrouping::ALL[k];
             }
         }
     });

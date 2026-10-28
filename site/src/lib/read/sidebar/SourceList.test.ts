@@ -5,6 +5,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ReadApp } from '../app.svelte';
 import { Core } from '../core';
+import { defaultSettings, type BookGrouping } from '../settings';
 import { initSync } from '../wasm/bible.js';
 import SourceList from './SourceList.svelte';
 import { SourceListState } from './state.svelte';
@@ -29,7 +30,7 @@ afterEach(() => {
 	document.body.innerHTML = '';
 });
 
-function reader() {
+function reader(grouping: BookGrouping = 'section') {
 	const john = core.books.find((b) => b.name === 'John')!;
 	const chapter = john.firstChapter + 2;
 	app = new ReadApp({
@@ -49,7 +50,8 @@ function reader() {
 		label: 'John 3',
 		short: 'Jn 3'
 	});
-	const st = new SourceListState(core.sections, john);
+	app.settings.bookGrouping = grouping;
+	const st = new SourceListState(core.sections, grouping, john);
 	list = mount(SourceList, { target: document.body, props: { st } });
 	flushSync();
 	return st;
@@ -130,7 +132,7 @@ describe('books by section', () => {
 
 	it('filters into open matching sections without changing remembered disclosures', () => {
 		const st = reader();
-		const remembered = [...st.sections];
+		const remembered = [...st.open];
 		st.startFilter('  JO  ');
 		flushSync();
 		const matches = core.books.filter((b) => b.name.toLowerCase().includes('jo'));
@@ -140,7 +142,7 @@ describe('books by section', () => {
 			core.sections.filter((s) => s.books.some((i) => matches.some((b) => b.index === i))).map((s) => s.name)
 		);
 		expect(disclosures.every((el) => el.getAttribute('aria-expanded') === 'true')).toBe(true);
-		expect(st.sections).toEqual(remembered);
+		expect(st.open).toEqual(remembered);
 		st.filter = 'no matching book';
 		flushSync();
 		expect(document.querySelector('button[aria-expanded]')).toBeNull();
@@ -149,5 +151,35 @@ describe('books by section', () => {
 		flushSync();
 		expect(section('Pentateuch').getAttribute('aria-expanded')).toBe('false');
 		expect(section('Gospels and Acts').getAttribute('aria-expanded')).toBe('true');
+	});
+});
+
+describe('books by testament', () => {
+	it('is the default, with both testaments under Books and John revealed', () => {
+		expect(defaultSettings().bookGrouping).toBe('testament');
+		reader('testament');
+		const headers = [...document.querySelectorAll('h3')].map((el) => el.textContent);
+		expect(headers).toContain('Books');
+		expect(headers).not.toContain('New Testament');
+		expect(section('Old Testament').getAttribute('aria-expanded')).toBe('false');
+		expect(section('New Testament').getAttribute('aria-expanded')).toBe('true');
+		expect(section('New Testament').querySelector('.count')?.textContent).toBe('27');
+		expect(document.querySelector('a.row[aria-current] .label')?.textContent).toBe('John');
+		openSection('Old Testament');
+		expect(bookNames()).toEqual(core.books.map((b) => b.name));
+	});
+
+	it('regroups when the setting changes, revealing the book being read', () => {
+		reader('testament');
+		openSection('Old Testament');
+		app.settings.bookGrouping = 'section';
+		flushSync();
+		expect(section('Gospels and Acts').getAttribute('aria-expanded')).toBe('true');
+		expect(section('Pentateuch').getAttribute('aria-expanded')).toBe('false');
+		expect(document.querySelector('a.row[aria-current] .label')?.textContent).toBe('John');
+		app.settings.bookGrouping = 'testament';
+		flushSync();
+		expect(section('New Testament').getAttribute('aria-expanded')).toBe('true');
+		expect(section('Old Testament').getAttribute('aria-expanded')).toBe('false');
 	});
 });

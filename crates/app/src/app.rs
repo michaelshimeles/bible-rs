@@ -20,7 +20,7 @@ use crate::panel::VersePanel;
 use crate::reader::layout::{Mode, Typography};
 use crate::reader::{Env, Reader};
 use crate::settings_ui::SettingsUi;
-use crate::sidebar::Sidebar;
+use crate::sidebar::{BookGrouping, Sidebar};
 use crate::theme::{self, Theme};
 use crate::widgets;
 
@@ -64,6 +64,8 @@ pub struct Settings {
     pub onboarded: bool,
     /// Books pinned above the testaments in the sidebar, in the order they were pinned.
     pub pinned_books: Vec<u8>,
+    /// The sidebar's books in their testaments, or in the canon's sections.
+    pub book_grouping: BookGrouping,
 }
 
 fn yes() -> bool {
@@ -99,6 +101,7 @@ impl Default for Settings {
             share: Default::default(),
             onboarded: false,
             pinned_books: Vec::new(),
+            book_grouping: BookGrouping::Testament,
         }
     }
 }
@@ -2529,6 +2532,7 @@ impl eframe::App for BibleApp {
                         selection: self.reader.selected_refs().first().copied(),
                         page: self.pages.page,
                         pinned: self.settings.pinned(),
+                        grouping: self.settings.book_grouping,
                     };
                     self.sidebar.show(&mut child, &env, &mut self.settings.whole_words, &mut actions);
                 });

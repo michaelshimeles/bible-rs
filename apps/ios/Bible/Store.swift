@@ -15,7 +15,7 @@ struct ReaderSettings: Codable, Equatable {
     var versePerLine = false
     var headings = true
     var wholeWords = false
-    var bookLayout = BookLayout.sections
+    var bookLayout = BookLayout.allBooks
 
     static let textSizes: ClosedRange<Double> = 14...32
     static let lineSpacings: ClosedRange<Double> = 1.3...2.0
