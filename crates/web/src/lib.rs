@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use bible_core::books::{BOOKS, CHAPTER_COUNT, FIRST_NT_BOOK};
+use bible_core::books::{BIBLE_SECTIONS, BOOKS, CHAPTER_COUNT, FIRST_NT_BOOK, Testament};
 use bible_core::content::{self, ContentOptions};
 use bible_core::highlight::{chars_from_utf16, utf16_from_chars};
 use bible_core::model::{Translation, TranslationMeta};
@@ -113,6 +113,14 @@ struct Book {
     abbrev: &'static str,
     chapters: u8,
     first_chapter: u16,
+    new_testament: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BibleSection {
+    name: &'static str,
+    books: Vec<u8>,
     new_testament: bool,
 }
 
@@ -842,6 +850,20 @@ pub fn books() -> Result<JsValue, JsError> {
         })
         .collect();
     to_js(&books)
+}
+
+/// The canon's sections, in order, with their zero-based book indices.
+#[wasm_bindgen(js_name = bibleSections)]
+pub fn bible_sections() -> Result<JsValue, JsError> {
+    let sections: Vec<BibleSection> = BIBLE_SECTIONS
+        .iter()
+        .map(|s| BibleSection {
+            name: s.name,
+            books: s.books().map(|b| b.0).collect(),
+            new_testament: s.testament() == Testament::New,
+        })
+        .collect();
+    to_js(&sections)
 }
 
 /// The best reading of a typed reference ("jn 3:16", "Rom 8", "revalation 21"), or null.

@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_bible_free: (a: number, b: number) => void;
+export const bibleSections: (a: number) => void;
 export const bible_chapter: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const bible_clearReading: (a: number, b: number, c: number) => void;
 export const bible_copySpan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;

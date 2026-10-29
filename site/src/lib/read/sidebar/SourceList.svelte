@@ -30,11 +30,22 @@
 	const activePlans = $derived(app.plans().filter((p) => p.finished === null).length);
 	const abbrev = $derived(app.info(app.textTranslation())?.abbrev ?? '');
 	const filter = $derived(st.filter.trim().toLowerCase());
-	const testaments = $derived(
-		(['Old Testament', 'New Testament'] as const).map((label, t) => ({
-			label,
-			books: books.filter((b) => +b.newTestament === t && (!filter || b.name.toLowerCase().includes(filter)))
-		}))
+	const groups = $derived(
+		st.groups
+			.map((group, index) => ({
+				...group,
+				index,
+				books: group.books.map((i) => books[i]).filter((b) => !filter || b.name.toLowerCase().includes(filter))
+			}))
+			.filter((group) => group.books.length > 0)
+	);
+	// Testaments sit under Books; sections under a header for their testament.
+	const headed = $derived(
+		st.grouping === 'section'
+			? (['Old Testament', 'New Testament'] as const)
+					.map((label, t) => ({ label, groups: groups.filter((g) => +g.newTestament === t) }))
+					.filter((h) => h.groups.length > 0)
+			: [{ label: 'Books', groups }]
 	);
 
 	/** Highlights and notes by chapter and by book (rings on chapter chips and book rows). */
@@ -50,17 +61,19 @@
 		return out;
 	});
 
-	// The book being read: its testament opens, its chapters show and it scrolls into view. With
-	// no reader to follow, the testaments it opened close, and reopen on return.
+	// The book being read: its group opens, its chapters show and it scrolls into view. With no
+	// reader to follow, the groups it opened close, and reopen on return.
 	$effect(() => {
 		const book = currentBook;
 		const r = reading;
+		const grouping = app.settings.bookGrouping;
 		untrack(() => {
+			if (grouping !== st.grouping) st.regroup(grouping);
 			if (!r) {
-				for (const t of [0, 1]) {
-					if (st.autoOpened[t]) {
-						st.testaments[t] = false;
-						st.autoOpened[t] = false;
+				for (let g = 0; g < st.open.length; g++) {
+					if (st.autoOpened[g]) {
+						st.open[g] = false;
+						st.autoOpened[g] = false;
 					}
 				}
 				st.revealed = null;
@@ -68,14 +81,17 @@
 			}
 			if (book < 0 || st.revealed === book) return;
 			st.revealed = book;
-			const t = +books[book].newTestament;
-			if (!st.testaments[t]) {
-				st.testaments[t] = true;
-				st.autoOpened[t] = true;
-			}
-			if (st.autoOpened[1 - t]) {
-				st.testaments[1 - t] = false;
-				st.autoOpened[1 - t] = false;
+			const group = st.groups.findIndex((g) => g.books.includes(book));
+			for (let g = 0; g < st.open.length; g++) {
+				if (g === group) {
+					if (!st.open[g]) {
+						st.open[g] = true;
+						st.autoOpened[g] = true;
+					}
+				} else if (st.autoOpened[g]) {
+					st.open[g] = false;
+					st.autoOpened[g] = false;
+				}
 			}
 			st.expanded = book;
 			if (!st.filtering) void tick().then(reveal);
@@ -213,18 +229,18 @@
 		/>
 	{/if}
 
-	<h3 class="section">Books</h3>
-	{#each testaments as group, t (group.label)}
-		{#if group.books.length}
-			{@const open = st.testaments[t] || filter !== ''}
+	{#each headed as header (header.label)}
+		<h3 class="section">{header.label}</h3>
+		{#each header.groups as group (group.index)}
+			{@const open = st.open[group.index] || filter !== ''}
 			<Row
 				icon="book"
-				label={group.label}
+				label={group.name}
 				count={group.books.length}
 				disclosure={open}
 				onclick={() => {
-					st.testaments[t] = !open;
-					st.autoOpened[t] = false;
+					st.open[group.index] = !open;
+					st.autoOpened[group.index] = false;
 				}}
 			/>
 			{#if open}
@@ -264,7 +280,7 @@
 					{/if}
 				{/each}
 			{/if}
-		{/if}
+		{/each}
 	{/each}
 </div>
 

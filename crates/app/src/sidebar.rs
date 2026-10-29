@@ -5,7 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bible_core::books::{BookId, ChapterIdx, FIRST_NT_BOOK, VerseRef};
+use bible_core::books::{
+    BIBLE_SECTIONS, BibleSection, BookId, ChapterIdx, FIRST_NT_BOOK, SECTION_COUNT, Testament, VerseRef,
+};
 use bible_core::library::Library;
 use bible_core::search::{Query, Scope};
 use bible_core::study::{HighlightColor, StudyStore};
@@ -14,6 +16,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, FontId, Id, Key, Painter, Pos2, Rect, Response, ScrollArea, Sense, Shape,
     Stroke, Ui, pos2, vec2,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::actions::{Action, ExportKind, SidebarTab};
 use crate::theme::{self, Palette, Theme, text};
@@ -51,6 +54,41 @@ impl StudyKind {
     const ALL: [StudyKind; 3] = [StudyKind::Bookmarks, StudyKind::Highlights, StudyKind::Notes];
 }
 
+/// How the source list groups the books: in the two testaments, or in the canon's sections under
+/// a header for each testament.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BookGrouping {
+    #[default]
+    Testament,
+    Section,
+}
+
+/// The testaments as runs of books, so they open and close like the sections do.
+static TESTAMENTS: [BibleSection; 2] = [
+    BibleSection { name: "Old Testament", first: BookId::GENESIS, last: BookId(FIRST_NT_BOOK.0 - 1) },
+    BibleSection { name: "New Testament", first: FIRST_NT_BOOK, last: BookId::REVELATION },
+];
+
+impl BookGrouping {
+    pub const ALL: [BookGrouping; 2] = [BookGrouping::Testament, BookGrouping::Section];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BookGrouping::Testament => "Testament",
+            BookGrouping::Section => "Section",
+        }
+    }
+
+    /// The disclosure rows the books sit under, in canon order.
+    fn groups(self) -> &'static [BibleSection] {
+        match self {
+            BookGrouping::Testament => &TESTAMENTS,
+            BookGrouping::Section => &BIBLE_SECTIONS,
+        }
+    }
+}
+
 /// What the sidebar needs from the rest of the app each frame.
 pub struct SidebarEnv<'a> {
     pub library: &'a Library,
@@ -67,13 +105,15 @@ pub struct SidebarEnv<'a> {
     pub page: crate::pages::Page,
     /// Books pinned above the testaments, in pin order.
     pub pinned: Vec<BookId>,
+    pub grouping: BookGrouping,
 }
 
 pub struct Sidebar {
-    /// Which testaments are expanded (OT, NT), and which of those the reader's position opened
-    /// (rather than a click): moving to the other testament closes those again.
-    testaments: [bool; 2],
-    auto_opened: [bool; 2],
+    /// How the books are grouped, which of those groups are expanded, and which the reader's
+    /// position opened (rather than a click): moving to another group closes those again.
+    grouping: BookGrouping,
+    groups_open: [bool; SECTION_COUNT],
+    auto_opened: [bool; SECTION_COUNT],
     /// The book whose chapter grid is open.
     expanded: Option<BookId>,
     /// The pinned book whose chapter grid is open under its pinned row (apart from `expanded`).
@@ -108,7 +148,7 @@ pub struct Sidebar {
     elapsed: Duration,
     selected: usize,
     scroll_to_selected: bool,
-    /// The book last revealed (testament opened, scrolled into view) in the source list.
+    /// The book last revealed (group opened, scrolled into view) in the source list.
     revealed: Option<BookId>,
     /// Highlights and notes by chapter and by book, keyed by the study store's generation.
     activity: (u64, Activity),
@@ -119,8 +159,9 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn new(_tab: SidebarTab) -> Self {
         Self {
-            testaments: [false, false],
-            auto_opened: [false, false],
+            grouping: BookGrouping::default(),
+            groups_open: [false; SECTION_COUNT],
+            auto_opened: [false; SECTION_COUNT],
             expanded: None,
             pinned_expanded: None,
             study_open: [false; 3],
@@ -264,12 +305,20 @@ impl Sidebar {
         let abbrev = meta.as_ref().map(|m| m.abbrev.clone()).unwrap_or_default();
         let current_book = env.location.0.book();
         let reading = env.page == crate::pages::Page::Reader;
+        if self.grouping != env.grouping {
+            // Regrouped: start closed, and reveal the book being read in its new group.
+            self.grouping = env.grouping;
+            self.groups_open = [false; SECTION_COUNT];
+            self.auto_opened = [false; SECTION_COUNT];
+            self.revealed = None;
+        }
+        let groups = self.grouping.groups();
         if !reading {
-            // No reader to follow: the testaments it opened close, and reopen on return.
-            for t in 0..2 {
-                if self.auto_opened[t] {
-                    self.testaments[t] = false;
-                    self.auto_opened[t] = false;
+            // No reader to follow: the groups it opened close, and reopen on return.
+            for i in 0..groups.len() {
+                if self.auto_opened[i] {
+                    self.groups_open[i] = false;
+                    self.auto_opened[i] = false;
                 }
             }
             self.revealed = None;
@@ -277,14 +326,16 @@ impl Sidebar {
         let reveal = reading && self.revealed != Some(current_book);
         if reveal {
             self.revealed = Some(current_book);
-            let t = usize::from(current_book >= FIRST_NT_BOOK);
-            if !self.testaments[t] {
-                self.testaments[t] = true;
-                self.auto_opened[t] = true;
-            }
-            if self.auto_opened[1 - t] {
-                self.testaments[1 - t] = false;
-                self.auto_opened[1 - t] = false;
+            for (i, group) in groups.iter().enumerate() {
+                if group.contains(current_book) {
+                    if !self.groups_open[i] {
+                        self.groups_open[i] = true;
+                        self.auto_opened[i] = true;
+                    }
+                } else if self.auto_opened[i] {
+                    self.groups_open[i] = false;
+                    self.auto_opened[i] = false;
+                }
             }
             self.expanded = Some(current_book);
         }
@@ -452,10 +503,18 @@ impl Sidebar {
                         }
                     }
 
-                    section(ui, p, "Books", false);
+                    // Testaments sit under Books, with the pins; sections under their testament.
+                    match self.grouping {
+                        BookGrouping::Testament => section(ui, p, "Books", false),
+                        BookGrouping::Section => {
+                            if env.pinned.iter().any(|b| matches(*b)) {
+                                section(ui, p, "Pinned", false);
+                            }
+                        }
+                    }
                     // Pinned books, above the testaments: a click opens the book's chapters right
-                    // under it (leaving the testaments as they are); the pin, or a right-click,
-                    // unpins it. Book rows in the testaments pin from their own pin or right-click.
+                    // under it (leaving the groups as they are); the pin, or a right-click,
+                    // unpins it. Book rows in the groups pin from their own pin or right-click.
                     for &b in env.pinned.iter().filter(|b| matches(**b)) {
                         let name = book_name(b);
                         let open = self.pinned_expanded == Some(b) && b.chapters() > 1;
@@ -485,7 +544,7 @@ impl Sidebar {
                                     verse: None,
                                     flash: false,
                                 });
-                                // Jumping from here leaves the testaments as they are.
+                                // Jumping from here leaves the groups as they are.
                                 self.revealed = Some(b);
                             } else {
                                 self.pinned_expanded = if open { None } else { Some(b) };
@@ -513,30 +572,52 @@ impl Sidebar {
                             }
                         }
                     }
-                    for (t, (label, range)) in
-                        [("Old Testament", 0..FIRST_NT_BOOK.0), ("New Testament", FIRST_NT_BOOK.0..66)]
-                            .into_iter()
-                            .enumerate()
-                    {
-                        let books: Vec<BookId> = range.clone().map(BookId).filter(|b| matches(*b)).collect();
+                    let mut header = None;
+                    for (i, group) in groups.iter().enumerate() {
+                        let books: Vec<BookId> = group.books().filter(|b| matches(*b)).collect();
                         if books.is_empty() {
                             continue;
                         }
-                        let open = self.testaments[t] || !filter.is_empty();
+                        let testament = group.testament();
+                        if self.grouping == BookGrouping::Section && header != Some(testament) {
+                            header = Some(testament);
+                            let title = match testament {
+                                Testament::Old => "Old Testament",
+                                Testament::New => "New Testament",
+                            };
+                            section(ui, p, title, false);
+                        }
+                        let open = self.groups_open[i] || !filter.is_empty();
                         let r = row(
                             ui,
                             p,
                             &Row {
                                 icon: Some(crate::icons::book),
-                                label,
+                                label: group.name,
                                 count: Some(books.len().to_string()),
                                 disclosure: Some(open),
                                 ..Row::default()
                             },
                         );
+                        r.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::CollapsingHeader,
+                                ui.is_enabled(),
+                                group.name,
+                            )
+                        });
+                        ui.ctx().accesskit_node_builder(r.id, |node| node.set_expanded(open));
+                        if r.has_focus() {
+                            ui.painter().rect_stroke(
+                                r.rect,
+                                theme::radius::SM,
+                                Stroke::new(2.0, p.accent),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
                         if r.clicked() {
-                            self.testaments[t] = !open;
-                            self.auto_opened[t] = false;
+                            self.groups_open[i] = !open;
+                            self.auto_opened[i] = false;
                         }
                         if !open {
                             continue;
@@ -1214,7 +1295,7 @@ fn row(ui: &mut Ui, p: &Palette, r: &Row<'_>) -> Response {
 
 /// The pin in a book row's chevron lane (like the Open in star): drawn filled while `pinned`,
 /// otherwise outlined while the row is hovered; returns its click response.
-/// `pinned_row` tells a pinned row's pin from the same book's pin in its testament.
+/// `pinned_row` tells a pinned row's pin from the same book's pin in its group.
 fn pin_toggle(ui: &Ui, p: &Palette, row: Rect, book: BookId, pinned: bool, pinned_row: bool) -> Response {
     let lane = Rect::from_min_size(
         pos2(row.right() - ROW_PAD - ICON_LANE, row.center().y - ICON_LANE / 2.0),
@@ -1418,7 +1499,9 @@ fn colour_filter(ui: &mut Ui, p: &Palette, filter: &mut Option<HighlightColor>) 
 /// sections).
 fn section(ui: &mut Ui, p: &Palette, label: &str, first: bool) {
     let (top, h) = if first { (8.0, 28.0) } else { (16.0, 36.0) };
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, ui.is_enabled(), label));
+    ui.ctx().accesskit_node_builder(resp.id, |node| node.set_role(egui::accesskit::Role::Heading));
     let y = rect.top() + top + (h - top) / 2.0;
     ui.painter().text(
         pos2(rect.left() + ROW_PAD, y),
@@ -1584,7 +1667,7 @@ fn paint_ring(
 /// The open book's chapters: 24 pt chips, the current one solid accent. A chapter with
 /// highlights or notes gets a segmented ring (one segment per highlight or note, in its colour) and
 /// its number on a disc tinted with its main highlight colour. The chips' ids come from `id`: a
-/// pinned book can show its chapters twice (under its pinned row and in its testament).
+/// pinned book can show its chapters twice (under its pinned row and in its group).
 fn chapter_grid(
     ui: &mut Ui,
     p: &Palette,

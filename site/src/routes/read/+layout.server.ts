@@ -31,6 +31,7 @@ export const load: LayoutServerLoad = async ({ params }) => {
 		.join('');
 	return {
 		translations,
+		sections: c.sections,
 		translation,
 		chapter,
 		content,

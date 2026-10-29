@@ -14,7 +14,7 @@
 	import { SourceListState } from './state.svelte';
 
 	const app = getApp();
-	const st = new SourceListState(bookOf(app.books, app.here.chapter));
+	const st = new SourceListState(app.sections, app.settings.bookGrouping, bookOf(app.books, app.here.chapter));
 
 	let hovered = false;
 	let mounted = $state(false);

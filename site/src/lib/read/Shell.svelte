@@ -8,7 +8,7 @@
 	import { goto } from '$app/navigation';
 	import { ReadApp, setApp, now } from './app.svelte';
 	import { chapterPath } from './books';
-	import { chapterLabel, type ChapterContent, type TranslationInfo } from './core';
+	import { chapterLabel, type BibleSection, type ChapterContent, type TranslationInfo } from './core';
 	import { NLT_ID } from './nlt';
 	import Meta from './seo/Meta.svelte';
 	import { chapterTitle, type Crumb } from './seo/meta';
@@ -40,6 +40,7 @@
 	interface Props {
 		data: {
 			translations: TranslationInfo[];
+			sections: BibleSection[];
 			translation: string;
 			chapter: number;
 			content: ChapterContent;
@@ -60,6 +61,7 @@
 		new ReadApp(
 			untrack(() => ({
 				translations: data.translations,
+				sections: data.sections,
 				translation: data.translation,
 				chapter: data.chapter,
 				content: data.content,

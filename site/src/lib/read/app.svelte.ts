@@ -17,6 +17,7 @@ import {
 	chapterVerses,
 	planDays,
 	type Book,
+	type BibleSection,
 	type ChapterContent,
 	type ContentOptions,
 	type Core,
@@ -198,6 +199,8 @@ export class ReadApp {
 	coreError = $state<string | null>(null);
 	/** Every translation in the library (the bundled ones, from the page's data). */
 	translations = $state.raw<TranslationInfo[]>([]);
+	/** The core's sections, carried by the page so the sidebar renders before wasm starts. */
+	readonly sections: BibleSection[];
 	/** The live translation's one chapter. */
 	readonly liveChapter = new LiveChapter();
 	/** The translation read before a live one (see `fallback`). */
@@ -269,6 +272,7 @@ export class ReadApp {
 
 	constructor(init: {
 		translations: TranslationInfo[];
+		sections: BibleSection[];
 		translation: string;
 		chapter: number;
 		content: ChapterContent;
@@ -276,6 +280,7 @@ export class ReadApp {
 		short: string;
 	}) {
 		this.translations = init.translations;
+		this.sections = init.sections;
 		this.settings.translation = init.translation;
 		this.#before = init.translation;
 		this.here = { chapter: init.chapter, verse: 1 };

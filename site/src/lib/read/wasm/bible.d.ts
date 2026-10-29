@@ -164,6 +164,11 @@ export class Bible {
 }
 
 /**
+ * The canon's sections, in order, with their zero-based book indices.
+ */
+export function bibleSections(): any;
+
+/**
  * The 66 books of the canonical grid.
  */
 export function books(): any;
@@ -218,6 +223,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_bible_free: (a: number, b: number) => void;
+    readonly bibleSections: (a: number) => void;
     readonly bible_chapter: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly bible_clearReading: (a: number, b: number, c: number) => void;
     readonly bible_copySpan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;

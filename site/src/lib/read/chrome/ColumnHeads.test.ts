@@ -29,6 +29,7 @@ const translation = (id: string, name: string): TranslationInfo => ({
 /** Reading the KJV beside `parallel`. */
 function reader(parallel: string[]): ReadApp {
 	const app = new ReadApp({
+		sections: [],
 		translations: [
 			translation('kjv', 'King James Version'),
 			translation('web', 'World English Bible'),
