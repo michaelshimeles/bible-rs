@@ -328,6 +328,9 @@ export class Core {
 }
 
 export const parseReference = (input: string): Reference | null => wasm.parseReference(input);
+/** What a typed reference means in `book` (an index) rather than the book it names, or null. */
+export const parseReferenceIn = (input: string, book: number): Reference | null =>
+	wasm.parseReferenceIn(input, book);
 export const suggestReferences = (input: string, limit: number): Reference[] =>
 	wasm.suggestReferences(input, limit);
 export const chapterLabel = (index: number): string => wasm.chapterLabel(index);

@@ -1001,6 +1001,31 @@ export function parseReference(input) {
 }
 
 /**
+ * What a typed reference means in `book` (an index) rather than the book it names: "jo 3" in
+ * Job is Job 3. Null when no chapter is typed or `book` has no such chapter.
+ * @param {string} input
+ * @param {number} book
+ * @returns {any}
+ */
+export function parseReferenceIn(input, book) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.parseReferenceIn(retptr, ptr0, len0, book);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        if (r2) {
+            throw takeObject(r1);
+        }
+        return takeObject(r0);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * What a picked file (or folder, or zip) holds, read before converting it: the import sheet's
  * summary. `paths` are relative to what was picked; `contents` match them.
  * @param {string[]} paths

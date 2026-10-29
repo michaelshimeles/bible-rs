@@ -873,6 +873,17 @@ pub fn filter_books(input: &str) -> Vec<u8> {
     bible_core::reference::filter_books(input).into_iter().map(|b| b.0).collect()
 }
 
+/// What a typed reference means in `book` (an index) rather than the book it names: "jo 3" in
+/// Job is Job 3. Null when no chapter is typed or `book` has no such chapter.
+#[wasm_bindgen(js_name = parseReferenceIn)]
+pub fn parse_reference_in(input: &str, book: u8) -> Result<JsValue, JsError> {
+    let Some(book) = BookId::all().nth(book as usize) else { return Ok(JsValue::NULL) };
+    match bible_core::reference::parse_in(input, book) {
+        Some(r) => to_js(&Reference::from(r)),
+        None => Ok(JsValue::NULL),
+    }
+}
+
 /// The best reading of a typed reference ("jn 3:16", "Rom 8", "revalation 21"), or null.
 #[wasm_bindgen(js_name = parseReference)]
 pub fn parse_reference(input: &str) -> Result<JsValue, JsError> {

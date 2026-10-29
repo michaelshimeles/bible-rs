@@ -60,21 +60,7 @@ pub fn suggest(input: &str, limit: usize) -> Vec<Reference> {
     let Some(parts) = split(input) else { return Vec::new() };
     let mut out = Vec::new();
     for (book, _score) in book_candidates(&parts.book_key, parts.ordinal) {
-        let r = match (parts.nums.first(), parts.nums.get(1), parts.nums.get(2)) {
-            (None, _, _) => Some(Reference { book, chapter: 1, verse: None, verse_end: None }),
-            // Single-chapter books: "jude 3" means verse 3.
-            (Some(&n), None, _) if book.chapters() == 1 && n > 1 && n <= 255 => {
-                Some(Reference { book, chapter: 1, verse: Some(n as u8), verse_end: None })
-            }
-            (Some(&c), v, e) if c >= 1 && c <= book.chapters() as u32 => Some(Reference {
-                book,
-                chapter: c as u8,
-                verse: v.and_then(|&v| u8::try_from(v).ok()).filter(|&v| v > 0),
-                verse_end: e.and_then(|&e| u8::try_from(e).ok()),
-            }),
-            _ => None,
-        };
-        if let Some(r) = r {
+        if let Some(r) = in_book(book, &parts.nums) {
             out.push(r);
             if out.len() >= limit {
                 break;
@@ -82,6 +68,35 @@ pub fn suggest(input: &str, limit: usize) -> Vec<Reference> {
         }
     }
     out
+}
+
+/// The typed chapter and verses (`nums`) read in `book`, if it has that chapter.
+fn in_book(book: BookId, nums: &[u32]) -> Option<Reference> {
+    match (nums.first(), nums.get(1), nums.get(2)) {
+        (None, _, _) => Some(Reference { book, chapter: 1, verse: None, verse_end: None }),
+        // Single-chapter books: "jude 3" means verse 3.
+        (Some(&n), None, _) if book.chapters() == 1 && n > 1 && n <= 255 => {
+            Some(Reference { book, chapter: 1, verse: Some(n as u8), verse_end: None })
+        }
+        (Some(&c), v, e) if c >= 1 && c <= book.chapters() as u32 => Some(Reference {
+            book,
+            chapter: c as u8,
+            verse: v.and_then(|&v| u8::try_from(v).ok()).filter(|&v| v > 0),
+            verse_end: e.and_then(|&e| u8::try_from(e).ok()),
+        }),
+        _ => None,
+    }
+}
+
+/// What `input` means read in `book` rather than the book it names: "jo 3" in Job is Job 3. For a
+/// type-ahead book filter whose highlight has moved off the best match. `None` when no chapter is
+/// typed after the name or `book` has no such chapter.
+pub fn parse_in(input: &str, book: BookId) -> Option<Reference> {
+    let parts = split(input)?;
+    if parts.nums.is_empty() {
+        return None;
+    }
+    in_book(book, &parts.nums)
 }
 
 /// The books a type-ahead book filter offers for what's typed, best first: every book in order
@@ -315,6 +330,23 @@ mod tests {
         );
         assert!(f("xyzzy").is_empty());
         assert!(f("7").is_empty());
+    }
+
+    #[test]
+    fn typed_chapter_in_another_book() {
+        let job = BookId::all().find(|b| b.name() == "Job").unwrap();
+        let jude = BookId::all().find(|b| b.name() == "Jude").unwrap();
+        let p = |s: &str, b| parse_in(s, b).map(|r| r.display());
+        assert_eq!(p("jo 3", job).as_deref(), Some("Job 3"));
+        assert_eq!(p("jo 3:4-6", job).as_deref(), Some("Job 3:4–6"));
+        // The book it names reads the same as `parse`.
+        assert_eq!(parse_in("jo 3", parse("jo 3").unwrap().book), parse("jo 3"));
+        // Single-chapter books take a verse, as `parse` reads them.
+        assert_eq!(p("jo 3", jude).as_deref(), Some("Jude 1:3"));
+        // No chapter typed, or one the book doesn't have.
+        assert_eq!(p("jo", job), None);
+        assert_eq!(p("1 john", job), None);
+        assert_eq!(p("jo 50", job), None);
     }
 
     #[test]

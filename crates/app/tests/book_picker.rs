@@ -170,6 +170,20 @@ fn the_arrows_step_through_the_matches() {
 }
 
 #[test]
+fn a_typed_chapter_opens_in_the_lit_book() {
+    let mut harness = open();
+    // "jo 3" lights John; down moves the highlight to Job, and return opens Job 3, not John 3.
+    type_text(&mut harness, "jo 3");
+    harness.key_press(Key::ArrowDown);
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+    let chapter = ChapterIdx::new(BookId(17), 3).unwrap();
+    assert_eq!(*harness.state(), vec![Action::Jump { chapter, verse: None, flash: false }]);
+    assert!(!book_picker::is_open(&harness.ctx));
+}
+
+#[test]
 fn a_chapter_typed_after_the_name_goes_straight_there() {
     let mut harness = open();
     type_text(&mut harness, "rom 8");

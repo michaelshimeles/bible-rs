@@ -9,7 +9,7 @@
 //! Typing finds a book: the letters typed (read as the jump palette reads names: "jn", "1co",
 //! "song") light the best match and fade the books they rule out, the arrows step through the
 //! matches best first, and return opens the lit one, or goes straight to a chapter typed after
-//! the name ("rom 8"). Backspace takes back a letter and escape clears them. On the chapters,
+//! the name ("rom 8"), in the lit book. Backspace takes back a letter and escape clears them. On the chapters,
 //! typing a number lights that chapter.
 
 use bible_core::books::{BookId, ChapterIdx, FIRST_NT_BOOK};
@@ -284,11 +284,12 @@ fn books(
         menu::paint_cell(ui.painter(), p, *r, cell);
     }
 
-    // A chapter typed after the name ("rom 8") goes straight there.
+    // A chapter typed after the name ("rom 8") goes straight there, in the lit book: after the
+    // arrows move from John to Job, "jo 3" opens Job 3.
     if keys.enter
         && typing
-        && state.query.trim_start().chars().skip(1).any(|c| c.is_ascii_digit())
-        && let Some(r) = bible_core::reference::parse(&state.query)
+        && let Some(Spot::Cell(i)) = state.cursor
+        && let Some(r) = bible_core::reference::parse_in(&state.query, BookId(i as u8))
     {
         actions.push(Action::Jump { chapter: r.chapter_idx(), verse: r.verse, flash: r.verse.is_some() });
         ui.close();

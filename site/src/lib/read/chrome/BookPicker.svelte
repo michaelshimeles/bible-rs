@@ -7,13 +7,13 @@
 	Typing finds a book: the letters typed (read as the jump palette reads names: "jn", "1co",
 	"song") light the best match and fade the books they rule out, the arrows step through the
 	matches best first, and return opens the lit one, or goes straight to a chapter typed after the
-	name ("rom 8"). Backspace takes back a letter and escape clears them. On the chapters, typing a
+	name ("rom 8"), in the lit book. Backspace takes back a letter and escape clears them. On the chapters, typing a
 	number lights that chapter.
 -->
 <script lang="ts">
 	import { tick } from 'svelte';
 	import { getApp } from '../app.svelte';
-	import { filterBooks, parseReference, type Book } from '../core';
+	import { filterBooks, parseReferenceIn, type Book } from '../core';
 	import { Icon, Popover } from '../ui';
 	import { follow } from '../ui/follow';
 
@@ -123,6 +123,8 @@
 				typeChapter(e.key);
 				return true;
 			}
+			// An arrow moves the highlight off the number typed, so the next digit starts afresh.
+			if (e.key.startsWith('Arrow')) query = '';
 			return false;
 		}
 		if (printable && (query || e.key !== ' ')) {
@@ -151,15 +153,16 @@
 			return true;
 		}
 		if (e.key === 'Enter') {
-			// A chapter typed after the name ("rom 8") goes straight there.
-			const r = /\p{L}.*\d/u.test(query) ? parseReference(query) : null;
+			// A chapter typed after the name ("rom 8") goes straight there, in the lit book: after
+			// the arrows move from John to Job, "jo 3" opens Job 3.
+			const cell = focused()?.dataset.cell;
+			const b = cell !== undefined ? books[Number(cell)] : undefined;
+			const r = b ? parseReferenceIn(query, b.index) : null;
 			if (r) {
 				app.dispatch({ type: 'jump', chapter: r.chapterIndex, verse: r.verse ?? undefined, flash: r.verse != null });
 				onclose();
 				return true;
 			}
-			const cell = focused()?.dataset.cell;
-			const b = cell !== undefined ? books[Number(cell)] : undefined;
 			if (b) chooseBook(b, true);
 			return true;
 		}
@@ -168,7 +171,10 @@
 
 	function keydown(e: KeyboardEvent) {
 		if (typing(e)) {
+			// Taken before the lit cell sees it: a typed space would otherwise press that cell
+			// (follow.ts), opening the best match before the chapter after "jo " is typed.
 			e.preventDefault();
+			e.stopPropagation();
 			return;
 		}
 		const dx = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
@@ -219,12 +225,13 @@
 		if (focused()) panel?.focus({ preventScroll: true });
 	}
 
-	// The keys reach the picker whether the panel or a cell has focus (the panel has it on opening).
+	// The keys reach the picker whether the panel or a cell has focus (the panel has it on opening),
+	// and before the cell's own handlers, so typing can keep them.
 	$effect(() => {
 		const el = panel;
 		if (!el) return;
-		el.addEventListener('keydown', keydown);
-		return () => el.removeEventListener('keydown', keydown);
+		el.addEventListener('keydown', keydown, true);
+		return () => el.removeEventListener('keydown', keydown, true);
 	});
 
 	// Cells are only reached by arrow keys; the panel holds focus between them.

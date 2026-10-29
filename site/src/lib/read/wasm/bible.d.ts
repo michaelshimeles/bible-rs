@@ -200,6 +200,12 @@ export function filterBooks(input: string): Uint8Array;
 export function parseReference(input: string): any;
 
 /**
+ * What a typed reference means in `book` (an index) rather than the book it names: "jo 3" in
+ * Job is Job 3. Null when no chapter is typed or `book` has no such chapter.
+ */
+export function parseReferenceIn(input: string, book: number): any;
+
+/**
  * The reading plans on offer, in order.
  */
 export function planCatalogue(): any;
@@ -274,6 +280,7 @@ export interface InitOutput {
     readonly chapterVerses: (a: number) => number;
     readonly filterBooks: (a: number, b: number, c: number) => void;
     readonly parseReference: (a: number, b: number, c: number) => void;
+    readonly parseReferenceIn: (a: number, b: number, c: number, d: number) => void;
     readonly planCatalogue: (a: number) => void;
     readonly planDays: (a: number, b: number, c: number) => void;
     readonly rangeLabel: (a: number, b: number, c: number) => void;

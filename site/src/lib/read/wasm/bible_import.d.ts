@@ -207,6 +207,12 @@ export function importTranslation(paths: string[], contents: Uint8Array[], label
 export function parseReference(input: string): any;
 
 /**
+ * What a typed reference means in `book` (an index) rather than the book it names: "jo 3" in
+ * Job is Job 3. Null when no chapter is typed or `book` has no such chapter.
+ */
+export function parseReferenceIn(input: string, book: number): any;
+
+/**
  * What a picked file (or folder, or zip) holds, read before converting it: the import sheet's
  * summary. `paths` are relative to what was picked; `contents` match them.
  */
@@ -288,6 +294,7 @@ export interface InitOutput {
     readonly filterBooks: (a: number, b: number, c: number) => void;
     readonly importTranslation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
     readonly parseReference: (a: number, b: number, c: number) => void;
+    readonly parseReferenceIn: (a: number, b: number, c: number, d: number) => void;
     readonly peekImport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly planCatalogue: (a: number) => void;
     readonly planDays: (a: number, b: number, c: number) => void;

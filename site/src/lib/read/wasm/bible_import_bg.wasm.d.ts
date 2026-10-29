@@ -48,6 +48,7 @@ export const chapterVerses: (a: number) => number;
 export const filterBooks: (a: number, b: number, c: number) => void;
 export const importTranslation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
 export const parseReference: (a: number, b: number, c: number) => void;
+export const parseReferenceIn: (a: number, b: number, c: number, d: number) => void;
 export const peekImport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
 export const planCatalogue: (a: number) => void;
 export const planDays: (a: number, b: number, c: number) => void;
