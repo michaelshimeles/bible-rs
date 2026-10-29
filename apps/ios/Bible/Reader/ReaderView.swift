@@ -52,7 +52,11 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
     var readingLine: CGFloat = 100 {
         didSet {
             guard readingLine != oldValue else { return }
+            // Rotation changes the toolbar's safe area. Keep the same content at the
+            // reading line before the new width is typeset, including at chapter boundaries.
+            let offset = contentOffset.y + oldValue - readingLine
             contentInset.top = readingLine
+            contentOffset.y = offset
         }
     }
 
@@ -211,7 +215,9 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         reset(around: anchor.chapter, style: style)
         guard let p = placed.first else { return }
         let top = p.layout.top(of: anchor.verse) ?? 0
-        contentOffset = CGPoint(x: 0, y: p.y + top + anchor.lines * style.lineHeight - readingLine)
+        // A shorter heading must not move a chapter-start anchor into the previous chapter.
+        let local = max(0, top + anchor.lines * style.lineHeight)
+        contentOffset = CGPoint(x: 0, y: p.y + local - readingLine)
         fill(style)
         updateTiles()
     }

@@ -74,6 +74,34 @@ final class BibleUITests: XCTestCase {
         }
     }
 
+    func testRotatingKeepsJudeChapterStart() {
+        expectRotationKeepsChapterStart("jude 1", title: "Jude 1")
+    }
+
+    func testRotatingKeepsRomansChapterStart() {
+        expectRotationKeepsChapterStart("rom 8", title: "Romans 8")
+    }
+
+    private func expectRotationKeepsChapterStart(_ query: String, title: String) {
+        addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
+        reference.tap()
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText(query + "\n")
+        expectChapter(title)
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            sleep(1)
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = "\(title)-orientation-\(orientation.rawValue)"
+            shot.lifetime = .keepAlways
+            add(shot)
+            expectChapter(title)
+            XCTAssertTrue(verse("\(title):1").isHittable, "Chapter start left the screen")
+        }
+    }
+
     func testReferenceRemainsUsableAtAccessibilityTextSize() {
         for (size, category) in [
             ("Default", "UICTContentSizeCategoryL"),
@@ -259,6 +287,7 @@ final class BibleUITests: XCTestCase {
         XCTAssertTrue(slider.waitForExistence(timeout: 3))
         slider.adjust(toNormalizedSliderPosition: 0.9)
         app.buttons["Done"].tap()
+        expectChapter("John 1")
         XCTAssertTrue(verse("John 1:1").exists)
     }
 
