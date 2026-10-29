@@ -189,6 +189,12 @@ export function chapterLabel(index: number): string;
 export function chapterVerses(index: number): number;
 
 /**
+ * The books a type-ahead book filter offers for what's typed, best first, as indexes (all 66 in
+ * order for nothing typed).
+ */
+export function filterBooks(input: string): Uint8Array;
+
+/**
  * Converts a picked source into a `.bbl` file for the page to keep, given an id not in `taken`.
  * `onBook(books, book)` hears of each book as it begins. The result carries the file's bytes,
  * its metadata, and what needs a look: books missing or left out, and verses adjusted.
@@ -199,6 +205,12 @@ export function importTranslation(paths: string[], contents: Uint8Array[], label
  * The best reading of a typed reference ("jn 3:16", "Rom 8", "revalation 21"), or null.
  */
 export function parseReference(input: string): any;
+
+/**
+ * What a typed reference means in `book` (an index) rather than the book it names: "jo 3" in
+ * Job is Job 3. Null when no chapter is typed or `book` has no such chapter.
+ */
+export function parseReferenceIn(input: string, book: number): any;
 
 /**
  * What a picked file (or folder, or zip) holds, read before converting it: the import sheet's
@@ -279,8 +291,10 @@ export interface InitOutput {
     readonly bundledTranslations: (a: number) => void;
     readonly chapterLabel: (a: number, b: number) => void;
     readonly chapterVerses: (a: number) => number;
+    readonly filterBooks: (a: number, b: number, c: number) => void;
     readonly importTranslation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
     readonly parseReference: (a: number, b: number, c: number) => void;
+    readonly parseReferenceIn: (a: number, b: number, c: number, d: number) => void;
     readonly peekImport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly planCatalogue: (a: number) => void;
     readonly planDays: (a: number, b: number, c: number) => void;

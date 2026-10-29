@@ -132,3 +132,85 @@ fn the_current_chapter_is_selected_and_escape_closes() {
     harness.run();
     assert!(harness.query_by_label("Genesis").is_some());
 }
+
+/// Types `text` into the open picker.
+fn type_text(harness: &mut Harness<'_, Vec<Action>>, text: &str) {
+    harness.event(egui::Event::Text(text.into()));
+    harness.run();
+}
+
+#[test]
+fn typing_lights_the_best_book_and_return_opens_it() {
+    let mut harness = open();
+    // "gal" is Galatians alone: return opens its chapters, "2" lights chapter 2, return jumps.
+    type_text(&mut harness, "gal");
+    harness.key_press(Key::Enter);
+    harness.run();
+    assert!(harness.query_by_label("Genesis").is_none(), "Galatians' chapters show");
+    type_text(&mut harness, "2");
+    harness.key_press(Key::Enter);
+    harness.run();
+    let chapter = ChapterIdx::new(GALATIANS, 2).unwrap();
+    assert_eq!(*harness.state(), vec![Action::Jump { chapter, verse: None, flash: false }]);
+    assert!(!book_picker::is_open(&harness.ctx));
+}
+
+#[test]
+fn the_arrows_step_through_the_matches() {
+    let mut harness = open();
+    // "jo": John first, then Job; down to Job, return. Job has 42 chapters.
+    type_text(&mut harness, "j");
+    type_text(&mut harness, "o");
+    harness.key_press(Key::ArrowDown);
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+    assert!(harness.query_by_label("42").is_some(), "Job's chapters show");
+    assert!(harness.query_by_label("43").is_none());
+}
+
+#[test]
+fn a_typed_chapter_opens_in_the_lit_book() {
+    let mut harness = open();
+    // "jo 3" lights John; down moves the highlight to Job, and return opens Job 3, not John 3.
+    type_text(&mut harness, "jo 3");
+    harness.key_press(Key::ArrowDown);
+    harness.run();
+    harness.key_press(Key::Enter);
+    harness.run();
+    let chapter = ChapterIdx::new(BookId(17), 3).unwrap();
+    assert_eq!(*harness.state(), vec![Action::Jump { chapter, verse: None, flash: false }]);
+    assert!(!book_picker::is_open(&harness.ctx));
+}
+
+#[test]
+fn a_chapter_typed_after_the_name_goes_straight_there() {
+    let mut harness = open();
+    type_text(&mut harness, "rom 8");
+    harness.key_press(Key::Enter);
+    harness.run();
+    let chapter = ChapterIdx::new(BookId(44), 8).unwrap();
+    assert_eq!(*harness.state(), vec![Action::Jump { chapter, verse: None, flash: false }]);
+}
+
+#[test]
+fn escape_clears_what_is_typed_before_closing() {
+    let mut harness = open();
+    type_text(&mut harness, "xyz");
+    // Nothing matches: return waits.
+    harness.key_press(Key::Enter);
+    harness.run();
+    assert!(harness.state().is_empty() && harness.query_by_label("Genesis").is_some());
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(book_picker::is_open(&harness.ctx), "the first escape clears the typing");
+    // Backspace takes back letters; return with nothing typed opens the book being read.
+    type_text(&mut harness, "ac");
+    harness.key_press(Key::Backspace);
+    harness.run();
+    harness.key_press(Key::Escape);
+    harness.run();
+    harness.key_press(Key::Escape);
+    harness.run();
+    assert!(!book_picker::is_open(&harness.ctx));
+}

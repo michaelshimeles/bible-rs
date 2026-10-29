@@ -328,6 +328,9 @@ export class Core {
 }
 
 export const parseReference = (input: string): Reference | null => wasm.parseReference(input);
+/** What a typed reference means in `book` (an index) rather than the book it names, or null. */
+export const parseReferenceIn = (input: string, book: number): Reference | null =>
+	wasm.parseReferenceIn(input, book);
 export const suggestReferences = (input: string, limit: number): Reference[] =>
 	wasm.suggestReferences(input, limit);
 export const chapterLabel = (index: number): string => wasm.chapterLabel(index);
@@ -370,3 +373,5 @@ async function start(): Promise<Core> {
 	});
 	return c;
 }
+/** The books a type-ahead book filter offers for what's typed, best first (all 66 for nothing). */
+export const filterBooks = (input: string): number[] => Array.from(wasm.filterBooks(input));

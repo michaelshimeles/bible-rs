@@ -5,6 +5,12 @@
 //!
 //! Arrow keys move a highlight through the grid (the books spatially, across both testaments;
 //! the chapters in order), return chooses, backspace goes back to the books and escape closes.
+//!
+//! Typing finds a book: the letters typed (read as the jump palette reads names: "jn", "1co",
+//! "song") light the best match and fade the books they rule out, the arrows step through the
+//! matches best first, and return opens the lit one, or goes straight to a chapter typed after
+//! the name ("rom 8"), in the lit book. Backspace takes back a letter and escape clears them. On the chapters,
+//! typing a number lights that chapter.
 
 use bible_core::books::{BookId, ChapterIdx, FIRST_NT_BOOK};
 use bible_core::model::TranslationMeta;
@@ -27,11 +33,13 @@ const WINDOW_MARGIN: f32 = 8.0;
 const BOOKS: usize = 66;
 
 /// Which grid the picker shows and where its highlight is, while it's open.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct State {
     /// The book whose chapters show; `None` shows the books.
     book: Option<BookId>,
     cursor: Option<Spot>,
+    /// What's been typed: a book's name on the books, a chapter's number on the chapters.
+    query: String,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -49,6 +57,10 @@ struct Keys {
     dy: isize,
     enter: bool,
     back: bool,
+    /// Text typed this frame.
+    typed: String,
+    /// Escape, taken from the menu while there's typing to clear.
+    clear: bool,
 }
 
 /// Whether the picker is open (it takes the arrow keys, return and escape then).
@@ -77,10 +89,23 @@ pub fn show(
                     - i.consume_key(Modifiers::NONE, Key::ArrowUp) as isize,
                 enter: i.consume_key(Modifiers::NONE, Key::Enter),
                 back: i.consume_key(Modifiers::NONE, Key::Backspace),
+                typed: i
+                    .events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect(),
+                // Escape clears what's typed first; with nothing typed, the menu closes.
+                clear: !state.query.is_empty() && i.consume_key(Modifiers::NONE, Key::Escape),
             });
             match state.book {
                 None => books(ui, p, meta, here, &keys, &mut state, actions),
                 Some(b) => chapters(ui, p, meta, b, here, &keys, &mut state, actions),
+            }
+            if keys.clear {
+                state.query.clear();
             }
             ui.data_mut(|d| d.insert_temp(state_id, state));
         });
@@ -177,7 +202,49 @@ fn books(
     }
 
     let current = here.book().index();
-    if keys.dx != 0 || keys.dy != 0 {
+    let before = state.query.clone();
+    state.query.extend(keys.typed.chars().filter(|c| c.is_alphanumeric() || *c == ' '));
+    if keys.back {
+        state.query.pop();
+    }
+    if state.query.trim().is_empty() {
+        state.query.clear();
+    }
+    // The books what's typed could mean, best first (all of them when nothing is).
+    let typing = !state.query.is_empty();
+    let matches: Vec<usize> = if typing {
+        bible_core::reference::filter_books(&state.query).iter().map(|b| b.index()).collect()
+    } else {
+        Vec::new()
+    };
+    if state.query != before {
+        state.cursor = matches.first().map(|&i| Spot::Cell(i));
+    }
+    if typing {
+        // Typed text shows at the end of the headers' row.
+        let r = Rect::from_min_size(pos2(area.right() - group, area.top()), vec2(group, m::HEADER_HEIGHT));
+        let shown =
+            if matches.is_empty() { format!("{}: no book", state.query) } else { state.query.clone() };
+        ui.painter().text(
+            pos2(r.right() - m::ITEM_PADDING, r.top() + 14.0),
+            Align2::RIGHT_CENTER,
+            shown,
+            text::CAPTION.font(),
+            p.ink_2,
+        );
+    }
+    if typing && (keys.dx != 0 || keys.dy != 0) {
+        // The arrows step through the matches, best first.
+        if !matches.is_empty() {
+            let at = match state.cursor {
+                Some(Spot::Cell(i)) => matches.iter().position(|&m| m == i).unwrap_or(0),
+                _ => 0,
+            };
+            let n = matches.len() as isize;
+            state.cursor =
+                Some(Spot::Cell(matches[(at as isize + keys.dx + keys.dy).rem_euclid(n) as usize]));
+        }
+    } else if keys.dx != 0 || keys.dy != 0 {
         let from = match state.cursor {
             Some(Spot::Cell(i)) => i,
             _ => current,
@@ -212,14 +279,29 @@ fn books(
             selected: i == current,
             lit: state.cursor == Some(Spot::Cell(i)),
             pressed: resp.is_pointer_button_down_on(),
+            muted: typing && !matches.contains(&i),
         };
         menu::paint_cell(ui.painter(), p, *r, cell);
     }
 
-    let by_key = keys.enter.then_some(match state.cursor {
-        Some(Spot::Cell(i)) => i,
-        _ => current,
-    });
+    // A chapter typed after the name ("rom 8") goes straight there, in the lit book: after the
+    // arrows move from John to Job, "jo 3" opens Job 3.
+    if keys.enter
+        && typing
+        && let Some(Spot::Cell(i)) = state.cursor
+        && let Some(r) = bible_core::reference::parse_in(&state.query, BookId(i as u8))
+    {
+        actions.push(Action::Jump { chapter: r.chapter_idx(), verse: r.verse, flash: r.verse.is_some() });
+        ui.close();
+        return;
+    }
+    let by_key = match (keys.enter, state.cursor) {
+        (false, _) => None,
+        (true, Some(Spot::Cell(i))) => Some(i),
+        // Typed, but nothing matches: return waits for a book.
+        (true, _) if typing => None,
+        (true, _) => Some(current),
+    };
     let Some(i) = cells.iter().position(|(_, r)| r.clicked()).or(by_key) else {
         return;
     };
@@ -229,6 +311,7 @@ fn books(
         ui.close();
     } else {
         state.book = Some(b);
+        state.query.clear();
         // From the keyboard, the highlight lands on the chapter being read or the first.
         let ch = if here.book() == b { here.chapter() as usize - 1 } else { 0 };
         state.cursor = by_key.map(|_| Spot::Cell(ch));
@@ -270,7 +353,21 @@ fn chapters(
 
     let current = (here.book() == b).then(|| here.chapter() as usize - 1);
     if keys.dx != 0 || keys.dy != 0 {
+        state.query.clear();
         state.cursor = Some(chapter_step(state.cursor, current, n, keys));
+    }
+    // Typing a number lights that chapter; a digit that would run past the last starts again.
+    for d in keys.typed.chars().filter(char::is_ascii_digit) {
+        state.query.push(d);
+        let fits = |q: &str| q.parse::<usize>().is_ok_and(|c| (1..=n).contains(&c));
+        if !fits(&state.query) {
+            state.query = d.to_string();
+        }
+        if let Ok(c) = state.query.parse::<usize>()
+            && fits(&state.query)
+        {
+            state.cursor = Some(Spot::Cell(c - 1));
+        }
     }
 
     let back_resp = cell_response(ui, back, ui.id().with("books"), "Books", false);
@@ -297,6 +394,7 @@ fn chapters(
         selected: false,
         lit: state.cursor == Some(Spot::Back),
         pressed: back_resp.is_pointer_button_down_on(),
+        muted: false,
     };
     menu::paint_cell(&painter, p, back, back_cell);
     for (i, (r, resp)) in cells.iter().enumerate() {
@@ -308,6 +406,7 @@ fn chapters(
             selected: Some(i) == current,
             lit: state.cursor == Some(Spot::Cell(i)),
             pressed: resp.is_pointer_button_down_on(),
+            muted: false,
         };
         menu::paint_cell(&painter, p, *r, cell);
     }
@@ -316,7 +415,7 @@ fn chapters(
     if back_resp.clicked() || keys.back || enter_back {
         // From the keyboard, the highlight returns to this book.
         let by_key = keys.back || enter_back;
-        *state = State { book: None, cursor: by_key.then_some(Spot::Cell(b.index())) };
+        *state = State { book: None, cursor: by_key.then_some(Spot::Cell(b.index())), query: String::new() };
         return;
     }
     let by_key = keys.enter.then(|| match state.cursor {

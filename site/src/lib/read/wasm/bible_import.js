@@ -920,6 +920,28 @@ export function chapterVerses(index) {
 }
 
 /**
+ * The books a type-ahead book filter offers for what's typed, best first, as indexes (all 66 in
+ * order for nothing typed).
+ * @param {string} input
+ * @returns {Uint8Array}
+ */
+export function filterBooks(input) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.filterBooks(retptr, ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v2 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * Converts a picked source into a `.bbl` file for the page to keep, given an id not in `taken`.
  * `onBook(books, book)` hears of each book as it begins. The result carries the file's bytes,
  * its metadata, and what needs a look: books missing or left out, and verses adjusted.
@@ -966,6 +988,31 @@ export function parseReference(input) {
         const ptr0 = passStringToWasm0(input, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
         wasm.parseReference(retptr, ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        if (r2) {
+            throw takeObject(r1);
+        }
+        return takeObject(r0);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * What a typed reference means in `book` (an index) rather than the book it names: "jo 3" in
+ * Job is Job 3. Null when no chapter is typed or `book` has no such chapter.
+ * @param {string} input
+ * @param {number} book
+ * @returns {any}
+ */
+export function parseReferenceIn(input, book) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(input, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.parseReferenceIn(retptr, ptr0, len0, book);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);

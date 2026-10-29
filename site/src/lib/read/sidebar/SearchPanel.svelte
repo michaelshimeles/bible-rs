@@ -3,7 +3,8 @@
 	import { getApp } from '../app.svelte';
 	import type { SearchScope } from '../core';
 	import { FIRST, group, snippet, type Snippet as Marked } from '../search.svelte';
-	import { Button, Checkbox, EmptyState, Icon, Menu, MenuItem, MenuSeparator, Segmented } from '../ui';
+	import { Button, Checkbox, EmptyState, Icon, Menu, MenuItem, Segmented } from '../ui';
+	import BookFilterMenu from '../chrome/BookFilterMenu.svelte';
 	import ListItem from './ListItem.svelte';
 
 	const app = getApp();
@@ -175,7 +176,7 @@
 				bind:this={scopeButton}
 				type="button"
 				class={['select', { open: scopeMenu }]}
-				aria-haspopup="menu"
+				aria-haspopup="listbox"
 				aria-expanded={scopeMenu}
 				onclick={() => (scopeMenu = !scopeMenu)}
 			>
@@ -268,22 +269,16 @@
 
 {#if scopeMenu && scopeButton}
 	{@const testament = scope === 'ot' ? false : scope === 'nt' ? true : null}
-	<Menu anchor={scopeButton} quiet width={200} onclose={() => (scopeMenu = false)} label="Books to search">
-		<MenuItem
-			label="All books"
-			selected={typeof scope !== 'number'}
-			onclick={() => setScope(testament === null ? 'all' : testament ? 'nt' : 'ot')}
-		/>
-		{#if books[here]}
-			<MenuItem label="{books[here].name} (this book)" selected={scope === here} onclick={() => setScope(here)} />
-		{/if}
-		<MenuSeparator />
-		<div class="books">
-			{#each books.filter((b) => testament === null || b.newTestament === testament) as b (b.index)}
-				<MenuItem label={b.name} selected={scope === b.index} onclick={() => setScope(b.index)} />
-			{/each}
-		</div>
-	</Menu>
+	<BookFilterMenu
+		anchor={scopeButton}
+		label="Books to search"
+		current={typeof scope === 'number' ? scope : null}
+		here={books[here] ? here : null}
+		listed={books.filter((b) => testament === null || b.newTestament === testament).map((b) => b.index)}
+		searchable={books.map((b) => b.index)}
+		onchoose={(b) => setScope(b ?? (testament === null ? 'all' : testament ? 'nt' : 'ot'))}
+		onclose={() => (scopeMenu = false)}
+	/>
 {/if}
 
 {#if orderMenu && orderButton}
@@ -482,10 +477,5 @@
 		font-weight: 500;
 		-webkit-box-decoration-break: clone;
 		box-decoration-break: clone;
-	}
-
-	.books {
-		max-height: 280px;
-		overflow-y: auto;
 	}
 </style>

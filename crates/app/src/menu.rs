@@ -150,6 +150,8 @@ pub struct Cell<'a> {
     /// Under the pointer or the keyboard.
     pub lit: bool,
     pub pressed: bool,
+    /// Left out by what's typed (the book picker's type-ahead): the label in tertiary ink.
+    pub muted: bool,
 }
 
 /// Paints a grid menu cell in the colours egui menus give their rows (`theme::apply`): the
@@ -174,5 +176,5 @@ pub fn paint_cell(painter: &Painter, p: &Palette, r: Rect, cell: Cell<'_>) {
     }
     let (pos, align) =
         if cell.centred { (r.center(), Align2::CENTER_CENTER) } else { (pos2(x, cy), Align2::LEFT_CENTER) };
-    painter.text(pos, align, cell.label, text::UI.font(), p.ink);
+    painter.text(pos, align, cell.label, text::UI.font(), if cell.muted { p.ink_3 } else { p.ink });
 }

@@ -8,6 +8,7 @@ use bible_core::{BookId, VerseRef};
 
 use super::{Empty, PageEnv, Tone, text};
 use crate::actions::Action;
+use crate::book_filter;
 use crate::icons;
 use crate::theme;
 use crate::widgets::{self, Button, Kind, css_baseline, flow, paint_runs};
@@ -79,19 +80,22 @@ impl State {
         let select = Rect::from_min_size(pos2(seg.left() - 8.0 - 160.0, cy - 16.0), vec2(160.0, 32.0));
         let value = self.book.map(book_name).unwrap_or_else(|| "All books".into());
         let resp = widgets::select_field(ui, p, select, &value, Some(icons::book), ui.id().with("book"));
-        crate::menu::popup(&resp, p).show(|ui| {
-            ui.set_min_width(180.0);
-            if ui.selectable_label(self.book.is_none(), "All books").clicked() {
-                self.book = None;
+        let filter = book_filter::Books {
+            current: self.book,
+            here: None,
+            listed: &books,
+            searchable: &books,
+            name: &book_name,
+            width: 180.0,
+        };
+        match book_filter::show(&resp, p, filter) {
+            Some(book_filter::Pick::All) => self.book = None,
+            Some(book_filter::Pick::Book(b)) => {
+                self.book = Some(b);
+                self.testament = 0;
             }
-            crate::menu::separator(ui);
-            for b in &books {
-                if ui.selectable_label(self.book == Some(*b), book_name(*b)).clicked() {
-                    self.book = Some(*b);
-                    self.testament = 0;
-                }
-            }
-        });
+            None => {}
+        }
 
         // What's shown, before the colour filter (so the tabs count what they'd show).
         let q = env.query.trim().to_lowercase();
