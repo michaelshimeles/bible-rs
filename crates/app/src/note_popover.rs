@@ -235,17 +235,26 @@ impl NotePopover {
                     job.wrap.max_width = width;
                     ui.fonts_mut(|f| f.layout_job(job))
                 };
-                let resp = child.add_sized(
-                    inner.size(),
-                    egui::TextEdit::multiline(&mut self.note)
-                        .id(id)
-                        .hint_text("Write a note…")
-                        .font(FontId::new(14.0, theme::family(theme::UI)))
-                        .text_color(p.ink)
-                        .frame(egui::Frame::NONE)
-                        .margin(egui::Margin::ZERO)
-                        .layouter(&mut layouter),
-                );
+
+                let resp = egui::ScrollArea::vertical()
+                    .id_salt(("note-editor-scroll", self.verse.key()))
+                    .max_height(inner.height())
+                    .auto_shrink([false, false])
+                    .show(&mut child, |ui| {
+                        ui.add_sized(
+                            inner.size(),
+                            egui::TextEdit::multiline(&mut self.note)
+                                .id(id)
+                                .hint_text("Write a note…")
+                                .font(FontId::new(14.0, theme::family(theme::UI)))
+                                .text_color(p.ink)
+                                .frame(egui::Frame::NONE)
+                                .margin(egui::Margin::ZERO)
+                                .layouter(&mut layouter),
+                        )
+                    })
+                    .inner;
+
                 if std::mem::take(&mut self.focus) {
                     resp.request_focus();
                 }
