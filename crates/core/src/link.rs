@@ -36,6 +36,7 @@ pub fn parse(input: &str) -> Option<DeepLink> {
     // A dotted path is route.bible's format and nothing else; other paths are typed references.
     let dotted = path.contains('.') && !path.contains([' ', ':']);
     let reference = if dotted { passage(path)? } else { reference::parse(path)? };
+    let reference = within_chapter(reference)?;
     let translation = query
         .split('&')
         .filter_map(|pair| pair.split_once('='))
@@ -75,18 +76,26 @@ fn passage(path: &str) -> Option<Reference> {
         [c, v] => (c, Some(v)),
         _ => return None,
     };
-    let chapter_idx = ChapterIdx::new(book, chapter)?;
-    if verse == Some(0) {
-        return None;
-    }
+    ChapterIdx::new(book, chapter)?;
     let verse_end = match (verse, end) {
-        (Some(v), Some(end)) => {
-            range_end(book, chapter, end)?.map(|e| e.min(chapter_idx.kjv_verses())).filter(|&e| e > v)
-        }
+        (Some(v), Some(end)) => range_end(book, chapter, end)?.filter(|&e| e > v),
         (None, Some(_)) => return None,
         (_, None) => None,
     };
     Some(Reference { book, chapter, verse, verse_end })
+}
+
+/// Keeps a link inside its chapter, whichever form it came in: a verse past the chapter's end
+/// (KJV versification, the app's verse numbering) is no passage, and a range ending past it
+/// ends at the last verse.
+fn within_chapter(r: Reference) -> Option<Reference> {
+    let last = ChapterIdx::new(r.book, r.chapter)?.kjv_verses();
+    let Some(v) = r.verse else { return Some(Reference { verse_end: None, ..r }) };
+    if v == 0 || v > last {
+        return None;
+    }
+    let verse_end = r.verse_end.map(|e| e.min(last)).filter(|&e| e > v);
+    Some(Reference { verse_end, ..r })
 }
 
 /// The end of a range: `18` or `jhn.3.18` in the same chapter gives `Some(18)`; another chapter
@@ -188,6 +197,10 @@ mod tests {
     fn ranges_are_kept_inside_the_chapter() {
         // John 3 has 36 verses (KJV).
         assert_eq!(p("bible://jhn.3.30-99"), "John 3:30–36");
+        assert_eq!(p("bible://jhn.3.30-jhn.3.99"), "John 3:30–36");
+        // Typed references are held to the chapter the same way.
+        assert_eq!(p("bible://jn3:30-99"), "John 3:30–36");
+        assert_eq!(p("bible://John%203:36-40"), "John 3:36");
         // A backwards range is the first verse alone.
         assert_eq!(p("bible://jhn.3.18-16"), "John 3:18");
     }
@@ -222,6 +235,11 @@ mod tests {
             "bible://xyzzy",
             "bible://jhn.22",
             "bible://jhn.3.0",
+            "bible://jhn.3.37",
+            "bible://jhn.3.99",
+            "bible://jhn.3.99-100",
+            "bible://jn3:99",
+            "bible://John%203:37",
             "bible://jhn.3.16.1",
             "bible://jhn.3-5",
             "bible://psa.151",

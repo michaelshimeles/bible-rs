@@ -11,6 +11,7 @@ use bible_rs::{deep_link, theme};
 use eframe::egui;
 use egui_kittest::Harness;
 
+const ROMANS: BookId = BookId(44);
 const FIRST_CORINTHIANS: BookId = BookId(45);
 /// Tall enough that a verse placed near the top, as other jumps place it, is well off centre.
 const HEIGHT: f32 = 1100.0;
@@ -47,6 +48,26 @@ fn a_link_centres_its_passage_on_a_cold_and_a_warm_open() {
     harness.run_steps(6);
     assert_eq!(harness.state().reader.selection, Some((v(4), v(7))));
     assert_centred(&harness, "warm");
+
+    // A chapter link drops the selection the last link made, so N, B and 1–6 can't act on a
+    // passage that is no longer on screen.
+    assert!(deep_link::open("bible://rom.8"));
+    harness.run_steps(6);
+    assert_eq!(harness.state().reader.location.0, ChapterIdx::new(ROMANS, 8).unwrap());
+    assert_eq!(harness.state().reader.selection, None);
+
+    // A verse past the chapter's end is no passage: nothing opens, nothing is selected.
+    assert!(!deep_link::open("bible://rom.8.40"));
+    assert!(!deep_link::open("bible://rom8:99"));
+    harness.run_steps(4);
+    assert_eq!(harness.state().reader.location.0, ChapterIdx::new(ROMANS, 8).unwrap());
+    assert_eq!(harness.state().reader.selection, None);
+
+    // A range running past the end selects up to the last verse (Romans 8 has 39).
+    assert!(deep_link::open("bible://rom8:38-99"));
+    harness.run_steps(6);
+    let r = |n| VerseRef::new(ROMANS, 8, n);
+    assert_eq!(harness.state().reader.selection, Some((r(38), r(39))));
     let _ = std::fs::remove_dir_all(dir);
 }
 

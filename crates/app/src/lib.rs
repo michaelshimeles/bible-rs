@@ -186,7 +186,7 @@ pub fn run() -> eframe::Result {
     }
     // `bible-rs bible://jhn.3.16` or `bible-rs open <link-or-reference>`: start the GUI there.
     if let Some(link) = cli::link_argument(&args) {
-        if !deep_link::open(link) {
+        if !deep_link::open(&link) {
             eprintln!("error: not a passage: {link:?}");
             std::process::exit(1);
         }
