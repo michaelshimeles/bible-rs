@@ -8,6 +8,7 @@
 //! bible-rs remove <id>
 //! bible-rs export --markdown|--json [-o file]
 //! bible-rs import-notes <export.json>
+//! bible-rs open bible://jhn.3.16-18
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -72,6 +73,17 @@ pub fn run(args: &[String], data_dir: &Path) -> Option<Result<()>> {
         }
         _ => return None,
     })
+}
+
+/// The link or reference to open the app at: `bible-rs bible://…` or `bible-rs open <link>`.
+/// After `open`, the remaining words are the reference, so `open John 3:16` works unquoted, as
+/// `read` does. `open` with nothing after it is `Some("")`, which no passage parses as.
+pub fn link_argument(args: &[String]) -> Option<String> {
+    match args {
+        [a, ..] if a.to_ascii_lowercase().starts_with("bible:") => Some(a.clone()),
+        [cmd, rest @ ..] if cmd == "open" => Some(rest.join(" ")),
+        _ => None,
+    }
 }
 
 fn library(data_dir: &Path) -> Library {
@@ -224,4 +236,30 @@ fn import_notes(rest: &[String], data_dir: &Path) -> Result<()> {
     let (h, n, b) = study.import_json(&std::fs::read_to_string(&path).with_context(|| path.clone())?)?;
     println!("Imported {h} highlights, {n} notes and {b} bookmarks");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn link_arguments() {
+        let link = |a: &[&str]| link_argument(&args(a));
+        assert_eq!(link(&["bible://jhn.3.16"]).as_deref(), Some("bible://jhn.3.16"));
+        assert_eq!(link(&["BIBLE://jhn.3.16"]).as_deref(), Some("BIBLE://jhn.3.16"));
+        assert_eq!(link(&["open", "bible://jhn.3.16-18"]).as_deref(), Some("bible://jhn.3.16-18"));
+        assert_eq!(link(&["open", "jn 3:16"]).as_deref(), Some("jn 3:16"));
+        // Unquoted, the words after `open` are one reference.
+        assert_eq!(link(&["open", "John", "3:16"]).as_deref(), Some("John 3:16"));
+        assert_eq!(link(&["open", "1", "Cor", "13:4-7"]).as_deref(), Some("1 Cor 13:4-7"));
+        // `open` alone is an error (no passage), not the GUI at the saved place.
+        assert_eq!(link(&["open"]).as_deref(), Some(""));
+        assert!(bible_core::link::parse("").is_none());
+        assert_eq!(link(&["read", "jn 3:16"]), None);
+        assert_eq!(link(&[]), None);
+    }
 }

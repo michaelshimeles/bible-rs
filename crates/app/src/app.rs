@@ -683,6 +683,23 @@ impl BibleApp {
                     verse.filter(|_| flash).map(|v| VerseRef::new(chapter.book(), chapter.chapter(), v));
                 self.reader.set_selection(landed);
             }
+            Action::OpenLink(link) => {
+                if let Some(id) = link.translation.clone() {
+                    self.apply_one(ctx, Action::SetTranslation(id));
+                }
+                let r = link.reference;
+                self.apply_one(
+                    ctx,
+                    Action::Jump { chapter: r.chapter_idx(), verse: r.verse, flash: r.verse.is_some() },
+                );
+                if let Some((from, to)) = crate::deep_link::selection(&link) {
+                    self.reader.select_range(from, to);
+                    // Like a passage page on the web, the selection opens in the middle of the view.
+                    let flash = self.settings.flash_jumps && !self.settings.reduce_motion;
+                    self.reader.jump_centered(r.chapter_idx(), from.verse, to.verse, flash);
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
             // From a page, Back returns to the reader.
             Action::Back if !self.pages.reader() => self.pages.open(crate::pages::Page::Reader),
             Action::Back => {
@@ -2426,6 +2443,7 @@ impl eframe::App for BibleApp {
         }
         if self.onboarding.is_none() {
             self.shortcuts(&ctx, &mut actions);
+            actions.extend(crate::deep_link::take().into_iter().map(Action::OpenLink));
         }
         #[cfg(any(target_os = "macos", windows))]
         if let Some(menu) = &self.menu {

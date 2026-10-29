@@ -11,6 +11,7 @@ pub mod highlight;
 pub mod import;
 #[cfg(feature = "native")]
 pub mod library;
+pub mod link;
 pub mod model;
 pub mod nlt_html;
 #[cfg(feature = "native")]

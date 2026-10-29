@@ -351,6 +351,24 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
   text and verse numbers off egui's per-run variation path. Literata keeps its default optical
   size: at 20 pt its widths differ from opsz 20 by 0.3 %, so line breaks match the design anyway.
 
+## Deep links
+
+- **`bible://jhn.3.16-18`: route.bible's reference format.** Lower-case USFM book codes, dots
+  between chapter and verse, `-18` for a same-chapter range. The codes are the ones every
+  translation is already keyed by (`BookInfo::code`), and a web page that links to route.bible
+  can link to the app by swapping the host. OSIS names and ⌘K's free-form references are
+  accepted as well; only the dotted form is parsed strictly, so `jhn.3-5` (a chapter range) is
+  refused rather than guessed.
+- **One chapter at a time.** The reader's selection never crosses a chapter, so a range that
+  does (`jhn.3.16-jhn.4.2`) opens at its first verse.
+- **macOS: an `NSAppleEventManager` handler for `GURL`.** winit doesn't forward URLs to the app,
+  and its application delegate isn't ours to extend. The handler is installed before the event
+  loop runs, so the link that launches the app is queued with the ones that arrive later; the
+  reader takes them on its next frame (after onboarding, on a first launch).
+- **Linux and the CLI:** `bible-rs bible://…` and `bible-rs open …` start the app at the link.
+  There is no Linux package to carry a `.desktop` handler yet, and no single-instance handoff,
+  so a second link opens a second window.
+
 ## iPhone: SwiftUI and UIKit over the Rust core
 
 The phone app lives in the same repository (`apps/ios`) and shares `bible-core` with the Mac:

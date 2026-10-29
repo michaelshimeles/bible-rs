@@ -34,6 +34,38 @@ pub struct Anchor {
     pub offset: f32,
 }
 
+/// A scroll to a verse, made once its chapter is laid out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Jump {
+    chapter: ChapterIdx,
+    verse: u8,
+    flash: bool,
+    /// Centre `verse..=end` in the view (a passage opened from a link) rather than showing the
+    /// verse a little below the top.
+    center: Option<u8>,
+}
+
+impl Jump {
+    fn to(chapter: ChapterIdx, verse: u8) -> Self {
+        Self { chapter, verse, flash: false, center: None }
+    }
+}
+
+/// The anchor offset that puts a passage (`top..bottom` in its chapter's layout) in the middle
+/// of the part of the view below the toolbar. A passage too tall for that starts near the top
+/// instead, so as much of it shows as fits. The offset may be negative: the end of the chapter
+/// before then shows above (the reader's normalising moves the anchor there).
+fn centered_offset((top, bottom): (f32, f32), top_pad: f32, toolbar: f32, viewport_h: f32, em: f32) -> f32 {
+    // A chapter's layout y lands on screen at `top_pad - offset + y` (from the reader's top).
+    let visible = (viewport_h - toolbar).max(0.0);
+    let margin = em * 2.2;
+    if bottom - top <= visible - 2.0 * margin {
+        top_pad + (top + bottom) / 2.0 - (toolbar + visible / 2.0)
+    } else {
+        top_pad + top - (toolbar + margin)
+    }
+}
+
 pub struct Env<'a> {
     pub library: &'a Library,
     pub study: &'a StudyStore,
@@ -119,10 +151,13 @@ pub struct Reader {
     /// Where each chapter painted this frame has its top-left corner, to find text under a point.
     painted: Vec<(ChapterIdx, Vec2)>,
     flash: Option<(VerseRef, f64)>,
-    pending_jump: Option<(ChapterIdx, u8, bool)>,
+    pending_jump: Option<Jump>,
     /// A jump to a verse of a chapter still loading (online text): made again when the text
     /// arrives, unless the reader scrolls first.
-    deferred_jump: Option<(ChapterIdx, u8, bool)>,
+    deferred_jump: Option<Jump>,
+    /// The passage last centred (a link opened): centred again when the chapters are laid out
+    /// anew (fonts arriving, the window settling at launch), until the reader scrolls.
+    centered: Option<Jump>,
     reanchor: Option<(ChapterIdx, u8, f32)>,
     scroll_remaining: f32,
     viewport_h: f32,
@@ -166,6 +201,7 @@ impl Reader {
             flash: None,
             pending_jump: None,
             deferred_jump: None,
+            centered: None,
             reanchor: None,
             scroll_remaining: 0.0,
             viewport_h: 800.0,
@@ -183,15 +219,26 @@ impl Reader {
             layouts: 0,
         };
         if verse > 1 {
-            r.pending_jump = Some((chapter, verse, false));
+            r.pending_jump = Some(Jump::to(chapter, verse));
         }
         r
     }
 
     pub fn jump(&mut self, chapter: ChapterIdx, verse: Option<u8>, flash: bool) {
         self.scroll_remaining = 0.0;
-        self.pending_jump = Some((chapter, verse.unwrap_or(1), flash && verse.is_some()));
+        self.pending_jump =
+            Some(Jump { chapter, verse: verse.unwrap_or(1), flash: flash && verse.is_some(), center: None });
         self.location = (chapter, verse.unwrap_or(1));
+    }
+
+    /// Like [`jump`](Self::jump) to `verse`, but scrolls `verse..=end` to the middle of the view
+    /// (or, when the passage is taller than the view, its first verse near the top), as a
+    /// `bible://` link opens a passage.
+    pub fn jump_centered(&mut self, chapter: ChapterIdx, verse: u8, end: u8, flash: bool) {
+        self.jump(chapter, Some(verse), flash);
+        if let Some(j) = &mut self.pending_jump {
+            j.center = Some(end.max(verse));
+        }
     }
 
     pub fn scroll_by(&mut self, dy: f32) {
@@ -243,6 +290,12 @@ impl Reader {
         self.selection = v.map(|v| (v, v));
     }
 
+    /// Selects `from..=to`, as shift-clicking `to` would (a range stays within one chapter).
+    pub fn select_range(&mut self, from: VerseRef, to: VerseRef) {
+        self.selection = Some((from, from));
+        self.select(to, true);
+    }
+
     /// Moves a single-verse selection by `delta` verses (within the chapter, else across).
     pub fn step_selection(&mut self, library: &Library, id: &str, delta: i32) {
         let current = self.selection.map(|(a, b)| if delta > 0 { b } else { a });
@@ -271,7 +324,7 @@ impl Reader {
     fn ensure_visible(&mut self, r: VerseRef) {
         let c = r.chapter_idx();
         let Some(cached) = self.cache.get(&c) else {
-            self.pending_jump = Some((c, r.verse, false));
+            self.pending_jump = Some(Jump::to(c, r.verse));
             return;
         };
         let Some(a) = cached.layout.anchor(0, r.verse) else { return };
@@ -282,12 +335,12 @@ impl Reader {
                 match self.cache.get(&self.anchor.chapter) {
                     Some(cur) if c.0 == self.anchor.chapter.0 + 1 => y += cur.layout.height,
                     _ => {
-                        self.pending_jump = Some((c, r.verse, false));
+                        self.pending_jump = Some(Jump::to(c, r.verse));
                         return;
                     }
                 }
             } else {
-                self.pending_jump = Some((c, r.verse, false));
+                self.pending_jump = Some(Jump::to(c, r.verse));
                 return;
             }
         }
@@ -448,7 +501,11 @@ impl Reader {
         // Re-key the cache when anything that affects layout changes, keeping the position.
         let key = Self::layout_key(env, geom.col_w);
         if key != self.key {
-            if self.key != 0
+            if self.pending_jump.is_none()
+                && let Some(j) = self.centered
+            {
+                self.pending_jump = Some(Jump { flash: false, ..j });
+            } else if self.key != 0
                 && self.pending_jump.is_none()
                 && let Some(cached) = self.cache.get(&self.anchor.chapter)
                 && let Some(a) = cached.layout.verse_at_y(self.anchor.offset)
@@ -469,19 +526,27 @@ impl Reader {
             }
         }
         if self.pending_jump.is_none()
-            && let Some((c, _, _)) = self.deferred_jump
+            && let Some(Jump { chapter: c, .. }) = self.deferred_jump
             && self.chapter_layout(ui, env, &geom, c).anchors.iter().any(|a| a.column == 0)
         {
             self.pending_jump = self.deferred_jump.take();
         }
-        if let Some((c, verse, flash)) = self.pending_jump.take() {
+        if let Some(jump) = self.pending_jump.take() {
+            let Jump { chapter: c, verse, flash, center } = jump;
+            self.centered = center.is_some().then_some(jump);
             let l = self.chapter_layout(ui, env, &geom, c);
             // The first column decides where a verse is; it may still be loading while others show.
             let loading = !l.anchors.iter().any(|a| a.column == 0);
-            self.deferred_jump = (verse > 1 && loading).then_some((c, verse, flash));
+            self.deferred_jump = ((verse > 1 || center.is_some()) && loading).then_some(jump);
+            let centered = center.and_then(|end| {
+                let span = l.verse_span(0, verse, end)?;
+                Some(centered_offset(span, self.top_pad, self.toolbar, self.viewport_h, self.em))
+            });
             // A verse shows a little below the top, or from its paragraph's start when that is
             // only a few lines up.
-            let offset = if verse <= 1 {
+            let offset = if let Some(offset) = centered {
+                offset
+            } else if verse <= 1 {
                 0.0
             } else {
                 l.anchor(0, verse).map_or(0.0, |a| {
@@ -530,11 +595,13 @@ impl Reader {
             self.anchor = Anchor { chapter: c, offset: f.fract() * l.height };
             self.scroll_remaining = 0.0;
             self.deferred_jump = None;
+            self.centered = None;
             dy = 0.0;
         }
         self.anchor.offset += dy;
         if dy != 0.0 {
             self.deferred_jump = None;
+            self.centered = None;
             self.scrolled_at = ui.input(|i| i.time);
         }
         self.normalize(ui, env, &geom);
@@ -1109,5 +1176,38 @@ impl Geometry {
         let total_w = col_w * n + gutter * (n - 1.0);
         let x0 = px(rect.center().x - total_w / 2.0);
         Self { x0, col_w, gutter, total_w }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::centered_offset;
+
+    /// Where a layout y lands on screen for an offset (as `Reader::show` paints).
+    fn screen_y(y: f32, offset: f32, top_pad: f32) -> f32 {
+        top_pad - offset + y
+    }
+
+    #[test]
+    fn a_short_passage_is_centred_below_the_toolbar() {
+        let (top_pad, toolbar, viewport_h, em) = (100.0, 52.0, 800.0, 19.0);
+        let (top, bottom) = (900.0, 1100.0);
+        let offset = centered_offset((top, bottom), top_pad, toolbar, viewport_h, em);
+        let mid = (screen_y(top, offset, top_pad) + screen_y(bottom, offset, top_pad)) / 2.0;
+        assert!((mid - (toolbar + (viewport_h - toolbar) / 2.0)).abs() < 0.01, "{mid}");
+    }
+
+    #[test]
+    fn a_passage_near_the_chapter_start_can_centre_into_the_chapter_before() {
+        let offset = centered_offset((40.0, 120.0), 100.0, 52.0, 800.0, 19.0);
+        assert!(offset < 0.0, "{offset}");
+    }
+
+    #[test]
+    fn a_passage_taller_than_the_view_starts_near_the_top() {
+        let (top_pad, toolbar, viewport_h, em) = (100.0, 52.0, 600.0, 19.0);
+        let offset = centered_offset((900.0, 2000.0), top_pad, toolbar, viewport_h, em);
+        let first = screen_y(900.0, offset, top_pad);
+        assert!((first - (toolbar + em * 2.2)).abs() < 0.01, "{first}");
     }
 }
