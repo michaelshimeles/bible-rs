@@ -2,7 +2,8 @@
 
 Bible: a very fast, native Bible reader for the Mac, written in Rust. Just the Bible — beautifully
 typeset, searchable as you type, with highlights, notes and bookmarks kept on your computer. The
-[iPhone version](#iphone) shares the same core.
+[iPhone version](#iphone) and the [web reader](#web) share the same core, and a
+[Windows build](WINDOWS.md) runs the same app (unsigned for now).
 
 ![Reading John 1 in the King James Version](docs/screenshots/reader-light.png)
 
@@ -68,6 +69,7 @@ typeset, searchable as you type, with highlights, notes and bookmarks kept on yo
 - Click a verse (⇧-click for a range, J/K to move) to select it, then: highlight in six colours
   (1–6, 0 to clear), write a note (N), bookmark (B / ⌘D), copy (⌘C, or ⇧⌘C with the reference)
   or compare translations (C). Right-click opens the verse menu with all of these.
+- Drag across words (in a verse or across verses) to highlight or copy just them.
 - Notes and bookmarks show in the margin; the Study sidebar lists everything.
 - Export to Markdown (⌘E) or JSON (⌘⇧E); JSON imports back.
 
@@ -171,6 +173,7 @@ chapter by chapter, and appear in parallel and compare views as their chapters l
 | ↑ ↓, Space, ⇧Space, PgUp/PgDn | Scroll |
 | ⌘[ / ⌘] (⌥← / ⌥→) | Back / forward |
 | Click, ⇧-click, J / K | Select a verse, a range, next / previous verse |
+| Drag, ⇧-click | Choose words, extend them |
 | 1–6, 0 | Highlight colour, remove highlight |
 | N · B or ⌘D · ⌘C · ⇧⌘C · C | Note · bookmark · copy · copy with reference · compare |
 | ⌘1…⌘9 | Switch translation |
@@ -336,6 +339,11 @@ universal app signed with a Developer ID and notarized, a disk image, a zip, the
 the signed update feed that installed copies check with Sparkle ([RELEASING.md](RELEASING.md)).
 CI builds an ad-hoc signed DMG on every push and uploads it as an artifact.
 
+On Windows, `cargo build --release -p bible-rs` builds `bible-rs.exe` and
+`scripts/package-windows.sh` the per-user installer; [WINDOWS.md](WINDOWS.md) covers building
+(also cross-compiling from a Mac), installing, signing and what's still missing. CI builds the
+unsigned installer on every pull request and uploads it as an artifact.
+
 Other tasks:
 
 | | |
@@ -396,6 +404,23 @@ scripts/ios-screenshots.sh --app-store  # full-size iPhone and iPad sets for the
 [apps/ios/APP_STORE.md](apps/ios/APP_STORE.md) covers the setup, the listing and the answers App
 Store Connect asks for.
 
+## Web
+
+[simplymybible.com/read](https://simplymybible.com/read) is the Mac app in a browser: the same
+typesetting, themes, palette, search, study tools, pages and shortcuts, with the core compiled to
+WebAssembly. Every chapter of every bundled translation is also a static page
+(`/read/kjv/john/3`). [Importing](#import-a-translation-you-own) works as on the Mac, with the same
+formats, and the conversion runs in the browser. Study data, settings and imported translations
+stay in the browser. After one visit the reader works offline. Online translations are Mac-only.
+
+The site is the SvelteKit app in `site/` ([site/README.md](site/README.md)):
+
+```sh
+scripts/build-web.sh               # after changing crates/web or the parts of bible-core it uses
+cd site && npm install && npm run dev   # http://localhost:5173/read
+npm run build                      # prerenders the 8,323 chapter pages
+```
+
 ## How it's built
 
 ```
@@ -406,7 +431,9 @@ crates/app    bible-rs: egui app — reader (typesetting, continuous scroll), si
               panels, settings, macOS menu bar, CLI
 crates/ffi    bible-ffi: the core for mobile apps through UniFFI — chapters as styled blocks,
               search, references, study data, design tokens
+crates/web    bible-web: the core for the browser through wasm-bindgen (built into site/)
 apps/ios      the iPhone app: SwiftUI, with a UIKit/TextKit reader; XcodeGen project.yml
+site          the website (SvelteKit): the landing page and the web reader at /read
 xtask         reproducible bundled-data build from pinned public-domain sources
 data          generated .bbl files (public domain only)
 ```
@@ -417,4 +444,7 @@ data format, search, and the licensing approach.
 ## License
 
 Code: MIT ([LICENSE](LICENSE)). Bundled translations: public domain ([LICENSES/](LICENSES/README.md)).
-Fonts: Literata and Inter, SIL Open Font License 1.1.
+Fonts: Literata and Inter, SIL Open Font License 1.1. The object specs in `objects/` and the images
+rendered from their 3D models are CC BY 4.0 ([objects/LICENSE](objects/LICENSE)). Credit them as:
+
+> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible-rs

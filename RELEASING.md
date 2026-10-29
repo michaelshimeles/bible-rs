@@ -88,7 +88,19 @@ Cargo package, the command-line binary and the release file names keep the name 
      dist/bible-rs-<version>-universal.zip dist/bible-rs-<version>-SHA256SUMS.txt dist/appcast.xml
    ```
 
-The website's Download button (`bible.rasmic.xyz/download`) redirects to
+5. **Windows** (once installers are signed, WINDOWS.md): attach the installer and its checksum list
+   from the release workflow's *windows* job, so installed Windows copies can update themselves:
+
+   ```sh
+   gh run download <run id> -n bible-rs-v<version>-windows-x64 -D dist
+   gh release upload v<version> dist/bible-rs-<version>-windows-x64-setup.exe \
+     dist/bible-rs-<version>-windows-x64-SHA256SUMS.txt
+   ```
+
+   The app installs only an installer whose SHA-256 matches GitHub's digest for the file and this
+   checksum list (WINDOWS.md, "Updates").
+
+The website's Download button (`simplymybible.com/download`) redirects to
 `https://github.com/michaelshimeles/bible-rs/releases/latest/download/bible-rs-universal.dmg`, and
 installed copies read
 `https://github.com/michaelshimeles/bible-rs/releases/latest/download/appcast.xml`. GitHub serves
@@ -113,6 +125,10 @@ shows the update window. Installing downloads the zip, checks its signature agai
 and that it is signed by the same Developer ID team, replaces the app where it is installed and
 relaunches it.
 
+Nothing in the app sends people to GitHub to update. A build that can't load Sparkle says in the
+app that it can't update itself. Release Notes in Settings › About still opens the releases page,
+for reading.
+
 Up to 0.1.0 the app was `bible-rs.app` and had no updater; its "Check for Updates…" opens the latest
 release's page. Someone on 0.1.0 downloads the DMG and drags `Bible.app` into Applications, which
 leaves `bible-rs.app` beside it. The first time `Bible.app` runs from `/Applications` or
@@ -126,6 +142,22 @@ Other options:
   this Mac but Gatekeeper blocks them on others; use it to test the build.
 - `scripts/release-macos.sh --ad-hoc` signs without a Developer ID. CI uses it on every push.
 - `ALLOW_DIRTY=1` builds from a working tree with uncommitted changes.
+
+### Before the first update reaches anyone
+
+Check for Updates… in a release build shows Sparkle's "Update Error" until a published release has
+`appcast.xml`. `releases/latest/download/appcast.xml` redirects to the newest published
+release, v0.1.0, which has no feed, so GitHub answers 404. v0.1.0 predates the updater.
+
+For updates to work for real users:
+
+1. Do the one-time setup above: the `bible-notary` profile, and the Sparkle private key in the login
+   keychain (account `bible-rs`, matching `SUPublicEDKey`).
+2. Release the next version with `scripts/release-macos.sh` (without `--skip-notarize` or
+   `--ad-hoc`, which write no feed) and publish it with all five files, `appcast.xml` included. The
+   feed then answers at the URL above.
+3. Copies of that version find nothing newer. From the release after it on, Check for Updates…
+   offers the new version, and Install Update replaces and relaunches the app.
 
 ## GitHub Actions
 
@@ -155,8 +187,8 @@ temporary keychain and deletes that keychain when it finishes.
   access once. A key saved by an ad-hoc signed development build asks for approval once, the first
   time a release build reads it.
 - **Ad-hoc builds.** The hardened runtime loads only frameworks signed by the app's own team, so an
-  ad-hoc signed build (CI, `--ad-hoc`) can't load Sparkle; its Check for Updates… opens the latest
-  release's page.
+  ad-hoc signed build (CI, `--ad-hoc`) can't load Sparkle; its Check for Updates… says in the app
+  that this build can't update itself.
 - **Rejected notarization.** `scripts/notarize-macos.sh` prints Apple's log, which names each
   file that failed and why.
 - **Intel testing.** On an Apple silicon Mac without Rosetta, the script checks the x86_64 slice's

@@ -133,6 +133,57 @@ mirrored in memory (hundreds of rows) so the reader can query it per verse every
 (including the reading position) are written at most every 1.5 s, so scrolling never waits on
 disk. Export to JSON (round-trips via import) and Markdown.
 
+## Highlights: whole verses, words, and stretches across verses
+
+A highlight can cover a whole verse, a few words of one, or a stretch across verses. The store
+keeps highlights per verse, and a verse can hold several. Each records the chars it covers in the
+verse's text (`start`, and `end`, which is empty when it runs to the verse's end) and, for part of a
+verse, the words themselves (`quote`). A stretch across verses is stored as the tail of the first
+verse, the middle verses whole, and the head of the last. Keeping everything per verse leaves
+lookups as they were (one map read per verse while painting) and lets each verse's highlights be
+merged on their own. The range logic is in `bible-core` (`highlight.rs`), so the Mac, web and phone
+apps can't disagree about it.
+
+**Offsets and translations.** Highlights are keyed by canonical reference and show in every
+translation, but char offsets only mean something in the text they were counted in. A highlight of
+part of a verse is placed in another text where its words are (ignoring spacing, the occurrence
+nearest its offset). John 3:16's "God so loved the world" lands on the same words in the KJV and
+the WEB. When the other translation words it differently, the highlight **falls back to the whole
+verse**, so it never disappears. Hiding it was the other choice; a highlight that vanishes on
+switching translation looks like lost data. When several fall back at once, the one coloured most
+recently is on top.
+
+**Overlaps.** Colouring over a highlight replaces it where they overlap, like a highlighter over a
+highlighter: the newest colour is on top, and the rest of the older one stays. Neighbours of one
+colour with only spaces between them join, keeping the earlier date. Each highlight keeps when it
+was made (what lists show) apart from when it was last coloured (what decides the top colour), so
+recolouring an old highlight puts it on top without moving it in the lists. Clearing part of a highlight
+leaves the rest. Edits are made against the text being read, so a verse that's edited is stored
+again in that text's offsets, exactly as it was shown. A highlight that had fallen back to the whole
+verse there becomes whole-verse.
+
+**Choosing words.** On the Mac and the web, clicking a verse selects it and shift-click extends to
+whole verses, as before. Dragging across text chooses words within one chapter, and shift-click
+carries that choice on. Keys 1 to 6, 0 and the verse menu act on the chosen words when there are
+some, and copying copies just them. Chosen words belong to the translation they were counted in:
+switching translation lets go of them and leaves their verses selected. The web uses the browser's
+own selection, so a touch screen gets
+a long press and its handles, plus a bar of swatches under the selection, since it has no number
+keys or right-click.
+
+**Migration.** The SQLite file's `user_version` goes from 0 to 1. The highlights table gains
+`char_start`, `char_end`, `quote` and `edited`, and `char_start` joins its key. The old rows are
+copied across as whole-verse highlights with their colour and date. JSON exports add `start`,
+`end` and `quote` only for parts of verses, and `edited` only when it differs from `created`, so older exports (and the web app's saved snapshots) import as
+whole verses, and an older app reading a newer export sees whole verses. An older app opening a
+migrated file still reads its highlights but can't save new ones.
+
+**The phone.** The iPhone app shares the store, so it migrates the same way and keeps every
+highlight, but it still draws and edits whole verses: part of a verse shows there as the whole
+verse in its colour. Its Highlights list has a row per highlight, and removing a row removes only
+that one. Choosing words needs hand-drawn selection handles over its custom text
+drawing, so it's left for later.
+
 ## macOS integration
 
 - Native menu bar via `muda` (`cfg(target_os = "macos")`). Menu items with key equivalents are
@@ -267,7 +318,9 @@ The interface follows the high-fidelity designs in the Paper file "Bible" (Scree
   disk cache still holds, as the design's frame 33. Its error toast stays until clicked away or
   the chapter loads. Parallel columns keep their one-line message.
 - **Toasts are the design's inverse capsules** at the bottom centre of the main area, 4 s for
-  messages; errors stay.
+  messages; errors stay. On the Mac a message fades out over its last 0.2 s and the toasts above
+  slide down into its place, each keeping to the centre line. Toggling a bookmark replaces the
+  verse's toast still showing, so a few quick toggles show one toast with the latest state.
 - **Menus share one frame and one text column** (`menu.rs`, the `menu` group added to the token
   file). The design system's menu sheet (ds-12) gives the radius 12, 28 pt rows with radius 6
   highlights, 24 pt section headers and 9 pt separators; its 6 pt padding felt cramped, so row
@@ -385,10 +438,182 @@ What differs is the toolkit, and here the Mac's choice is overruled.
     1–7 ms each on the background queue, never during a frame. The first chapter takes 13–19 ms,
     because it includes decoding the translation.
 
+## Web: the core in WebAssembly, the reader in the DOM
+
+The web reader (`/read` on the site, `site/src/routes/read`) is the Mac app in a browser tab: the
+same typesetting, themes, palette, search, study tools, pages and shortcuts. Every chapter is
+also a static page that search engines can index.
+
+| Option | Why not |
+|---|---|
+| **egui on the web** (eframe to a canvas) | One canvas: no text selection, find in page, screen readers, translation tools or reader mode, and nothing for a search engine to index. A few megabytes of wasm before the first word. |
+| A JavaScript port of the core | Two implementations of search, references, the study store and the chapter layout, which would drift apart. |
+| **bible-core in wasm, a Svelte reader drawing DOM text** ✔ | One core for Mac, iPhone and web. The browser lays out the text, so selection, accessibility and find in page work, and each chapter can be served as plain HTML. |
+
+- **The boundary is `crates/web` (`bible-web`), through wasm-bindgen.** It is the same shape as
+  `bible-ffi`: a chapter as blocks of styled runs (`bible_core::content`, shared by both), search
+  hits with match ranges, references, copy formats, study data, history and plans. The study
+  store keeps everything in memory and writes to SQLite only with the `native` feature, so in
+  the browser it runs in memory and the page saves its JSON export in `localStorage` (debounced,
+  and when the tab is hidden). `scripts/build-web.sh` builds it (with SIMD, which makes search's
+  scans several times faster) into `site/src/lib/read/wasm/`. The output is committed, so the site
+  builds without Rust: 612 KB, 196 KB with brotli.
+- **Every chapter of every bundled translation is a prerendered page** (7 × 1,189 = 8,323), at
+  `/read/<translation>/<book>/<chapter>`, with its title, a description taken from its first
+  verses, a canonical URL and a sitemap entry. The server runs the same wasm module in Node to typeset
+  the chapter with the default settings, so the page is readable before any script runs.
+  `/read` itself restores the saved place, and names John 1 as its canonical URL.
+- **The reader's places are real links that it follows itself.** Its controls were buttons, so a
+  chapter page had no `<a href>` at all. The sidebar's books and chapters (rendered on the server
+  for the book being read), the book picker and the translation menu are now links
+  (`ui/follow.ts`). A plain click still moves the reader in place; a modified click opens a new
+  tab. Previous and next chapter, the trail up to the book and translation, and the chapter in the
+  other translations had no control to turn into a link. They are a navigation that stays out of
+  sight until it has keyboard focus (`chrome/PageLinks.svelte`). The window looks and behaves as
+  before.
+- **Translations, books and verses have plain pages** (`/read/kjv`, `/read/kjv/john`,
+  `/read/kjv/john/3/16`). They are text and links in the reader's type and theme, prerendered
+  without the app or any client-side JavaScript. Every reader page carries JSON-LD (a WebPage of
+  the site, with its breadcrumb trail), and `/sitemap.xml` is an index of a file per kind of page.
+  Verse pages exist for the KJV, BSB and WEB only, and the other four translations' verses link to
+  their place in the chapter (`#v16`). All seven would nearly double the output and triple the
+  build time:
+
+  | Verse pages for | Pages | Files | Static output | Local build (M-series) |
+  |---|---|---|---|---|
+  | none (chapters only, before) | 8,327 | 16,712 | 0.6 GB | 18 s |
+  | **KJV, BSB, WEB** ✔ | 102,082 | 110,499 | 2.2 GB | about 2 min |
+  | all seven | 226,471 | 234,892 | 4.2 GB | about 6 min |
+- **Topic pages keep references, not text.** Marketing's 50 topics (`site/src/lib/topics/`) list
+  each verse by book, chapter and verse; the page takes the KJV and BSB text from the core as it's
+  prerendered, so a topic can never quote a verse differently from its verse page. A reference
+  the core doesn't have, or a title that doesn't end in the site's name, stops the build. Each verse
+  links to its verse pages, and each verse page links back to the topics that list it.
+- **The site and the apps have different names.** The apps are "Bible" (`NAME`). The website is
+  "Simply My Bible" (`SITE_NAME`, at simplymybible.com). It ends every title and is `og:site_name`
+  and the WebSite's name in the JSON-LD.
+- **Hydration never shows a wrong layout.** The first client render matches the server's.
+  Saved settings are applied after mount. An inline script in `app.html` sets the theme and
+  accent before the first paint. When saved settings change the typesetting (verse per line,
+  parallel columns, no headings, a different place), the same script hides the text until the core
+  has typeset it again, with a 5 s fallback.
+- **Typesetting is CSS with the Mac's metrics.** The same Literata and Inter files, cut to the
+  axis ranges and characters the reader uses (`site/scripts/fonts.sh`), with the same pinned
+  optical sizes. CSS centres each line's glyphs in the line box, as the Mac app does. Highlights,
+  the selection and the flash are stacked background layers sized to the 28 pt line box. With
+  `box-decoration-break: clone` they wrap exactly as egui paints them. Colours come from
+  `design-tokens.json` through `site/scripts/tokens.js`. Line breaks agree with the Mac's except
+  for the odd word at the column edge, because the browser's shaping and harfrust's differ by a
+  fraction of a pixel per line.
+- **Continuous scrolling keeps a window of chapters and an anchor.** The anchor is the verse at
+  the top of the reading area and how far into it (or how far above it, in a chapter head). Any
+  relayout puts it back: fonts arriving, a resize, a settings change, chapters added above.
+  Scrolling up or down never shifts the text on screen.
+- **Translations are static files.** The bundled `.bbl` files are served from `/translations/`
+  and fetched when first used. A service worker scoped to `/read` precaches the app, its wasm and
+  fonts, keeps translations cache-first and pages network-first, so the reader works offline after
+  one visit.
+- **Importing runs in a worker, with its own wasm module.** The Mac's importers (USFM, OSIS,
+  Zefania, SWORD, locked modules included) take their files from memory as well as from disk
+  (`import::peek_files`, `import::import_files`). They sit behind bible-core's `import` feature,
+  which brings the zip and gzip readers but not SQLite or the HTTP client. `scripts/build-web.sh`
+  builds `bible-web` twice: the reader's module without the importers (710 KB) and
+  `bible_import` with them (964 KB). Only `import.worker.ts` loads the second module, the first
+  time someone imports, so the reader doesn't pay for it and a long conversion never blocks the
+  page. On wasm the `.bbl` is compressed with ruzstd's fastest level, since zstd's C library
+  isn't available there. The converted bytes go to IndexedDB, and the list of imports to
+  `localStorage` next to the settings. An imported translation has no static page, so while it
+  is the reading translation the address stays `/read`.
+- **The NLT is the web's one online translation, through the site's own proxy.** ESV, API.Bible
+  and NET still aren't offered: they need the reader's own key, which a page would expose, and
+  their APIs aren't all open to browsers (CORS). The NLT has a site key (`NLT_API_KEY`, set in
+  Vercel), so `/api/nlt` (`site/src/routes/api/nlt`) asks Tyndale for a chapter or less at a
+  time and returns the verses' HTML with Tyndale's credit line. It refuses whole books and
+  passages across chapters, and allows 20 chapters a minute and 300 a day for each address. Each
+  function instance counts these on its own, so they slow one client down rather than cap the site.
+  Browsers get `Cache-Control: no-store`, and Vercel's edge keeps a chapter for a day
+  (`Vercel-CDN-Cache-Control`), but nothing from a one-chapter book, which could be the whole book. The page
+  parses the HTML with the core's NLT parser (`bible_core::nlt_html`, shared with the Mac's
+  `online::nlt`), and the core holds that one chapter until the reader moves on. So the reader
+  shows one NLT chapter at a time, ending in Tyndale's credit line and links to the chapters
+  either side, instead of scrolling on. Nothing of it is prerendered, stored or cached offline.
+  Search, the study lists and exports use the translation read before the NLT, and a highlight
+  of some words in the NLT colours their verses whole, since a partial highlight keeps the words
+  it covers. `/read/nlt/<book>/<chapter>` shows the KJV page for that chapter (a `reroute`
+  hook), with its canonical address and description. Vercel adds `X-Robots-Tag: noindex`, and the
+  reader adds the robots meta tag while it shows the NLT. Offline, rate-limited or failing, the
+  reader goes back to the translation read before, with a toast to retry.
+
+## Windows
+
+The Windows app is the same egui app with the macOS-only pieces given Windows counterparts
+(`cfg(windows)`); on macOS nothing changes. [WINDOWS.md](WINDOWS.md) is the user-facing side.
+
+- **The native Win32 menu bar**, through muda as on the Mac, rather than menus drawn in the
+  window. Alt and access keys, screen readers and the look of other Windows programs come with it.
+  The app installs no accelerator table, so the keys still reach egui, a shortcut changed in
+  Settings works, and nothing fires twice. It costs two things. The drop-down menus stay light in
+  the dark theme, because Windows has no public dark menu API and muda draws only the bar dark.
+  And the menus show the default shortcuts.
+- **The standard title bar.** A title bar drawn by the app, as on the Mac, would lose Snap
+  layouts on the maximize button unless the app answered Windows' hit tests itself. egui already
+  gives it the app's theme (dark for Dark). winit puts it back to the system's theme whenever a
+  system setting changes, so the app sets it again when the window gets the focus back. The menu
+  bar follows the theme too.
+- **Direct3D 12 through wgpu**, not glow. Windows ships no OpenGL 3 driver, so glow depends on the
+  GPU vendor's driver and fails in virtual machines and remote sessions; Direct3D 12 falls back to
+  Windows' software renderer (WARP). Only the DX12 backend is enabled, as only Metal is on macOS,
+  so wgpu doesn't spend start-up time probing Vulkan.
+- **Shortcuts are the Mac's with Ctrl for ⌘**, and the UI writes them that way ("Ctrl+Shift+P").
+  egui reports Ctrl as the command key on Windows, so ⌃⌘F (focus mode) would also be Ctrl+F
+  (search); focus mode is F11 there, the usual full-screen key.
+- **NSIS, a per-user installer.** No administrator prompt, an entry in Installed apps, a Start
+  menu shortcut. NSIS also runs on macOS and Linux, so the installer is built and inspected off
+  Windows too; MSI (WiX) and Inno Setup need Windows to build, and MSIX can't be installed
+  unsigned. The C runtime is linked statically (`.cargo/config.toml`), so no Visual C++
+  Redistributable is needed.
+- **Updates check GitHub's latest release**, daily and on demand, and open the new installer in
+  the browser. Sparkle is Mac-only; WinSparkle or Velopack would install by
+  themselves, but both want signed builds and an update feed, which can wait for signing.
+- **Share Verse copies the image** to the clipboard (eframe's clipboard does images) instead of
+  calling Windows' share sheet, which needs WinRT and an asynchronous handshake for one button.
+- **API keys in the Credential Manager** through the same `keyring` crate as the Keychain on
+  macOS.
+
+## Objects in 3D: open specs, three.js, and the same page in the Mac app
+
+The first object is the Ark of the Covenant (`/ark-of-the-covenant`), from Marketing's spec and
+prototype.
+
+- **The spec is data, checked against the text.** `objects/ark.json` gives every part and every
+  number with the verse it comes from and the KJV and BSB words that state it, or marks it
+  interpretive with a note ([objects/README.md](objects/README.md)). The check
+  (`site/src/lib/objects/check.mjs`) finds each quote in its verse in the repository's own text,
+  so the spec can't cite a verse for a number the verse doesn't hold. CI runs it, and so does the
+  page's build.
+- **Plain three.js, not Threlte.** Marketing's spec suggested Threlte. The model is procedural
+  geometry with a timeline (the assembly), camera moves and picking, all imperative, which is
+  what their prototype already did in three.js. Threlte would add a declarative layer and tie the
+  scene to Svelte's version for none of that. `scene.ts` has no Svelte in it, and the page and
+  the app's embed load the same module.
+- **three.js loads only on the object's page, after it paints.** It is a 156 KB (gzipped) dynamic
+  import. The reader's service worker precaches every immutable file, so a build plugin
+  (`viewerFiles` in `site/vite.config.ts`) names the viewer's chunks for the worker to skip, and
+  reading offline never downloads them. A chapter page grew by 1.7 KB of gzipped script for the
+  glyph.
+- **Hotspots read in the reader's translation without the core.** The 25 cited verses in each
+  bundled translation are prerendered into `verses.json` (26 KB, 4 KB gzipped); only a
+  translation imported into the browser loads the core. The page's HTML carries the KJV, the
+  text search engines index.
+- **No figure for scale.** The floor's grid shows the scale, one square to a cubit, as the
+  viewer's hint says. The first version also stood a 5 ft 9 in figure beside the ark, with a
+  toggle, and Micky chose to drop it. The scene draws the model in cubits, so the Common/Royal
+  switch changes only the inches and centimetres in the panel.
+
 ## What was traded away
 
-- No per-word highlighting (verse-level only) and no free text selection inside verses — verse
-  selection with "copy with reference" covers the common case.
+- Highlights of part of a verse fall back to the whole verse in a translation that words it
+  differently, and the iPhone app shows them whole-verse for now.
 - No footnotes or cross-references from the source texts (dropped at import).
 - SWORD modules in versifications other than KJV(A)/NRSV(A) (e.g. Vulgate, Synodal) aren't supported yet;
   deuterocanonical books are skipped everywhere to keep the 66-book grid.

@@ -16,14 +16,23 @@ pub mod keymap;
 pub mod macos_menu;
 #[cfg(target_os = "macos")]
 pub mod macos_window;
+/// This platform's native menu bar.
+#[cfg(target_os = "macos")]
+pub use macos_menu as menu_bar;
+#[cfg(windows)]
+pub use windows_menu as menu_bar;
 pub mod menu;
 pub mod motion;
+#[cfg(any(target_os = "macos", windows))]
+pub mod native_menu;
 pub mod note_popover;
+pub mod objects;
 pub mod offline;
 pub mod onboarding;
 pub mod pages;
 pub mod palette;
 pub mod panel;
+pub mod platform;
 pub mod probe;
 pub mod reader;
 pub mod reading;
@@ -33,9 +42,13 @@ pub mod shortcuts_overlay;
 pub mod sidebar;
 pub mod theme;
 pub mod time;
+pub mod update_ui;
 pub mod updater;
 pub mod verse_menu;
+pub mod webview;
 pub mod widgets;
+#[cfg(windows)]
+pub mod windows_menu;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -83,13 +96,17 @@ pub fn renderer() -> eframe::Renderer {
         // macOS: Metal. OpenGL is deprecated there, and on the macOS CI runner it held ~15 fps
         // while scrolling where Metal held the display's 60.
         _ if cfg!(target_os = "macos") => eframe::Renderer::Wgpu,
+        // Windows: Direct3D 12. Windows ships no OpenGL 3 driver of its own, so glow fails in
+        // virtual machines, remote sessions and on PCs without a vendor driver, where Direct3D
+        // still runs (in software if need be).
+        _ if cfg!(windows) => eframe::Renderer::Wgpu,
         // Elsewhere glow, which creates its context about twice as fast as wgpu.
         _ => eframe::Renderer::Glow,
     }
 }
 
-/// wgpu settings: the low-power GPU and, on macOS, only the Metal backend
-/// (`WGPU_POWER_PREF` and `WGPU_BACKEND` still override).
+/// wgpu settings: the low-power GPU and only the platform's own backend, Metal on macOS and
+/// Direct3D 12 on Windows (`WGPU_POWER_PREF` and `WGPU_BACKEND` still override).
 pub fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     let mut options = eframe::egui_wgpu::WgpuConfiguration::default();
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_setup {
@@ -99,6 +116,9 @@ pub fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
         }
         if cfg!(target_os = "macos") && std::env::var_os("WGPU_BACKEND").is_none() {
             setup.instance_descriptor.backends = eframe::wgpu::Backends::METAL;
+        }
+        if cfg!(windows) && std::env::var_os("WGPU_BACKEND").is_none() {
+            setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
         }
     }
     options
@@ -120,6 +140,24 @@ pub fn background_launch() -> Option<eframe::EventLoopBuilderHook> {
     None
 }
 
+/// The Windows build is a windowed program (no console window opens with it), so the command
+/// line's output needs the console of the shell that started it, if there is one and the output
+/// isn't already going to a file or pipe.
+#[cfg(windows)]
+fn attach_console() {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: plain Win32 calls with no pointers.
+    unsafe {
+        let out = GetStdHandle(STD_OUTPUT_HANDLE);
+        if out.is_null() || out == INVALID_HANDLE_VALUE {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
 /// Whether this process runs from inside a macOS `.app` bundle.
 fn in_app_bundle() -> bool {
     cfg!(target_os = "macos")
@@ -133,6 +171,19 @@ pub fn run() -> eframe::Result {
     let dir = data_dir();
     // First launch (no study database yet) opens at the onboarding screens' size.
     let first_run = !dir.join("study.sqlite").exists() && !probing();
+    #[cfg(windows)]
+    if !args.is_empty() {
+        attach_console();
+    }
+    // A reader that stops early (`bible-rs search … | head`) closes the pipe. Rust starts with
+    // SIGPIPE ignored, so the next print fails instead, and with `panic = "abort"` that is a core
+    // dump rather than a quiet exit. The default disposition ends the process the way other
+    // command-line tools end.
+    #[cfg(unix)]
+    // SAFETY: changes a signal disposition, before any other thread exists.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     // `bible-rs bible://jhn.3.16` or `bible-rs open <link-or-reference>`: start the GUI there.
     if let Some(link) = cli::link_argument(&args) {
         if !deep_link::open(link) {

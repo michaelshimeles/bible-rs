@@ -1,18 +1,22 @@
 //! Left sidebar: a floating source list (study collections, then the books with a chapter grid)
 //! that turns into search results while a search is active.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bible_core::books::{BookId, ChapterIdx, FIRST_NT_BOOK, VerseRef};
+use bible_core::books::{
+    BIBLE_SECTIONS, BibleSection, BookId, ChapterIdx, FIRST_NT_BOOK, SECTION_COUNT, Testament, VerseRef,
+};
 use bible_core::library::Library;
 use bible_core::search::{Query, Scope};
 use bible_core::study::{HighlightColor, StudyStore};
 use eframe::egui::text::{LayoutJob, TextFormat, TextWrapping};
 use eframe::egui::{
-    self, Align, Align2, Color32, FontId, Key, Painter, Rect, Response, ScrollArea, Sense, Ui, pos2, vec2,
+    self, Align, Align2, Color32, FontId, Id, Key, Painter, Pos2, Rect, Response, ScrollArea, Sense, Shape,
+    Stroke, Ui, pos2, vec2,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::actions::{Action, ExportKind, SidebarTab};
 use crate::theme::{self, Palette, Theme, text};
@@ -30,6 +34,12 @@ const BOOK_INDENT: f32 = 32.0;
 const CHIP: f32 = 24.0;
 const CHIP_GAP: f32 = 8.0;
 const CHIP_INDENT: f32 = 24.0;
+/// A marked chapter's ring: 2 pt wide on the chip's edge, segments 2.5 pt apart, around a 17 pt
+/// tinted disc. Past [`RING_MAX_SEGMENTS`] marks the segments merge by colour.
+const RING_WIDTH: f32 = 2.0;
+const RING_GAP: f32 = 2.5;
+const RING_DISC: f32 = 8.5;
+const RING_MAX_SEGMENTS: usize = 12;
 /// An open collection lists its most recent items, then "Show all".
 const RECENT_ITEMS: usize = 5;
 
@@ -42,6 +52,41 @@ enum StudyKind {
 
 impl StudyKind {
     const ALL: [StudyKind; 3] = [StudyKind::Bookmarks, StudyKind::Highlights, StudyKind::Notes];
+}
+
+/// How the source list groups the books: in the two testaments, or in the canon's sections under
+/// a header for each testament.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BookGrouping {
+    #[default]
+    Testament,
+    Section,
+}
+
+/// The testaments as runs of books, so they open and close like the sections do.
+static TESTAMENTS: [BibleSection; 2] = [
+    BibleSection { name: "Old Testament", first: BookId::GENESIS, last: BookId(FIRST_NT_BOOK.0 - 1) },
+    BibleSection { name: "New Testament", first: FIRST_NT_BOOK, last: BookId::REVELATION },
+];
+
+impl BookGrouping {
+    pub const ALL: [BookGrouping; 2] = [BookGrouping::Testament, BookGrouping::Section];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BookGrouping::Testament => "Testament",
+            BookGrouping::Section => "Section",
+        }
+    }
+
+    /// The disclosure rows the books sit under, in canon order.
+    fn groups(self) -> &'static [BibleSection] {
+        match self {
+            BookGrouping::Testament => &TESTAMENTS,
+            BookGrouping::Section => &BIBLE_SECTIONS,
+        }
+    }
 }
 
 /// What the sidebar needs from the rest of the app each frame.
@@ -58,15 +103,21 @@ pub struct SidebarEnv<'a> {
     /// The page in the main area: its row is selected, and the books follow the reader only
     /// while it is shown.
     pub page: crate::pages::Page,
+    /// Books pinned above the testaments, in pin order.
+    pub pinned: Vec<BookId>,
+    pub grouping: BookGrouping,
 }
 
 pub struct Sidebar {
-    /// Which testaments are expanded (OT, NT), and which of those the reader's position opened
-    /// (rather than a click): moving to the other testament closes those again.
-    testaments: [bool; 2],
-    auto_opened: [bool; 2],
+    /// How the books are grouped, which of those groups are expanded, and which the reader's
+    /// position opened (rather than a click): moving to another group closes those again.
+    grouping: BookGrouping,
+    groups_open: [bool; SECTION_COUNT],
+    auto_opened: [bool; SECTION_COUNT],
     /// The book whose chapter grid is open.
     expanded: Option<BookId>,
+    /// The pinned book whose chapter grid is open under its pinned row (apart from `expanded`).
+    pinned_expanded: Option<BookId>,
     /// Which study collections are expanded, and the one last opened (drawn selected).
     study_open: [bool; 3],
     study_selected: Option<StudyKind>,
@@ -97,10 +148,10 @@ pub struct Sidebar {
     elapsed: Duration,
     selected: usize,
     scroll_to_selected: bool,
-    /// The book last revealed (testament opened, scrolled into view) in the source list.
+    /// The book last revealed (group opened, scrolled into view) in the source list.
     revealed: Option<BookId>,
-    /// Chapters with highlights or notes, keyed by the study store's generation.
-    activity: (u64, HashSet<ChapterIdx>),
+    /// Highlights and notes by chapter and by book, keyed by the study store's generation.
+    activity: (u64, Activity),
     /// For a search that found nothing: a spelling that finds verses (query, count, first verse).
     suggestion: Option<(String, usize, u32)>,
 }
@@ -108,9 +159,11 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn new(_tab: SidebarTab) -> Self {
         Self {
-            testaments: [false, false],
-            auto_opened: [false, false],
+            grouping: BookGrouping::default(),
+            groups_open: [false; SECTION_COUNT],
+            auto_opened: [false; SECTION_COUNT],
             expanded: None,
+            pinned_expanded: None,
             study_open: [false; 3],
             study_selected: None,
             study_all: [false; 3],
@@ -133,7 +186,7 @@ impl Sidebar {
             selected: 0,
             scroll_to_selected: false,
             revealed: None,
-            activity: (0, HashSet::new()),
+            activity: (0, Activity::default()),
             suggestion: None,
         }
     }
@@ -252,12 +305,20 @@ impl Sidebar {
         let abbrev = meta.as_ref().map(|m| m.abbrev.clone()).unwrap_or_default();
         let current_book = env.location.0.book();
         let reading = env.page == crate::pages::Page::Reader;
+        if self.grouping != env.grouping {
+            // Regrouped: start closed, and reveal the book being read in its new group.
+            self.grouping = env.grouping;
+            self.groups_open = [false; SECTION_COUNT];
+            self.auto_opened = [false; SECTION_COUNT];
+            self.revealed = None;
+        }
+        let groups = self.grouping.groups();
         if !reading {
-            // No reader to follow: the testaments it opened close, and reopen on return.
-            for t in 0..2 {
-                if self.auto_opened[t] {
-                    self.testaments[t] = false;
-                    self.auto_opened[t] = false;
+            // No reader to follow: the groups it opened close, and reopen on return.
+            for i in 0..groups.len() {
+                if self.auto_opened[i] {
+                    self.groups_open[i] = false;
+                    self.auto_opened[i] = false;
                 }
             }
             self.revealed = None;
@@ -265,22 +326,21 @@ impl Sidebar {
         let reveal = reading && self.revealed != Some(current_book);
         if reveal {
             self.revealed = Some(current_book);
-            let t = usize::from(current_book >= FIRST_NT_BOOK);
-            if !self.testaments[t] {
-                self.testaments[t] = true;
-                self.auto_opened[t] = true;
-            }
-            if self.auto_opened[1 - t] {
-                self.testaments[1 - t] = false;
-                self.auto_opened[1 - t] = false;
+            for (i, group) in groups.iter().enumerate() {
+                if group.contains(current_book) {
+                    if !self.groups_open[i] {
+                        self.groups_open[i] = true;
+                        self.auto_opened[i] = true;
+                    }
+                } else if self.auto_opened[i] {
+                    self.groups_open[i] = false;
+                    self.auto_opened[i] = false;
+                }
             }
             self.expanded = Some(current_book);
         }
         if self.activity.0 != study.generation() {
-            let mut set = HashSet::new();
-            set.extend(study.highlights().into_iter().map(|(v, _)| v.chapter_idx()));
-            set.extend(study.notes().into_iter().map(|(v, _)| v.chapter_idx()));
-            self.activity = (study.generation(), set);
+            self.activity = (study.generation(), Activity::new(study));
         }
         let book_name =
             |b: BookId| meta.as_ref().map(|m| m.book_short(b).to_string()).unwrap_or_else(|| b.name().into());
@@ -443,31 +503,121 @@ impl Sidebar {
                         }
                     }
 
-                    section(ui, p, "Books", false);
-                    for (t, (label, range)) in
-                        [("Old Testament", 0..FIRST_NT_BOOK.0), ("New Testament", FIRST_NT_BOOK.0..66)]
-                            .into_iter()
-                            .enumerate()
-                    {
-                        let books: Vec<BookId> = range.clone().map(BookId).filter(|b| matches(*b)).collect();
+                    // Testaments sit under Books, with the pins; sections under their testament.
+                    match self.grouping {
+                        BookGrouping::Testament => section(ui, p, "Books", false),
+                        BookGrouping::Section => {
+                            if env.pinned.iter().any(|b| matches(*b)) {
+                                section(ui, p, "Pinned", false);
+                            }
+                        }
+                    }
+                    // Pinned books, above the testaments: a click opens the book's chapters right
+                    // under it (leaving the groups as they are); the pin, or a right-click,
+                    // unpins it. Book rows in the groups pin from their own pin or right-click.
+                    for &b in env.pinned.iter().filter(|b| matches(**b)) {
+                        let name = book_name(b);
+                        let open = self.pinned_expanded == Some(b) && b.chapters() > 1;
+                        let marked = self.activity.1.books.get(&b);
+                        let mut resp = row(
+                            ui,
+                            p,
+                            &Row {
+                                icon: Some(crate::icons::book_fill),
+                                label: &name,
+                                count: open.then(|| b.chapters().to_string()),
+                                pin_lane: true,
+                                marks: marked.map(|m| &m.marks[..]),
+                                ..Row::default()
+                            },
+                        );
+                        if let Some(m) = marked {
+                            resp = resp.on_hover_text(m.summary());
+                        }
+                        let pin = pin_toggle(ui, p, resp.rect, b, true, true);
+                        if pin.clicked() {
+                            actions.push(Action::UnpinBook(b));
+                        } else if resp.clicked() {
+                            if b.chapters() == 1 {
+                                actions.push(Action::Jump {
+                                    chapter: b.first_chapter(),
+                                    verse: None,
+                                    flash: false,
+                                });
+                                // Jumping from here leaves the groups as they are.
+                                self.revealed = Some(b);
+                            } else {
+                                self.pinned_expanded = if open { None } else { Some(b) };
+                            }
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button("Unpin").clicked() {
+                                actions.push(Action::UnpinBook(b));
+                                ui.close();
+                            }
+                        });
+                        if open {
+                            let before = actions.len();
+                            chapter_grid(
+                                ui,
+                                p,
+                                ui.id().with(("pinned-chapters", b)),
+                                b,
+                                env.location.0,
+                                &self.activity.1.chapters,
+                                actions,
+                            );
+                            if actions.len() > before {
+                                self.revealed = Some(b);
+                            }
+                        }
+                    }
+                    let mut header = None;
+                    for (i, group) in groups.iter().enumerate() {
+                        let books: Vec<BookId> = group.books().filter(|b| matches(*b)).collect();
                         if books.is_empty() {
                             continue;
                         }
-                        let open = self.testaments[t] || !filter.is_empty();
+                        let testament = group.testament();
+                        if self.grouping == BookGrouping::Section && header != Some(testament) {
+                            header = Some(testament);
+                            let title = match testament {
+                                Testament::Old => "Old Testament",
+                                Testament::New => "New Testament",
+                            };
+                            section(ui, p, title, false);
+                        }
+                        let open = self.groups_open[i] || !filter.is_empty();
                         let r = row(
                             ui,
                             p,
                             &Row {
                                 icon: Some(crate::icons::book),
-                                label,
+                                label: group.name,
                                 count: Some(books.len().to_string()),
                                 disclosure: Some(open),
                                 ..Row::default()
                             },
                         );
+                        r.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::CollapsingHeader,
+                                ui.is_enabled(),
+                                group.name,
+                            )
+                        });
+                        ui.ctx().accesskit_node_builder(r.id, |node| node.set_expanded(open));
+                        if r.has_focus() {
+                            ui.painter().rect_stroke(
+                                r.rect,
+                                theme::radius::SM,
+                                Stroke::new(2.0, p.accent),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
                         if r.clicked() {
-                            self.testaments[t] = !open;
-                            self.auto_opened[t] = false;
+                            self.groups_open[i] = !open;
+                            self.auto_opened[i] = false;
                         }
                         if !open {
                             continue;
@@ -475,7 +625,8 @@ impl Sidebar {
                         for b in books {
                             let name = book_name(b);
                             let here = b == current_book && reading;
-                            let resp = row(
+                            let marked = self.activity.1.books.get(&b);
+                            let mut resp = row(
                                 ui,
                                 p,
                                 &Row {
@@ -483,13 +634,35 @@ impl Sidebar {
                                     indent: BOOK_INDENT - ROW_PAD,
                                     count: here.then(|| b.chapters().to_string()),
                                     selected: here,
+                                    marks: marked.map(|m| &m.marks[..]),
+                                    pin_lane: true,
                                     ..Row::default()
                                 },
                             );
+                            if let Some(m) = marked {
+                                resp = resp.on_hover_text(m.summary());
+                            }
                             if here && reveal && !self.filtering {
                                 resp.scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
                             }
-                            if resp.clicked() {
+                            let pinned = env.pinned.contains(&b);
+                            // The pin (on hover, or kept while pinned) pins without opening the book.
+                            let pin = pin_toggle(ui, p, resp.rect, b, pinned, false);
+                            if pin.clicked() {
+                                actions.push(if pinned { Action::UnpinBook(b) } else { Action::PinBook(b) });
+                            }
+                            resp.context_menu(|ui| {
+                                let (label, a) = if pinned {
+                                    ("Unpin", Action::UnpinBook(b))
+                                } else {
+                                    ("Pin to Top", Action::PinBook(b))
+                                };
+                                if ui.button(label).clicked() {
+                                    actions.push(a);
+                                    ui.close();
+                                }
+                            });
+                            if resp.clicked() && !pin.clicked() {
                                 if b.chapters() == 1 {
                                     actions.push(Action::Jump {
                                         chapter: b.first_chapter(),
@@ -501,7 +674,15 @@ impl Sidebar {
                                 }
                             }
                             if self.expanded == Some(b) && b.chapters() > 1 {
-                                chapter_grid(ui, p, b, env.location.0, &self.activity.1, actions);
+                                chapter_grid(
+                                    ui,
+                                    p,
+                                    ui.id().with(("chapters", b)),
+                                    b,
+                                    env.location.0,
+                                    &self.activity.1.chapters,
+                                    actions,
+                                );
                             }
                         }
                     }
@@ -517,26 +698,45 @@ impl Sidebar {
         let t = env.library.load(env.translation).ok();
         let verse_text =
             |v: VerseRef| t.as_ref().and_then(|t| t.find(v)).map(|v| v.plain_text()).unwrap_or_default();
-        // (verse, colour bar, note)
-        let items: Vec<(VerseRef, Option<Color32>, Option<String>)> = match kind {
+        /// A row: its verse, colour bar, note and snippet, and which of the verse's highlights.
+        struct Row {
+            verse: VerseRef,
+            bar: Option<Color32>,
+            note: Option<String>,
+            snippet: String,
+            start: u32,
+        }
+        let row = |verse: VerseRef, note: Option<String>| Row {
+            verse,
+            bar: None,
+            note,
+            snippet: verse_text(verse),
+            start: 0,
+        };
+        let items: Vec<Row> = match kind {
             StudyKind::Bookmarks => {
                 let mut b = study.bookmarks();
                 b.sort_by_key(|(v, b)| (std::cmp::Reverse(b.created), *v));
-                b.into_iter().map(|(v, _)| (v, None, None)).collect()
+                b.into_iter().map(|(v, _)| row(v, None)).collect()
             }
             StudyKind::Highlights => {
                 colour_filter(ui, p, &mut self.highlight_filter);
+                // Part of a verse shows the words it covers.
                 study
-                    .highlights_newest_first()
+                    .highlights_dated()
                     .into_iter()
-                    .filter(|(_, c)| self.highlight_filter.is_none_or(|f| f == *c))
-                    .map(|(v, c)| (v, Some(p.swatch(c)), None))
+                    .filter(|(_, h)| self.highlight_filter.is_none_or(|f| f == h.color))
+                    .map(|(v, h)| {
+                        let r = row(v, None);
+                        let snippet = if h.is_whole() { r.snippet } else { h.excerpt(&r.snippet) };
+                        Row { bar: Some(p.swatch(h.color)), snippet, start: h.start, ..r }
+                    })
                     .collect()
             }
             StudyKind::Notes => {
                 let mut n = study.notes();
                 n.sort_by_key(|(v, n)| (std::cmp::Reverse(n.updated), *v));
-                n.into_iter().map(|(v, n)| (v, None, Some(n.body.replace('\n', " ")))).collect()
+                n.into_iter().map(|(v, n)| row(v, Some(n.body.replace('\n', " ")))).collect()
             }
         };
         if items.is_empty() {
@@ -546,7 +746,8 @@ impl Sidebar {
                 StudyKind::Notes => "No notes yet. Select a verse and press N.",
             };
             egui::Frame::NONE.inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
-                ui.label(egui::RichText::new(hint).font(text::SMALL.font()).color(p.ink_2));
+                let hint = crate::keymap::shown(hint);
+                ui.label(egui::RichText::new(hint.as_ref()).font(text::SMALL.font()).color(p.ink_2));
             });
             return;
         }
@@ -554,7 +755,7 @@ impl Sidebar {
         let k = StudyKind::ALL.iter().position(|x| *x == kind).unwrap_or(0);
         let total = items.len();
         let shown = if self.study_all[k] { total } else { total.min(RECENT_ITEMS) };
-        for (v, bar, note) in items.into_iter().take(shown) {
+        for Row { verse: v, bar, note, snippet, start } in items.into_iter().take(shown) {
             let name = t
                 .as_ref()
                 .map(|t| t.meta.ref_name(v.book).to_string())
@@ -564,7 +765,7 @@ impl Sidebar {
                 trailing: abbrev.clone(),
                 bar,
                 note,
-                snippet: verse_text(v),
+                snippet,
                 selected: env.selection == Some(v),
             };
             let resp = list_item(ui, p, &item);
@@ -574,7 +775,7 @@ impl Sidebar {
             resp.context_menu(|ui| {
                 let (label, a) = match kind {
                     StudyKind::Bookmarks => ("Remove bookmark", Action::RemoveBookmark(v)),
-                    StudyKind::Highlights => ("Remove highlight", Action::RemoveHighlight(v)),
+                    StudyKind::Highlights => ("Remove highlight", Action::RemoveHighlight(v, start)),
                     StudyKind::Notes => ("Delete note", Action::RemoveNote(v)),
                 };
                 if ui.button(label).clicked() {
@@ -1027,25 +1228,37 @@ struct Row<'a> {
     count: Option<String>,
     /// A disclosure chevron: `Some(open)`.
     disclosure: Option<bool>,
+    /// Keep the chevron's lane free for a pin (see [`pin_toggle`]), and keep the row's hover
+    /// while the pointer is on the pin.
+    pin_lane: bool,
     selected: bool,
+    /// A book's highlights and notes, as a small ring in the icon lane (in place of any icon).
+    marks: Option<&'a [Option<HighlightColor>]>,
 }
 
 fn row(ui: &mut Ui, p: &Palette, r: &Row<'_>) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
+    let over = r.pin_lane && ui.rect_contains_pointer(rect);
     if r.selected {
         ui.painter().rect_filled(rect, theme::radius::SM, p.accent_soft);
-    } else if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
+    } else if let Some(fill) = widgets::hover_fill(ui, &resp, p, over) {
         ui.painter().rect_filled(rect, theme::radius::SM, fill);
     }
     let painter = ui.painter();
     let cy = rect.center().y;
     let mut x = rect.left() + ROW_PAD + r.indent;
-    if let Some(icon) = r.icon {
+    // A ring takes the icon's place (a pinned book with highlights or notes).
+    if let Some(marks) = r.marks.filter(|m| !m.is_empty()) {
+        let lane = pos2(rect.left() + ROW_PAD + ICON_LANE / 2.0, cy);
+        paint_ring(painter, lane, p, &BOOK_RING, marks);
+    } else if let Some(icon) = r.icon {
         icon(
             painter,
             Rect::from_min_size(pos2(x, cy - ICON_LANE / 2.0), vec2(ICON_LANE, ICON_LANE)),
             r.icon_color.unwrap_or(p.accent),
         );
+    }
+    if r.icon.is_some() {
         x += ICON_LANE + GAP;
     }
     let (font, color) =
@@ -1063,6 +1276,8 @@ fn row(ui: &mut Ui, p: &Palette, r: &Row<'_>) -> Response {
             crate::icons::disclosure(painter, chevron, color);
         }
         right = lane.left() - GAP;
+    } else if r.pin_lane {
+        right -= ICON_LANE + GAP;
     }
     if let Some(count) = &r.count {
         let (font, color) = if r.selected {
@@ -1076,6 +1291,22 @@ fn row(ui: &mut Ui, p: &Palette, r: &Row<'_>) -> Response {
         painter.text(pos2(right, cy), Align2::RIGHT_CENTER, t, theme::ui_medium(11.0), p.ink_3);
     }
     resp
+}
+
+/// The pin in a book row's chevron lane (like the Open in star): drawn filled while `pinned`,
+/// otherwise outlined while the row is hovered; returns its click response.
+/// `pinned_row` tells a pinned row's pin from the same book's pin in its group.
+fn pin_toggle(ui: &Ui, p: &Palette, row: Rect, book: BookId, pinned: bool, pinned_row: bool) -> Response {
+    let lane = Rect::from_min_size(
+        pos2(row.right() - ROW_PAD - ICON_LANE, row.center().y - ICON_LANE / 2.0),
+        vec2(ICON_LANE, ICON_LANE),
+    );
+    let hit = ui.interact(lane.expand(4.0), ui.id().with(("book-pin", book, pinned_row)), Sense::click());
+    if pinned || ui.rect_contains_pointer(row) {
+        let ink = if hit.hovered() { p.ink } else { p.ink_3 };
+        crate::icons::pin(ui.painter(), Rect::from_center_size(lane.center(), vec2(12.0, 12.0)), ink, pinned);
+    }
+    hit.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// A bookmark, highlight, note or search hit in a list (`ds-09`): reference and translation,
@@ -1192,6 +1423,13 @@ fn filter_field(ui: &mut Ui, p: &Palette, value: &mut String, focus: bool) -> bo
         edit_rect.size(),
         egui::TextEdit::singleline(value)
             .id(id)
+            // Handle Escape here, before egui releases focus and the reader consumes it.
+            .event_filter(egui::EventFilter {
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                escape: true,
+                ..Default::default()
+            })
             .hint_text("Filter books")
             .font(text::UI.font())
             .frame(egui::Frame::NONE)
@@ -1208,6 +1446,9 @@ fn filter_field(ui: &mut Ui, p: &Palette, value: &mut String, focus: bool) -> bo
         state.store(ui.ctx(), id);
     }
     let escape = resp.has_focus() && ui.input(|i| i.key_pressed(Key::Escape));
+    if escape {
+        resp.surrender_focus();
+    }
     // Leaving the field empty ends filtering, but not when the window itself loses focus.
     let left = resp.lost_focus() && ui.input(|i| i.focused);
     escape || (left && value.trim().is_empty())
@@ -1258,7 +1499,9 @@ fn colour_filter(ui: &mut Ui, p: &Palette, filter: &mut Option<HighlightColor>) 
 /// sections).
 fn section(ui: &mut Ui, p: &Palette, label: &str, first: bool) {
     let (top, h) = if first { (8.0, 28.0) } else { (16.0, 36.0) };
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, ui.is_enabled(), label));
+    ui.ctx().accesskit_node_builder(resp.id, |node| node.set_role(egui::accesskit::Role::Heading));
     let y = rect.top() + top + (h - top) / 2.0;
     ui.painter().text(
         pos2(rect.left() + ROW_PAD, y),
@@ -1269,14 +1512,169 @@ fn section(ui: &mut Ui, p: &Palette, label: &str, first: bool) {
     );
 }
 
-/// The open book's chapters: 24 pt chips, the current one solid accent; a dot marks chapters
-/// with highlights or notes.
+/// A chapter's marks: each highlight's colour, or `None` for a note on a verse with no
+/// highlight. Sorted by colour, so like colours sit together on the ring.
+type Marks = Vec<Option<HighlightColor>>;
+
+fn color_rank(c: Option<HighlightColor>) -> usize {
+    c.and_then(|c| HighlightColor::ALL.iter().position(|x| *x == c)).unwrap_or(HighlightColor::ALL.len())
+}
+
+/// A book's marks, and how many highlights and notes it holds.
+#[derive(Default)]
+struct BookMarks {
+    marks: Marks,
+    highlights: usize,
+    notes: usize,
+}
+
+impl BookMarks {
+    fn summary(&self) -> String {
+        let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+        match (self.highlights, self.notes) {
+            (h, 0) => plural(h, "highlight"),
+            (0, n) => plural(n, "note"),
+            (h, n) => format!("{} · {}", plural(h, "highlight"), plural(n, "note")),
+        }
+    }
+}
+
+/// Every chapter and book with highlights or notes, and its marks: one per highlight (a verse
+/// can hold several, over different words), and one per note on a verse with no highlight, so a
+/// note on a highlighted verse doesn't count twice.
+#[derive(Default)]
+struct Activity {
+    chapters: HashMap<ChapterIdx, Marks>,
+    books: HashMap<BookId, BookMarks>,
+}
+
+impl Activity {
+    fn new(study: &StudyStore) -> Self {
+        let highlights = study.highlights();
+        let highlighted: HashSet<VerseRef> = highlights.iter().map(|(v, _)| *v).collect();
+        let mut out = Activity::default();
+        let mut mark = |v: VerseRef, c: Option<HighlightColor>| {
+            out.chapters.entry(v.chapter_idx()).or_default().push(c);
+            out.books.entry(v.chapter_idx().book()).or_default().marks.push(c);
+        };
+        for (v, h) in &highlights {
+            mark(*v, Some(h.color));
+        }
+        let notes = study.notes();
+        for (v, _) in &notes {
+            if !highlighted.contains(v) {
+                mark(*v, None);
+            }
+        }
+        for (v, _) in &highlights {
+            out.books.entry(v.chapter_idx().book()).or_default().highlights += 1;
+        }
+        for (v, _) in &notes {
+            out.books.entry(v.chapter_idx().book()).or_default().notes += 1;
+        }
+        let marks = out.chapters.values_mut().chain(out.books.values_mut().map(|b| &mut b.marks));
+        for m in marks {
+            m.sort_by_key(|c| color_rank(*c));
+        }
+        out
+    }
+}
+
+/// The ring's segments as (colour, weight): one per mark, or past `cap` one per colour,
+/// weighted by its count.
+fn ring_segments(marks: &[Option<HighlightColor>], cap: usize) -> Vec<(Option<HighlightColor>, f32)> {
+    if marks.len() <= cap {
+        return marks.iter().map(|c| (*c, 1.0)).collect();
+    }
+    let mut out: Vec<(Option<HighlightColor>, f32)> = Vec::new();
+    for c in marks {
+        match out.last_mut() {
+            Some((last, n)) if last == c => *n += 1.0,
+            _ => out.push((*c, 1.0)),
+        }
+    }
+    out
+}
+
+/// The colour a chapter's number is tinted with: its most used highlight colour (ties go to the
+/// earlier colour), or `None` when it only has notes.
+fn dominant_color(marks: &[Option<HighlightColor>]) -> Option<HighlightColor> {
+    let mut best: Option<(HighlightColor, usize)> = None;
+    for c in HighlightColor::ALL {
+        let n = marks.iter().filter(|m| **m == Some(c)).count();
+        if n > 0 && best.is_none_or(|(_, b)| n > b) {
+            best = Some((c, n));
+        }
+    }
+    best.map(|(c, _)| c)
+}
+
+/// A ring's size: its outer radius, stroke width, the gap between segments (points) and how many
+/// segments it shows before merging them by colour.
+struct RingSize {
+    radius: f32,
+    width: f32,
+    gap: f32,
+    cap: usize,
+}
+
+/// On a chapter chip's edge.
+const CHIP_RING: RingSize =
+    RingSize { radius: CHIP / 2.0, width: RING_WIDTH, gap: RING_GAP, cap: RING_MAX_SEGMENTS };
+/// In a book row's icon lane.
+const BOOK_RING: RingSize = RingSize { radius: 6.5, width: 2.0, gap: 1.75, cap: 8 };
+
+/// A segmented ring, clockwise from the top: one segment per mark in its highlight's swatch
+/// (notes without a highlight in the accent), with clear gaps between.
+fn paint_ring(
+    painter: &Painter,
+    center: Pos2,
+    p: &Palette,
+    size: &RingSize,
+    marks: &[Option<HighlightColor>],
+) {
+    use std::f32::consts::{FRAC_PI_2, TAU};
+    let color = |c: Option<HighlightColor>| c.map_or(p.accent, |c| p.swatch(c));
+    let r = size.radius - size.width / 2.0;
+    let mut segs = ring_segments(marks, size.cap);
+    if let [(c, _)] = segs[..] {
+        painter.circle_stroke(center, r, Stroke::new(size.width, color(c)));
+        return;
+    }
+    // Merged colours keep a visible sliver however few verses they hold.
+    let floor = segs.iter().map(|s| s.1).sum::<f32>() / size.cap as f32;
+    for s in &mut segs {
+        s.1 = s.1.max(floor);
+    }
+    let total: f32 = segs.iter().map(|s| s.1).sum();
+    let gap = size.gap / r;
+    let usable = TAU - gap * segs.len() as f32;
+    let mut a = -FRAC_PI_2 + gap / 2.0;
+    for (c, w) in segs {
+        let sweep = usable * w / total;
+        let steps = ((sweep * r / 1.5).ceil() as usize).max(2);
+        let points = (0..=steps)
+            .map(|i| {
+                let t = a + sweep * i as f32 / steps as f32;
+                center + r * vec2(t.cos(), t.sin())
+            })
+            .collect();
+        painter.add(Shape::line(points, Stroke::new(size.width, color(c))));
+        a += sweep + gap;
+    }
+}
+
+/// The open book's chapters: 24 pt chips, the current one solid accent. A chapter with
+/// highlights or notes gets a segmented ring (one segment per highlight or note, in its colour) and
+/// its number on a disc tinted with its main highlight colour. The chips' ids come from `id`: a
+/// pinned book can show its chapters twice (under its pinned row and in its group).
 fn chapter_grid(
     ui: &mut Ui,
     p: &Palette,
+    id: Id,
     book: BookId,
     current: ChapterIdx,
-    activity: &HashSet<ChapterIdx>,
+    activity: &HashMap<ChapterIdx, Marks>,
     actions: &mut Vec<Action>,
 ) {
     let n = book.chapters() as usize;
@@ -1294,22 +1692,31 @@ fn chapter_grid(
             vec2(CHIP, CHIP),
         );
         let idx = ChapterIdx::new(book, (i + 1) as u8).unwrap();
-        let resp = ui.interact(chip, ui.id().with(("chapter", book.0, i)), Sense::click());
+        let resp = ui.interact(chip, id.with(i), Sense::click());
         let here = idx == current;
+        let marks = activity.get(&idx).filter(|m| !m.is_empty());
+        let painter = ui.painter();
+        if let Some(fill) = widgets::hover_fill(ui, &resp, p, false).filter(|_| !here) {
+            painter.circle_filled(chip.center(), CHIP / 2.0, fill);
+        }
+        let disc = if marks.is_some() { RING_DISC } else { CHIP / 2.0 };
         if here {
-            ui.painter().circle_filled(chip.center(), CHIP / 2.0, p.accent);
-        } else if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
-            ui.painter().circle_filled(chip.center(), CHIP / 2.0, fill);
+            painter.circle_filled(chip.center(), disc, p.accent);
+        } else if let Some(m) = marks {
+            let tint = dominant_color(m).map_or(p.accent_soft, |c| p.highlight(c));
+            painter.circle_filled(chip.center(), disc, tint);
+        }
+        if let Some(m) = marks {
+            paint_ring(painter, chip.center(), p, &CHIP_RING, m);
         }
         let (font, color) = if here {
             (theme::ui_semibold(text::SMALL.size), p.on_accent)
+        } else if marks.is_some() {
+            (theme::ui_semibold(text::SMALL.size), p.ink)
         } else {
             (text::SMALL.font(), p.ink_2)
         };
-        ui.painter().text(chip.center(), Align2::CENTER_CENTER, (i + 1).to_string(), font, color);
-        if !here && activity.contains(&idx) {
-            ui.painter().circle_filled(pos2(chip.center().x, chip.bottom() + 1.0), 2.0, p.accent);
-        }
+        painter.text(chip.center(), Align2::CENTER_CENTER, (i + 1).to_string(), font, color);
         if resp.clicked() {
             actions.push(Action::Jump { chapter: idx, verse: None, flash: false });
         }
@@ -1522,4 +1929,36 @@ fn select_field(ui: &mut Ui, p: &Palette, r: Rect, value: &str, id: &str) -> Res
         )
     });
     resp
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::*;
+    use HighlightColor::*;
+
+    #[test]
+    fn one_segment_per_mark_until_the_cap() {
+        let marks = vec![Some(Yellow); 5];
+        assert_eq!(ring_segments(&marks, RING_MAX_SEGMENTS).len(), 5);
+        let marks = vec![Some(Yellow); RING_MAX_SEGMENTS];
+        assert_eq!(ring_segments(&marks, RING_MAX_SEGMENTS).len(), RING_MAX_SEGMENTS);
+    }
+
+    #[test]
+    fn past_the_cap_segments_merge_by_colour() {
+        let mut marks = vec![Some(Yellow); 10];
+        marks.extend([Some(Blue); 4]);
+        marks.push(None);
+        assert_eq!(
+            ring_segments(&marks, RING_MAX_SEGMENTS),
+            vec![(Some(Yellow), 10.0), (Some(Blue), 4.0), (None, 1.0)]
+        );
+    }
+
+    #[test]
+    fn dominant_colour_is_the_most_used_highlight() {
+        assert_eq!(dominant_color(&[Some(Blue), Some(Green), Some(Blue), None]), Some(Blue));
+        assert_eq!(dominant_color(&[Some(Pink), Some(Green)]), Some(Green));
+        assert_eq!(dominant_color(&[None, None]), None);
+    }
 }

@@ -19,6 +19,7 @@ use crate::actions::{Action, ExportKind, SettingsTab};
 use crate::app::{Settings, TaskResult};
 use crate::icons;
 use crate::reader::layout::{Mode, Typography};
+use crate::sidebar::BookGrouping;
 use crate::theme::{self, Palette, Theme, text};
 use crate::widgets::{self, Button, Kind};
 
@@ -294,13 +295,9 @@ impl SettingsUi {
                 }
             } else {
                 row_label(ui, p, r, "Stored in", None);
-                let (b, resp) = Button::new(Kind::Secondary, "Show in Finder").small().show_right(
-                    ui,
-                    p,
-                    r.right() - 16.0,
-                    r.center().y,
-                    ui.id().with("reveal"),
-                );
+                let (b, resp) = Button::new(Kind::Secondary, crate::platform::SHOW_IN_FILE_BROWSER)
+                    .small()
+                    .show_right(ui, p, r.right() - 16.0, r.center().y, ui.id().with("reveal"));
                 if resp.clicked() {
                     actions.push(Action::RevealDataDir);
                 }
@@ -935,7 +932,11 @@ impl SettingsUi {
         footnote(
             ui,
             p,
-            "Converted text is stored only on this Mac. Copyrighted translations are never bundled.",
+            concat!(
+                "Converted text is stored only on ",
+                crate::platform::this_computer!(),
+                ". Copyrighted translations are never bundled."
+            ),
         );
         ui.add_space(24.0);
 
@@ -1281,7 +1282,7 @@ fn row_label(ui: &Ui, p: &Palette, r: Rect, label: &str, detail: Option<&str>) {
             ui.painter().text(
                 pos2(x, r.center().y + 10.0),
                 Align2::LEFT_CENTER,
-                d,
+                crate::keymap::shown(d),
                 text::SMALL.font(),
                 p.ink_3,
             );
@@ -1613,12 +1614,12 @@ fn theme_cards(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) 
         }
     }
 }
-/// Appearance (frame 24): theme, accent colour, the toolbar's translation, the sidebar; names
-/// for the highlight colours; motion.
+/// Appearance (frame 24): theme, accent colour, the toolbar's translation, the sidebar and how it
+/// groups the books; names for the highlight colours; motion.
 fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
     let p = settings.theme.palette();
     group_title(ui, p, "Appearance");
-    rows_card(ui, p, &[44.0, 64.0, 44.0, 44.0], |ui, i, r| match i {
+    rows_card(ui, p, &[44.0, 64.0, 44.0, 44.0, 44.0], |ui, i, r| match i {
         0 => {
             row_label(ui, p, r, "Theme", None);
             let items: [(IconFn, &str); 4] =
@@ -1680,7 +1681,7 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
                 &mut settings.toolbar_translation,
             );
         }
-        _ => {
+        3 => {
             row_label(ui, p, r, "Sidebar", None);
             let right = pos2(r.right() - 16.0, r.center().y);
             let (_, pick) = widgets::segmented_tight(
@@ -1693,6 +1694,21 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
             );
             if let Some(k) = pick {
                 settings.sidebar_attached = k == 1;
+            }
+        }
+        _ => {
+            row_label(ui, p, r, "Group books by", None);
+            let right = pos2(r.right() - 16.0, r.center().y);
+            let (_, pick) = widgets::segmented_tight(
+                ui,
+                p,
+                right,
+                ui.id().with("book-grouping"),
+                &BookGrouping::ALL.map(BookGrouping::label),
+                settings.book_grouping as usize,
+            );
+            if let Some(k) = pick {
+                settings.book_grouping = BookGrouping::ALL[k];
             }
         }
     });
@@ -1838,29 +1854,25 @@ fn about(ui: &mut Ui, p: &Palette) {
     let arch = match std::env::consts::ARCH {
         "aarch64" if cfg!(target_os = "macos") => "Apple Silicon",
         "x86_64" if cfg!(target_os = "macos") => "Intel",
+        "x86_64" if cfg!(windows) => "x64",
+        "aarch64" if cfg!(windows) => "ARM64",
         other => other,
     };
     let version = format!("Version {} · {arch}", env!("CARGO_PKG_VERSION"));
     centred(r.top() + 144.0, 20.0, &version, theme::ui_font(13.0), p.ink_2, 0.0);
-    centred(
-        r.top() + 168.0,
-        20.0,
-        "A very fast, native Bible reader for the Mac.",
-        theme::ui_font(13.0),
-        p.ink_3,
-        0.0,
-    );
-    let check = Button::new(Kind::Secondary, "Check for Updates…");
+    centred(r.top() + 168.0, 20.0, crate::platform::TAGLINE, theme::ui_font(13.0), p.ink_3, 0.0);
+    let check = Button::new(Kind::Secondary, "Check for Updates…").enabled(!crate::updater::busy());
     let notes = Button::new(Kind::Ghost, "Release Notes").trailing_icon(icons::external);
     let (wa, wb) = (check.width(&painter), notes.width(&painter));
     let x = cx - (wa + 8.0 + wb) / 2.0;
     let cy = r.top() + 200.0 + 16.0;
     if check.show_left(ui, p, x, cy, ui.id().with("check-updates")).1.clicked() {
-        crate::updater::check_for_updates();
+        crate::updater::check_for_updates(false);
     }
     if notes.show_left(ui, p, x + wa + 8.0, cy, ui.id().with("release-notes")).1.clicked() {
         crate::app::open_url(crate::updater::RELEASES);
     }
+    crate::update_ui::about(ui, p);
     ui.add_space(24.0);
 
     let licences = |ui: &mut Ui, rows: &[(&str, &str)]| {
@@ -1936,23 +1948,29 @@ pub fn quick_text_settings(ui: &mut Ui, settings: &mut Settings, actions: &mut V
     });
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if ui.button(RichText::new("A−").font(theme::ui_medium(13.0))).on_hover_text("Smaller (⌘−)").clicked()
+        if ui
+            .button(RichText::new("A−").font(theme::ui_medium(13.0)))
+            .on_hover_text(crate::keymap::shown("Smaller (⌘−)").as_ref())
+            .clicked()
         {
             actions.push(Action::FontSize(-1.0));
         }
         ui.label(format!("{:.0} pt", settings.typo.size));
-        if ui.button(RichText::new("A+").font(theme::ui_medium(15.0))).on_hover_text("Bigger (⌘+)").clicked()
+        if ui
+            .button(RichText::new("A+").font(theme::ui_medium(15.0)))
+            .on_hover_text(crate::keymap::shown("Bigger (⌘+)").as_ref())
+            .clicked()
         {
             actions.push(Action::FontSize(1.0));
         }
     });
     ui.add_space(4.0);
     let mut per_line = settings.typo.mode == Mode::VersePerLine;
-    if ui.checkbox(&mut per_line, "Verse per line (⌘L)").changed() {
+    if ui.checkbox(&mut per_line, crate::keymap::shown("Verse per line (⌘L)").as_ref()).changed() {
         actions.push(Action::ToggleMode);
     }
     let mut red = settings.typo.red_letters;
-    if ui.checkbox(&mut red, "Red letters (⌘R)").changed() {
+    if ui.checkbox(&mut red, crate::keymap::shown("Red letters (⌘R)").as_ref()).changed() {
         actions.push(Action::ToggleRedLetters);
     }
     ui.checkbox(&mut settings.typo.justify, "Justify paragraphs");

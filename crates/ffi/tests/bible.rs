@@ -28,6 +28,14 @@ fn books_and_references() {
     assert!(!books[38].new_testament && books[39].new_testament);
     assert_eq!(books[1].first_chapter, 50);
 
+    let sections = bible_sections();
+    let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names[0], "Pentateuch");
+    assert_eq!(names[7], "General Epistles");
+    let spans: Vec<(u8, u8)> = sections.iter().map(|s| (s.first_book, s.last_book)).collect();
+    assert_eq!(spans, [(0, 4), (5, 16), (17, 21), (22, 26), (27, 38), (39, 43), (44, 56), (57, 65)]);
+    assert!(sections.iter().all(|s| s.new_testament == books[s.first_book as usize].new_testament));
+
     let r = parse_reference("jn 3:16".into()).unwrap();
     assert_eq!((r.book, r.chapter, r.verse, r.label.as_str()), (42, 3, Some(16), "John 3:16"));
     assert_eq!(chapter_label(r.chapter_index), "John 3");
@@ -88,6 +96,8 @@ fn plain() -> Run {
         italic: false,
         bold: false,
         small_caps: false,
+        offset: 0,
+        added: false,
     }
 }
 
@@ -280,5 +290,34 @@ fn unknown_translations_and_chapters_fail_softly() {
     assert_eq!(c.book_name, "John");
     let last = bible.chapter("kjv".into(), u16::MAX, ContentOptions::default());
     assert_eq!((last.book, last.chapter), (65, 22));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Highlights of parts of a verse (made on the Mac or the web, or imported) list one row each on
+/// the phone, told apart by where they start, and one can be removed alone.
+#[test]
+fn a_verse_with_several_highlights_lists_each() {
+    let dir = std::env::temp_dir().join(format!("bible-ffi-parts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    {
+        use bible_core::study::{HighlightColor as Colour, StudyStore, TextSpan};
+        let kjv = bible_core::bundled::load("kjv").unwrap();
+        let v = bible_core::VerseRef::new(bible_core::BookId(42), 3, 16);
+        let text = |r: bible_core::VerseRef| kjv.find(r).map(|v| v.text.to_string());
+        let mut s = StudyStore::open(&dir.join("study.sqlite")).unwrap();
+        s.highlight_span(&TextSpan { first: v, start: 4, last: v, end: 26 }, Some(Colour::Yellow), text)
+            .unwrap();
+        s.highlight_span(&TextSpan { first: v, start: 96, last: v, end: 113 }, Some(Colour::Green), text)
+            .unwrap();
+    }
+    let bible = Bible::new(dir.to_string_lossy().into()).unwrap();
+    let items = bible.study_items(StudyKind::Highlights, "kjv".into());
+    let rows: Vec<(u32, &str)> = items.iter().map(|i| (i.start, i.text.as_str())).collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.contains(&(4, "…God so loved the world…")), "{rows:?}");
+    assert!(rows.contains(&(96, "…should not perish…")), "{rows:?}");
+    bible.remove_highlight(JOHN_3_16, 96).unwrap();
+    let left = bible.study_items(StudyKind::Highlights, "kjv".into());
+    assert_eq!((left.len(), left[0].start, left[0].highlight), (1, 4, Some(HighlightColor::Yellow)));
     let _ = std::fs::remove_dir_all(dir);
 }
