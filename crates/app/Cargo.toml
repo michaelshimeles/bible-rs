@@ -15,7 +15,7 @@ name = "bible-rs"
 path = "src/main.rs"
 
 [dependencies]
-bible-core.workspace = true
+bible-core = { workspace = true, default-features = true }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -35,6 +35,13 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Linux: pasting through the compositor's data-control protocol (what wl-paste uses). eframe's
+# first choice, smithay-clipboard, only sees the selection while it has keyboard focus and misses
+# changes under Hyprland; egui-winit falls back to arboard, which this feature makes work on
+# Wayland without focus.
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
 # Native menu bar and window chrome (macOS only).
 [target.'cfg(target_os = "macos")'.dependencies]
