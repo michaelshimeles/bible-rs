@@ -1,8 +1,12 @@
 import type { Handle } from '@sveltejs/kit/hooks';
 
-const reader = (path: string) => path === '/read' || path.startsWith('/read/');
+const reader = (path: string) =>
+	['/read', '/topics', '/ark-of-the-covenant'].some((p) => path === p || path.startsWith(`${p}/`));
 
-/** Reader pages carry the reader's default appearance in the HTML; app.html swaps in the saved one. */
+/**
+ * Reader pages (and the topic and object pages, set like them) carry the reader's default
+ * appearance in the HTML; app.html swaps in the saved one.
+ */
 export const handle: Handle = ({ event, resolve }) =>
 	resolve(event, {
 		transformPageChunk: reader(event.url.pathname)

@@ -15,6 +15,7 @@
 	import { getApp } from '../app.svelte';
 	import { filterBooks, parseReference, type Book } from '../core';
 	import { Icon, Popover } from '../ui';
+	import { follow } from '../ui/follow';
 
 	interface Props {
 		anchor: HTMLElement;
@@ -247,19 +248,19 @@
 				{/if}
 				{#each books as b, i (b.index)}
 					{@const [col, row] = spot(i)}
-					<button
-						type="button"
-						class="cell"
+					<a
+						href={app.bookHref(b)}
+						class="cell follow"
 						class:selected={b.index === hereBook?.index}
 						class:muted={query !== '' && !matches.includes(b.index)}
 						role="menuitem"
 						data-cell={i}
 						style:grid-column={col + 1 + (col >= COLUMNS ? 1 : 0)}
 						style:grid-row={row + 2}
-						onclick={(e) => chooseBook(b, e.detail === 0)}
+						use:follow={(e) => chooseBook(b, e.detail === 0)}
 					>
 						{name(b)}
-					</button>
+					</a>
 				{/each}
 			</div>
 		{:else}
@@ -275,16 +276,16 @@
 				<div class="separator"></div>
 				<div class="grid">
 					{#each { length: book.chapters }, i (i)}
-						<button
-							type="button"
-							class="cell number"
+						<a
+							href={app.chapterHref(book.firstChapter + i)}
+							class="cell number follow"
 							class:selected={i === current}
 							role="menuitem"
 							data-cell={i}
-							onclick={() => chooseChapter(i)}
+							use:follow={() => chooseChapter(i)}
 						>
 							{i + 1}
-						</button>
+						</a>
 					{/each}
 				</div>
 			</div>

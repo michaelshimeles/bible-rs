@@ -20,7 +20,7 @@ use crate::panel::VersePanel;
 use crate::reader::layout::{Mode, Typography};
 use crate::reader::{Env, Reader};
 use crate::settings_ui::SettingsUi;
-use crate::sidebar::Sidebar;
+use crate::sidebar::{BookGrouping, Sidebar};
 use crate::theme::{self, Theme};
 use crate::widgets;
 
@@ -62,6 +62,10 @@ pub struct Settings {
     /// The first-launch screens are done. Settings saved before they existed count as done.
     #[serde(default = "yes")]
     pub onboarded: bool,
+    /// Books pinned above the testaments in the sidebar, in the order they were pinned.
+    pub pinned_books: Vec<u8>,
+    /// The sidebar's books in their testaments, or in the canon's sections.
+    pub book_grouping: BookGrouping,
 }
 
 fn yes() -> bool {
@@ -96,6 +100,8 @@ impl Default for Settings {
             backup_weekly: false,
             share: Default::default(),
             onboarded: false,
+            pinned_books: Vec::new(),
+            book_grouping: BookGrouping::Testament,
         }
     }
 }
@@ -111,6 +117,26 @@ impl Settings {
                 name[..1].to_uppercase() + &name[1..]
             }
         }
+    }
+
+    /// The pinned books, oldest pin first (unknown ids from a newer version are skipped).
+    pub fn pinned(&self) -> Vec<BookId> {
+        self.pinned_books.iter().filter(|b| **b < 66).map(|b| BookId(*b)).collect()
+    }
+
+    pub fn is_pinned(&self, b: BookId) -> bool {
+        self.pinned_books.contains(&b.0)
+    }
+
+    /// Pins a book after the ones already pinned; pinning it again leaves it where it is.
+    pub fn pin_book(&mut self, b: BookId) {
+        if !self.is_pinned(b) {
+            self.pinned_books.push(b.0);
+        }
+    }
+
+    pub fn unpin_book(&mut self, b: BookId) {
+        self.pinned_books.retain(|x| *x != b.0);
     }
 
     pub fn load(study: &StudyStore) -> Self {
@@ -210,6 +236,25 @@ pub struct Startup {
     pub frames: u32,
 }
 
+/// A message toast. `id` names its area for as long as it shows, so a toast keeps its own place
+/// and size when one below it goes.
+struct Toast {
+    id: u64,
+    key: Option<String>,
+    msg: String,
+    at: f64,
+}
+
+impl Toast {
+    fn area(&self) -> Id {
+        Id::new(("toast", self.id))
+    }
+}
+
+/// How long a message toast shows, and the fade at the end of that.
+const TOAST_SECS: f64 = 4.0;
+const TOAST_FADE_SECS: f64 = 0.2;
+
 pub struct BibleApp {
     pub data_dir: PathBuf,
     pub library: Library,
@@ -237,7 +282,8 @@ pub struct BibleApp {
     /// The compact toolbar's More menu: open it next frame (demo), and its keyboard item.
     open_more: bool,
     more_highlight: Option<usize>,
-    toasts: Vec<(String, f64)>,
+    toasts: Vec<Toast>,
+    toast_seq: u64,
     /// The reading (online) translation can't load the chapter being read.
     offline: Option<crate::offline::Offline>,
     /// The main area (right of the sidebar), where toasts centre.
@@ -273,6 +319,9 @@ pub struct BibleApp {
     reminded: Option<i64>,
     /// The page in the main area (the reader unless a library or study page is open).
     pub pages: crate::pages::Pages,
+    /// The Ark page's webview, and the area it covers this frame (under the toolbar).
+    pub object_view: crate::webview::ObjectView,
+    object_rect: Option<egui::Rect>,
     /// `BIBLE_RS_DEMO`: steps that put the window into a given state (screenshots), one per frame.
     demo: std::collections::VecDeque<String>,
     chrome: Chrome,
@@ -281,8 +330,11 @@ pub struct BibleApp {
     toolbar_items: Vec<egui::Rect>,
     #[cfg(target_os = "macos")]
     no_drag: crate::macos_window::NoDragAreas,
-    #[cfg(target_os = "macos")]
-    menu: Option<crate::macos_menu::AppMenu>,
+    #[cfg(any(target_os = "macos", windows))]
+    menu: Option<crate::menu_bar::AppMenu>,
+    /// Windows: whether the window had the focus last frame.
+    #[cfg(windows)]
+    was_focused: bool,
 }
 
 /// Toolbar geometry for the current frame.
@@ -367,6 +419,7 @@ impl BibleApp {
             open_more: false,
             more_highlight: None,
             toasts: Vec::new(),
+            toast_seq: 0,
             offline: None,
             main_area: egui::Rect::NOTHING,
             online_gen,
@@ -396,6 +449,8 @@ impl BibleApp {
             focus_reveal: false,
             backup_checked: None,
             pages: Default::default(),
+            object_view: Default::default(),
+            object_rect: None,
             demo: std::env::var("BIBLE_RS_DEMO")
                 .map(|s| s.split(';').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
                 .unwrap_or_default(),
@@ -404,9 +459,17 @@ impl BibleApp {
             toolbar_items: Vec::new(),
             #[cfg(target_os = "macos")]
             no_drag: Default::default(),
-            settings,
             #[cfg(target_os = "macos")]
             menu: if crate::offscreen() { None } else { crate::macos_menu::AppMenu::install() },
+            #[cfg(windows)]
+            menu: if crate::offscreen() {
+                None
+            } else {
+                crate::windows_menu::AppMenu::install(cc, settings.theme == Theme::Dark)
+            },
+            #[cfg(windows)]
+            was_focused: false,
+            settings,
         }
     }
 
@@ -429,7 +492,26 @@ impl BibleApp {
     }
 
     pub fn toast(&mut self, ctx: &egui::Context, msg: impl Into<String>) {
-        self.toasts.push((msg.into(), ctx.input(|i| i.time)));
+        self.push_toast(ctx, None, msg.into());
+    }
+
+    /// The message toasts showing, oldest (lowest) first, with the area each is drawn in.
+    pub fn toast_areas(&self) -> Vec<(&str, Id)> {
+        self.toasts.iter().map(|t| (t.msg.as_str(), t.area())).collect()
+    }
+
+    /// A toast that takes the place of one still showing with the same key, so toggling a
+    /// bookmark again and again shows its latest state once rather than a stack of them.
+    fn toast_keyed(&mut self, ctx: &egui::Context, key: String, msg: impl Into<String>) {
+        self.push_toast(ctx, Some(key), msg.into());
+    }
+
+    fn push_toast(&mut self, ctx: &egui::Context, key: Option<String>, msg: String) {
+        if key.is_some() {
+            self.toasts.retain(|t| t.key != key);
+        }
+        self.toast_seq += 1;
+        self.toasts.push(Toast { id: self.toast_seq, key, msg, at: ctx.input(|i| i.time) });
     }
 
     fn here(&self) -> (ChapterIdx, u8) {
@@ -459,7 +541,10 @@ impl BibleApp {
         let typing = ctx.egui_wants_keyboard_input();
         // The book picker takes the single keys (arrows, return, escape) while it's open.
         let picker = crate::book_picker::is_open(ctx);
-        let overlay = self.palette.is_some() || self.settings_ui.is_some() || self.shortcuts_open;
+        let overlay = self.palette.is_some()
+            || self.settings_ui.is_some()
+            || self.shortcuts_open
+            || crate::updater::sheet_open();
         // The rows of Settings › Shortcuts, with any chords chosen there.
         let bindings = crate::keymap::bindings(&self.settings.shortcuts);
         let anywhere = |a: &Action| matches!(a, Action::OpenPalette | Action::OpenSearch(_));
@@ -592,10 +677,11 @@ impl BibleApp {
             Action::Jump { chapter, verse, flash } => {
                 self.pages.open(crate::pages::Page::Reader);
                 self.jump(chapter, verse, flash);
-                // Landing on a specific verse selects it, so N/B/C/1–6 act on it right away.
-                if let (Some(v), true) = (verse, flash) {
-                    self.reader.set_selection(Some(VerseRef::new(chapter.book(), chapter.chapter(), v)));
-                }
+                // Landing on a specific verse selects it, so N/B/C/1–6 act on it right away. Anywhere
+                // else, a selection left from before would send J/K back to where it was.
+                let landed =
+                    verse.filter(|_| flash).map(|v| VerseRef::new(chapter.book(), chapter.chapter(), v));
+                self.reader.set_selection(landed);
             }
             // From a page, Back returns to the reader.
             Action::Back if !self.pages.reader() => self.pages.open(crate::pages::Page::Reader),
@@ -681,6 +767,13 @@ impl BibleApp {
             }
             Action::RemoveParallel(id) => {
                 self.settings.parallel.retain(|p| *p != id);
+                // With no column left to pair with, columns() would fill in a default one, so the
+                // removed column seemed to stay; leave parallel view instead.
+                let translation = &self.settings.translation;
+                let library = &self.library;
+                if !self.settings.parallel.iter().any(|p| p != translation && library.contains(p)) {
+                    self.settings.parallel_on = false;
+                }
             }
             Action::Highlight(color) => {
                 // Chosen words: just those, placed in the text they were chosen in.
@@ -711,11 +804,15 @@ impl BibleApp {
                 let v = self.selection_or_location()[0];
                 self.apply_one(ctx, Action::EditNote(v));
             }
+            Action::PinBook(b) => self.settings.pin_book(b),
+            Action::UnpinBook(b) => self.settings.unpin_book(b),
             Action::ToggleBookmark => {
                 let v = self.selection_or_location()[0];
                 match self.study.toggle_bookmark(v) {
-                    Ok(true) => self.toast(ctx, format!("Bookmarked {v}")),
-                    Ok(false) => self.toast(ctx, format!("Removed bookmark {v}")),
+                    Ok(true) => self.toast_keyed(ctx, format!("bookmark {v}"), format!("Bookmarked {v}")),
+                    Ok(false) => {
+                        self.toast_keyed(ctx, format!("bookmark {v}"), format!("Removed bookmark {v}"))
+                    }
                     Err(e) => self.toast(ctx, format!("Couldn't save bookmark: {e:#}")),
                 }
             }
@@ -938,7 +1035,7 @@ impl BibleApp {
                 }
             }
             Action::ShowShortcuts => self.shortcuts_open = !self.shortcuts_open,
-            Action::CheckForUpdates => crate::updater::check_for_updates(),
+            Action::CheckForUpdates => crate::updater::check_for_updates(true),
             Action::ScrollLines(n) => {
                 let lh = self.settings.typo.size * self.settings.typo.line_height;
                 self.reader.scroll_by(n * lh);
@@ -1067,6 +1164,9 @@ impl BibleApp {
                     s.record(arg);
                 }
             }
+            // `update:<state>` over the main window, `update-about:<state>` on the About page only.
+            "update" => crate::updater::demo(arg, true),
+            "update-about" => crate::updater::demo(arg, false),
             "settings" => actions.push(Action::OpenSettings(match arg {
                 "translations" => SettingsTab::Translations,
                 "data" => SettingsTab::Data,
@@ -1321,7 +1421,12 @@ impl BibleApp {
         }
         items.push(nav_rect);
 
-        // On a page: a wider field that filters it, and nothing else.
+        // On a page: a wider field that filters it, and nothing else (the Ark has nothing to filter).
+        if self.pages.page == crate::pages::Page::Ark {
+            #[cfg(target_os = "macos")]
+            self.toolbar_items.extend(items);
+            return;
+        }
         if !self.pages.reader() {
             let w = PAGE_SEARCH_WIDTH;
             let search = egui::Rect::from_min_size(
@@ -1468,8 +1573,9 @@ impl BibleApp {
             tmeta.as_ref().map(|m| m.abbrev.clone()).unwrap_or_default()
         };
         let show_translation = self.settings.toolbar_translation;
-        let book = widgets::Picker::new(ui, &title, 14.0, if show_translation { 10.0 } else { 12.0 });
-        let translation = widgets::Picker::new(ui, &abbrev, 10.0, 12.0);
+        let book = widgets::Picker::new(ui, &title, 14.0, if show_translation { 10.0 } else { 12.0 })
+            .flat(false, show_translation);
+        let translation = widgets::Picker::new(ui, &abbrev, 10.0, 12.0).flat(true, false);
         let width = book.width() + if show_translation { 1.0 + translation.width() } else { 0.0 };
         let pad_left = LEADING_INSET + (GROUP_GAP - LEADING_INSET) * open;
         let centre = (bar.left() + pad_left + bar.right() - TRAILING_INSET) / 2.0;
@@ -1526,7 +1632,7 @@ impl BibleApp {
             let chord = crate::keymap::ALL
                 .iter()
                 .find(|s| s.id == "focus")
-                .map(|s| crate::keymap::keycaps(s, &self.settings.shortcuts).concat())
+                .map(|s| crate::keymap::caps_label(&crate::keymap::keycaps(s, &self.settings.shortcuts)))
                 .unwrap_or_default();
             let hint = format!("Exit Focus {chord}");
             let hint_w = ui
@@ -1731,7 +1837,7 @@ impl BibleApp {
             crate::keymap::ALL
                 .iter()
                 .find(|s| s.id == id)
-                .map(|s| crate::keymap::keycaps(s, &self.settings.shortcuts).concat())
+                .map(|s| crate::keymap::caps_label(&crate::keymap::keycaps(s, &self.settings.shortcuts)))
                 .unwrap_or_default()
         };
         let sidebar = if self.settings.sidebar_open { "Hide Sidebar" } else { "Show Sidebar" };
@@ -1835,12 +1941,71 @@ impl BibleApp {
         }
     }
 
+    /// Places the Ark page's webview over its page, or closes it once another page is open, and
+    /// turns what the page asks for into actions.
+    fn object_view(&mut self, ctx: &egui::Context, frame: &eframe::Frame, actions: &mut Vec<Action>) {
+        let Some(rect) = self.object_rect.take().filter(|_| crate::webview::AVAILABLE) else {
+            self.object_view.close();
+            return;
+        };
+        // egui draws everything in one layer under the native view, so anything it shows over the
+        // page (the palette, a sheet, a menu) needs the view out of the way. Tooltips and toasts
+        // are left under it rather than make the page blink.
+        let over_page = ctx.memory(|m| {
+            m.areas().visible_layer_ids().into_iter().any(|layer| {
+                !matches!(layer.order, egui::Order::Background | egui::Order::Tooltip)
+                    && m.area_rect(layer.id).is_some_and(|r| r.intersects(rect))
+            })
+        });
+        let covered = over_page
+            || self.palette.is_some()
+            || self.shortcuts_open
+            || self.import_sheet.is_some()
+            || self.share_sheet.is_some()
+            || crate::updater::sheet_open();
+        self.object_view.show(
+            frame,
+            ctx,
+            crate::objects::ark(),
+            rect,
+            covered,
+            self.settings.theme,
+            &self.settings.translation,
+            &self.library,
+        );
+        if !covered && ctx.input(|i| i.key_pressed(Key::Escape)) {
+            actions.push(Action::Back);
+        }
+        for m in self.object_view.messages() {
+            match m {
+                crate::webview::Message::Read(v) => {
+                    actions.push(Action::Jump { chapter: v.chapter_idx(), verse: Some(v.verse), flash: true })
+                }
+                crate::webview::Message::Close => actions.push(Action::Back),
+                crate::webview::Message::Ready => {
+                    if let Some(t) = self.object_view.first_draw
+                        && std::env::var_os("BIBLE_RS_TRACE_WEBVIEW").is_some()
+                    {
+                        eprintln!("webview: first draw {:.0} ms", t.as_secs_f64() * 1000.0);
+                    }
+                }
+            }
+        }
+    }
+
     /// Toasts at the bottom centre of the main area, 24 pt above the window edge: inverse
-    /// capsules 40 high (design notes §7). Messages go after 4 s; the error toast of a chapter
-    /// that can't load offers Retry and stays until clicked away or the chapter loads.
+    /// capsules 40 high (design notes §7). Messages go after 4 s, fading out over the last
+    /// 0.2 s while the ones above slide down into place; the error toast of a chapter that can't
+    /// load offers Retry and stays until clicked away or the chapter loads.
+    ///
+    /// Each toast's area is keyed by the toast and placed by its left edge, measured this frame:
+    /// an area keyed by its place in the stack and pivoted on its centre is positioned with the
+    /// size of whatever toast held that place last frame, so when one went the rest zigzagged.
     fn toasts(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        self.toasts.retain(|(_, t)| now - t < 4.0);
+        self.toasts.retain(|t| now - t.at < TOAST_SECS);
+        let still =
+            self.settings.reduce_motion || crate::offscreen_still() || crate::motion::system_reduces_motion();
         let p = self.settings.theme.palette();
         let area = if self.main_area.is_positive() { self.main_area } else { ctx.content_rect() };
         // Ink on paper; in the dark a warm near-white, with the light theme's danger.
@@ -1852,34 +2017,46 @@ impl BibleApp {
         let divider = egui::Color32::from_rgba_unmultiplied(r, g, b, 0x8C);
         let danger = if dark { Theme::Light.palette().danger } else { Theme::Dark.palette().danger };
 
-        let mut msgs: Vec<(String, bool)> = Vec::new();
+        // (area id, text, is the retryable error, opacity)
+        let mut msgs: Vec<(Id, String, bool, f32)> = Vec::new();
         if let Some(o) = self.offline.as_ref().filter(|o| !o.dismissed) {
-            msgs.push((o.toast(&self.library), true));
+            msgs.push((Id::new("toast-offline"), o.toast(&self.library), true, 1.0));
         }
-        msgs.extend(self.toasts.iter().map(|(m, _)| (m.clone(), false)));
+        msgs.extend(self.toasts.iter().map(|t| {
+            let left = TOAST_SECS - (now - t.at);
+            let opacity = if still { 1.0 } else { (left / TOAST_FADE_SECS).clamp(0.0, 1.0) as f32 };
+            (t.area(), t.msg.clone(), false, opacity)
+        }));
         if let Some(b) = &self.busy {
-            msgs.push((b.clone(), false));
+            msgs.push((Id::new("toast-busy"), b.clone(), false, 1.0));
         }
+        let measure = egui::Painter::new(
+            ctx.clone(),
+            egui::LayerId::new(egui::Order::Tooltip, Id::new("toast-measure")),
+            area,
+        );
         let (mut retry, mut dismiss) = (false, false);
-        let mut y = area.bottom() - 24.0;
-        for (i, (m, error)) in msgs.iter().enumerate() {
-            let id = Id::new(("toast", i));
-            let resp = egui::Area::new(id)
+        let mut bottom = area.bottom() - 24.0;
+        for (id, m, error, opacity) in &msgs {
+            let (id, error) = (*id, *error);
+            let font = theme::ui_medium(13.0);
+            let m = crate::pages::elide(&measure, m, &font, 480.0);
+            let msg = measure.layout_no_wrap(m, font, ink);
+            let action = error.then(|| measure.layout_no_wrap("Retry".into(), theme::ui_semibold(13.0), ink));
+            let lead = if error { 14.0 + 16.0 + 10.0 } else { 16.0 };
+            let tail = action.as_ref().map_or(0.0, |a| 10.0 + 1.0 + 10.0 + a.size().x);
+            let size = vec2(lead + msg.size().x + tail + 16.0, 40.0);
+            // Slide into a place opened by a toast that went; a new toast starts where it is.
+            let top =
+                ctx.animate_value_with_time(id.with("top"), bottom - size.y, if still { 0.0 } else { 0.15 });
+            egui::Area::new(id)
                 .order(egui::Order::Tooltip)
-                .fixed_pos(egui::pos2(area.center().x, y))
-                .pivot(Align2::CENTER_BOTTOM)
-                .interactable(*error)
+                .fixed_pos(egui::pos2((area.center().x - size.x / 2.0).round(), top))
+                .interactable(error)
                 .show(ctx, |ui| {
+                    ui.multiply_opacity(*opacity);
                     let painter = ui.painter().clone();
-                    let font = theme::ui_medium(13.0);
-                    let m = crate::pages::elide(&painter, m, &font, 480.0);
-                    let msg = painter.layout_no_wrap(m, font, ink);
-                    let action =
-                        error.then(|| painter.layout_no_wrap("Retry".into(), theme::ui_semibold(13.0), ink));
-                    let lead = if *error { 14.0 + 16.0 + 10.0 } else { 16.0 };
-                    let tail = action.as_ref().map_or(0.0, |a| 10.0 + 1.0 + 10.0 + a.size().x);
-                    let (rect, bg) =
-                        ui.allocate_exact_size(vec2(lead + msg.size().x + tail + 16.0, 40.0), Sense::click());
+                    let (rect, bg) = ui.allocate_exact_size(size, Sense::click());
                     painter.add(
                         egui::epaint::RectShape::filled(
                             rect.translate(vec2(0.0, 8.0)),
@@ -1891,7 +2068,7 @@ impl BibleApp {
                     painter.rect_filled(rect, 20.0, fill);
                     let cy = rect.center().y;
                     let mut x = rect.left() + lead;
-                    if *error {
+                    if error {
                         let icon = egui::Rect::from_center_size(
                             egui::pos2(rect.left() + 22.0, cy),
                             vec2(16.0, 16.0),
@@ -1918,7 +2095,7 @@ impl BibleApp {
                         }
                     }
                 });
-            y -= resp.response.rect.height() + 8.0;
+            bottom -= size.y + 8.0;
         }
         if let Some(o) = &mut self.offline {
             if retry {
@@ -1927,8 +2104,14 @@ impl BibleApp {
             }
             o.dismissed |= dismiss;
         }
-        if !self.toasts.is_empty() {
-            ctx.request_repaint_after(Duration::from_millis(250));
+        // Wake for the next fade (every frame through one), or for the next toast to go.
+        let fade = if still { 0.0 } else { TOAST_FADE_SECS };
+        if let Some(next) = self.toasts.iter().map(|t| t.at + TOAST_SECS - fade - now).reduce(f64::min) {
+            if next <= 0.0 {
+                ctx.request_repaint();
+            } else {
+                ctx.request_repaint_after(Duration::from_secs_f64(next));
+            }
         }
     }
 
@@ -1994,7 +2177,7 @@ impl Leading {
 }
 
 /// The sidebar toggle centred at `centre_x` on the toolbar's line. In the sidebar's header it is a
-/// borderless 32 pt button in secondary ink; after the traffic lights, a 40 pt glass capsule in
+/// borderless 32 pt button in secondary ink; after the traffic lights, a 32 pt glass circle in
 /// ink. `capsule` (0–1) blends the two while the sidebar slides. Painted over the sidebar, whose
 /// edge it follows, so it isn't clipped to the main area.
 fn sidebar_toggle(
@@ -2012,6 +2195,7 @@ fn sidebar_toggle(
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
     ui.set_clip_rect(ui.ctx().content_rect());
     let resp = ui.interact(rect, Id::new("sidebar-toggle"), Sense::click());
+    widgets::pointer_on_hover(&ui, &resp);
     let radius = rect.height() / 2.0;
     if capsule > 0.0 {
         let mut glass = ui.painter().clone();
@@ -2023,7 +2207,8 @@ fn sidebar_toggle(
     }
     let icon = egui::Rect::from_center_size(rect.center(), vec2(ICON, ICON));
     crate::icons::sidebar(ui.painter(), icon, p.ink_2.lerp_to_gamma(p.ink, capsule));
-    let resp = resp.on_hover_text(if open { "Hide sidebar (⌘B)" } else { "Show sidebar (⌘B)" });
+    let tip = if open { "Hide sidebar (⌘B)" } else { "Show sidebar (⌘B)" };
+    let resp = resp.on_hover_text(crate::keymap::shown(tip).as_ref());
     if resp.clicked() {
         actions.push(Action::ToggleSidebar);
     }
@@ -2035,7 +2220,8 @@ fn translation_menu(ui: &mut Ui, library: &Library, settings: &Settings, actions
     for (i, e) in library.entries().iter().enumerate() {
         let m = &e.meta;
         let current = m.id == settings.translation;
-        let shortcut = if i < 9 { format!("⌘{}", i + 1) } else { String::new() };
+        let shortcut =
+            if i < 9 { crate::keymap::shown(&format!("⌘{}", i + 1)).into_owned() } else { String::new() };
         let resp = ui.add(
             egui::Button::selectable(current, egui::RichText::new(format!("{}  {}", m.abbrev, m.name)))
                 .shortcut_text(shortcut),
@@ -2066,6 +2252,31 @@ fn translation_menu(ui: &mut Ui, library: &Library, settings: &Settings, actions
     if ui.button("Manage translations…").clicked() {
         actions.push(Action::OpenSettings(SettingsTab::Translations));
         ui.close();
+    }
+}
+
+impl BibleApp {
+    /// Windows: the menu bar follows the app's theme (dark for Dark, light for Light and Sepia),
+    /// focus mode hides it, and onboarding greys out Focus Mode. egui gives the title bar the app's theme when that changes, but
+    /// winit puts it back to the system's whenever a system setting changes, so it is set again
+    /// when the window gets the focus back.
+    #[cfg(windows)]
+    fn match_window_chrome(&mut self, ctx: &egui::Context) {
+        if crate::offscreen() {
+            return;
+        }
+        let dark = self.settings.theme == Theme::Dark;
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.was_focused {
+            let theme = if dark { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(theme));
+        }
+        self.was_focused = focused;
+        if let Some(menu) = &mut self.menu {
+            menu.set_dark(dark);
+            menu.set_shown(!self.focus);
+            menu.set_focus_enabled(self.onboarding.is_none());
+        }
     }
 }
 
@@ -2132,7 +2343,7 @@ impl BibleApp {
             );
             self.library.warm(&ids);
             if !crate::offscreen() && !crate::probing() {
-                crate::updater::start();
+                crate::updater::start(ctx);
             }
             if self.startup.probe {
                 let presented = self.startup.t0.elapsed();
@@ -2216,7 +2427,7 @@ impl eframe::App for BibleApp {
         if self.onboarding.is_none() {
             self.shortcuts(&ctx, &mut actions);
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if let Some(menu) = &self.menu {
             menu.poll(&mut actions);
         }
@@ -2238,6 +2449,8 @@ impl eframe::App for BibleApp {
                 actions.push(Action::SetTheme(t));
             }
         }
+        #[cfg(windows)]
+        self.match_window_chrome(&ctx);
         let p = self.settings.theme.palette();
 
         self.chrome = chrome(frame, &ctx);
@@ -2318,6 +2531,8 @@ impl eframe::App for BibleApp {
                             }),
                         selection: self.reader.selected_refs().first().copied(),
                         page: self.pages.page,
+                        pinned: self.settings.pinned(),
+                        grouping: self.settings.book_grouping,
                     };
                     self.sidebar.show(&mut child, &env, &mut self.settings.whole_words, &mut actions);
                 });
@@ -2337,6 +2552,12 @@ impl eframe::App for BibleApp {
                     toolbar: self.chrome.height,
                 };
                 self.pages.show(ui, full, &env, &mut actions);
+                if self.pages.page == crate::pages::Page::Ark {
+                    self.object_rect = Some(egui::Rect::from_min_max(
+                        egui::pos2(full.left(), full.top() + self.chrome.height),
+                        full.max,
+                    ));
+                }
                 let material = ctx.animate_bool_with_time(
                     Id::new("toolbar-material"),
                     self.pages.scrolled,
@@ -2547,21 +2768,22 @@ impl eframe::App for BibleApp {
                 }
                 crate::share_sheet::Outcome::Close => self.share_sheet = None,
                 crate::share_sheet::Outcome::Toast(msg) => self.toast(&ctx, msg),
+                #[cfg(target_os = "macos")]
                 crate::share_sheet::Outcome::Share { path, anchor } => {
-                    #[cfg(target_os = "macos")]
                     crate::macos_window::share_file(frame, &path, anchor, ctx.zoom_factor());
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        let _ = anchor;
-                        self.toast(&ctx, format!("Saved the image to {}", path.display()));
-                    }
                 }
             }
+        }
+        crate::update_ui::sheet(&ctx, p);
+        // The update's installer is running and waits for the app to quit.
+        if crate::updater::take_quit() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.shortcuts_help(&ctx, &mut actions);
         self.plan_reminder(&ctx);
         self.auto_backup(&ctx);
         self.toasts(&ctx);
+        self.object_view(&ctx, frame, &mut actions);
         self.end_frame(&ctx, frame, frame_start, actions);
     }
 
@@ -2605,14 +2827,57 @@ pub fn last_backup(data_dir: &std::path::Path) -> Option<(i64, u64)> {
 
 /// Opens a folder in the system's file browser.
 pub fn reveal(path: &std::path::Path) {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let _ = std::process::Command::new(opener).arg(path).spawn();
+    #[cfg(windows)]
+    shell_open(path.as_os_str());
+    #[cfg(not(windows))]
+    {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let _ = std::process::Command::new(opener).arg(path).spawn();
+    }
 }
 
 /// Opens a web page in the browser.
 pub fn open_url(url: &str) {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let _ = std::process::Command::new(opener).arg(url).spawn();
+    #[cfg(windows)]
+    shell_open(std::ffi::OsStr::new(url));
+    #[cfg(not(windows))]
+    {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let _ = std::process::Command::new(opener).arg(url).spawn();
+    }
+}
+
+/// Windows: opens a folder in File Explorer or a link in the default browser, as a double-click
+/// would.
+#[cfg(windows)]
+pub fn shell_open(target: &std::ffi::OsStr) {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+    };
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide: Vec<u16> = target.encode_wide().chain([0]).collect();
+    let open: Vec<u16> = "open".encode_utf16().chain([0]).collect();
+    // SAFETY: both strings are NUL-terminated and outlive the call. ShellExecute wants COM on the
+    // calling thread (the update check calls this from its own); a successful CoInitializeEx is
+    // balanced, one that finds COM already set up in another mode changes nothing.
+    unsafe {
+        let com =
+            CoInitializeEx(std::ptr::null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32);
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            open.as_ptr(),
+            wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+        if com >= 0 {
+            CoUninitialize();
+        }
+    }
 }
 
 pub fn online_counter() -> Arc<AtomicU64> {
@@ -2638,9 +2903,9 @@ mod tests {
         // 8 pt after the sidebar.
         let shown = Leading::new(1.0, EXTENT, 0.0, DOCKED);
         assert_eq!(shown, Leading { toggle_x: 244.0, capsule: 0.0, nav_x: 272.0 });
-        // Hidden: the 40 pt toggle capsule after the traffic lights, then back and forward.
+        // Hidden: the 32 pt toggle circle after the traffic lights, then back and forward.
         let hidden = Leading::new(0.0, EXTENT, 0.0, DOCKED);
-        assert_eq!(hidden, Leading { toggle_x: 116.0, capsule: 1.0, nav_x: 144.0 });
+        assert_eq!(hidden, Leading { toggle_x: 112.0, capsule: 1.0, nav_x: 136.0 });
     }
 
     #[test]
@@ -2654,5 +2919,44 @@ mod tests {
             assert!(now.capsule <= last.capsule && last.capsule - now.capsule < 0.01, "{last:?} → {now:?}");
             last = now;
         }
+    }
+
+    #[test]
+    fn pinned_books_keep_their_order_and_survive_a_restart() {
+        use super::Settings;
+        use bible_core::BookId;
+        use bible_core::study::StudyStore;
+        let (philippians, john, psalms) = (BookId(49), BookId(42), BookId(18));
+        let dir = std::env::temp_dir().join(format!("bible-rs-pins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("study.sqlite");
+        {
+            let mut study = StudyStore::open(&path).unwrap();
+            let mut s = Settings::load(&study);
+            assert!(s.pinned().is_empty(), "nothing is pinned at first");
+            s.pin_book(philippians);
+            s.pin_book(john);
+            s.pin_book(psalms);
+            s.pin_book(philippians);
+            assert_eq!(
+                s.pinned(),
+                [philippians, john, psalms],
+                "in pin order; pinning again keeps the place"
+            );
+            s.unpin_book(john);
+            s.pin_book(john);
+            assert_eq!(s.pinned(), [philippians, psalms, john], "a book pinned again goes last");
+            s.save(&mut study);
+        }
+        let study = StudyStore::open(&path).unwrap();
+        let s = Settings::load(&study);
+        assert_eq!(s.pinned(), [philippians, psalms, john]);
+        assert!(s.is_pinned(psalms) && !s.is_pinned(BookId(0)));
+        // Settings saved before pins existed load with none, keeping everything else.
+        let old: Settings = serde_json::from_str(r#"{"translation":"kjv"}"#).unwrap();
+        assert!(old.pinned_books.is_empty());
+        assert_eq!(old.translation, "kjv");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

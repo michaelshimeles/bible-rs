@@ -13,6 +13,10 @@ final class BibleUITests: XCTestCase {
         XCTAssertTrue(reference.waitForExistence(timeout: 10))
     }
 
+    override func tearDown() {
+        restoreIdleWaits()
+    }
+
     private var reference: XCUIElement { app.buttons["reference"] }
 
     private func verse(_ id: String) -> XCUIElement { app.staticTexts[id] }
@@ -70,8 +74,96 @@ final class BibleUITests: XCTestCase {
         }
     }
 
+    func testRotatingKeepsJudeChapterStart() {
+        expectRotationKeepsChapterStart("jude 1", title: "Jude 1")
+    }
+
+    func testRotatingKeepsRomansChapterStart() {
+        expectRotationKeepsChapterStart("rom 8", title: "Romans 8")
+    }
+
+    private func expectRotationKeepsChapterStart(_ query: String, title: String) {
+        addTeardownBlock { XCUIDevice.shared.orientation = .portrait }
+        reference.tap()
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText(query + "\n")
+        expectChapter(title)
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            sleep(1)
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = "\(title)-orientation-\(orientation.rawValue)"
+            shot.lifetime = .keepAlways
+            add(shot)
+            expectChapter(title)
+            XCTAssertTrue(verse("\(title):1").isHittable, "Chapter start left the screen")
+        }
+    }
+
+    func testReferenceRemainsUsableAtAccessibilityTextSize() {
+        for (size, category) in [
+            ("Default", "UICTContentSizeCategoryL"),
+            ("AX-XL", "UICTContentSizeCategoryAccessibilityXL"),
+            ("AX-XXXL", "UICTContentSizeCategoryAccessibilityXXXL"),
+        ] {
+            app.terminate()
+            app.launchArguments = ["--uitest", "-UIPreferredContentSizeCategoryName", category]
+            app.launch()
+            XCTAssertTrue(reference.waitForExistence(timeout: 10))
+            for (query, title, short) in [
+                ("luke 24", "Luke 24", "Luke 24"),
+                ("song 8", "Song of Solomon 8", "Song 8"),
+                ("1 thess 5", "1 Thessalonians 5", "1 Thess 5"),
+                ("lam 5", "Lamentations 5", "Lam 5"),
+            ] {
+                reference.tap()
+                let field = app.searchFields.firstMatch
+                XCTAssertTrue(field.waitForExistence(timeout: 3))
+                field.tap()
+                field.typeText(query + "\n")
+                expectChapter(title)
+                // The value comes from the chosen ViewThatFits label, not the full VoiceOver label.
+                let visible = reference.value as? String
+                let font = UIFont.preferredFont(forTextStyle: .headline, compatibleWith: UITraitCollection(
+                    preferredContentSizeCategory: size == "Default" ? .large : .extraExtraLarge))
+                let fullWidth = (title as NSString).size(withAttributes: [.font: font]).width
+                let shortWidth = (short as NSString).size(withAttributes: [.font: font]).width
+                let measurement = XCTAttachment(string: "\(size), \(title), visible=\(visible ?? "nil"), fullWidth=\(fullWidth), shortWidth=\(shortWidth), reference=\(reference.frame), translation=\(app.buttons["translation"].frame), search=\(app.buttons["search"].frame), app=\(app.frame)")
+                measurement.name = "Toolbar measurement-\(size)-\(title)"
+                measurement.lifetime = .keepAlways
+                add(measurement)
+                let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                shot.name = "Toolbar-\(size)-\(title)"
+                shot.lifetime = .keepAlways
+                add(shot)
+                XCTAssertTrue(visible == title || visible == short, "Unexpected visible reference: \(visible ?? "nil")")
+                if query == "luke 24" || (size == "Default" && app.frame.width >= 402 && query == "lam 5") {
+                    XCTAssertEqual(visible, title, "Use the full reference when it fits at \(size)")
+                }
+                if app.frame.width <= 375 && size != "Default" && query != "luke 24" {
+                    XCTAssertEqual(visible, short, "Use a readable abbreviation at \(size)")
+                }
+                let labelWidth = visible == title ? fullWidth : shortWidth
+                XCTAssertEqual(reference.frame.width, max(44, labelWidth + 26), accuracy: 1,
+                               "Size the reference pill to its visible label")
+                XCTAssertEqual(reference.frame.height, 44, accuracy: 1)
+                XCTAssertGreaterThanOrEqual(reference.frame.width, 44)
+                XCTAssertLessThanOrEqual(reference.frame.maxX, app.buttons["translation"].frame.minX)
+                XCTAssertLessThanOrEqual(app.buttons["translation"].frame.maxX, app.buttons["search"].frame.minX)
+                for id in ["reference", "translation", "search", "settings", "study"] {
+                    XCTAssertTrue(app.buttons[id].isHittable, id)
+                }
+            }
+        }
+    }
+
     func testPicksABookAndChapter() {
         reference.tap()
+        let layout = app.buttons["book-layout"]
+        XCTAssertTrue(layout.waitForExistence(timeout: 3))
+        XCTAssertEqual(layout.value as? String, "All books", "the default")
         let romans = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Romans'")).firstMatch
         XCTAssertTrue(romans.waitForExistence(timeout: 3))
         romans.tap()
@@ -80,6 +172,50 @@ final class BibleUITests: XCTestCase {
         twelve.tap()
         expectChapter("Romans 12")
         XCTAssertTrue(verse("Romans 12:1").label.contains("living sacrifice"))
+    }
+
+    /// Opens the Books sheet and switches it to sections.
+    private func showSections() {
+        reference.tap()
+        let layout = app.buttons["book-layout"]
+        XCTAssertTrue(layout.waitForExistence(timeout: 3))
+        layout.tap()
+        app.buttons["Sections"].tap()
+    }
+
+    func testPicksFromSections() {
+        showSections()
+        // Sections open on John's: the Gospels and Acts unfolded, with John's chapters.
+        XCTAssertTrue(app.buttons["John 3"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["Gospels and Acts"].value as? String, "Expanded, has the chapter you're reading")
+        XCTAssertTrue(app.buttons["John"].isSelected)
+        let pauline = app.buttons["Pauline Epistles"]
+        pauline.tap()
+        XCTAssertTrue(app.buttons["Romans"].isSelected, "a section opens on its first book")
+        pauline.tap()
+        XCTAssertTrue(app.buttons["Romans"].waitForNonExistence(timeout: 3), "the open section folds")
+        XCTAssertTrue(app.buttons["Romans 1"].exists, "its book's chapters stay")
+        pauline.tap()
+        app.buttons["Galatians"].tap()
+        let five = app.buttons["Galatians 5"]
+        XCTAssertTrue(five.waitForExistence(timeout: 3))
+        five.tap()
+        expectChapter("Galatians 5")
+        XCTAssertTrue(verse("Galatians 5:22").label.contains("fruit of the Spirit"))
+
+        // The choice is kept.
+        reference.tap()
+        XCTAssertTrue(app.buttons["book-layout"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["book-layout"].value as? String, "Sections")
+    }
+
+    func testOneChapterBooksOpenFromTheirSection() {
+        showSections()
+        let general = app.buttons["General Epistles"]
+        XCTAssertTrue(general.waitForExistence(timeout: 3))
+        general.tap()
+        app.buttons["Jude"].tap()
+        expectChapter("Jude 1")
     }
 
     func testPsalmsOpenFromAReference() {
@@ -198,6 +334,7 @@ final class BibleUITests: XCTestCase {
         XCTAssertTrue(slider.waitForExistence(timeout: 3))
         slider.adjust(toNormalizedSliderPosition: 0.9)
         app.buttons["Done"].tap()
+        expectChapter("John 1")
         XCTAssertTrue(verse("John 1:1").exists)
     }
 
@@ -207,6 +344,82 @@ final class BibleUITests: XCTestCase {
         measure(metrics: [XCTOSSignpostMetric.scrollDecelerationMetric], options: options) {
             app.swipeUp(velocity: .fast)
         }
+    }
+
+    func testTouchesMidGlideKeepScrolling() throws {
+        try skipIdleWaits()
+        // Each flick lands while the one before still glides.
+        for _ in 0..<3 { expectScroll { flick() } }
+        expectScroll {
+            flick()
+            drag()
+        }
+        // And once it has settled.
+        sleep(2)
+        expectScroll { drag() }
+    }
+
+    private func flick() {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
+        start.press(
+            forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -220)), withVelocity: .fast,
+            thenHoldForDuration: 0)
+    }
+
+    private func drag() {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
+        start.press(
+            forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -220)), withVelocity: .slow,
+            thenHoldForDuration: 0.3)
+    }
+
+    /// Checks that a gesture moves the text, by the first verse of the chapter in the toolbar.
+    private func expectScroll(_ gesture: () -> Void, file: StaticString = #filePath, line: UInt = #line) {
+        let chapter = reference.label.components(separatedBy: ".").first ?? ""
+        let anchor = verse(chapter + ":1")
+        XCTAssertTrue(anchor.exists, "no \(chapter):1 to measure by", file: file, line: line)
+        let before = anchor.frame.minY
+        gesture()
+        XCTAssertGreaterThan(before - anchor.frame.minY, 20, "the text didn't move", file: file, line: line)
+    }
+
+    private var skippedWaits: [(method: Method, original: IMP)] = []
+
+    /// XCTest waits for the app to go still before each gesture, so it never touches the reader
+    /// mid-glide, as a thumb often does. This turns the wait off, in the test runner only, until
+    /// the test ends. It's private to XCTest: if a version of Xcode renames it, the test skips.
+    private func skipIdleWaits() throws {
+        let names = [
+            "waitForQuiescenceIncludingAnimationsIdle:",
+            "waitForQuiescenceIncludingAnimationsIdle:isPreEvent:",
+            "waitForQuiescenceIncludingAnimationsIdle:usingActivity:isPreEvent:",
+        ]
+        let process: AnyClass? = NSClassFromString("XCUIApplicationProcess")
+        for name in names {
+            guard let process, let method = class_getInstanceMethod(process, NSSelectorFromString(name)) else { continue }
+            // Each takes one to three flags, after self and the selector.
+            let noWait: AnyObject
+            switch method_getNumberOfArguments(method) {
+            case 3:
+                let block: @convention(block) (AnyObject, Bool) -> Void = { _, _ in }
+                noWait = block as AnyObject
+            case 4:
+                let block: @convention(block) (AnyObject, Bool, Bool) -> Void = { _, _, _ in }
+                noWait = block as AnyObject
+            case 5:
+                let block: @convention(block) (AnyObject, Bool, Bool, Bool) -> Void = { _, _, _, _ in }
+                noWait = block as AnyObject
+            default:
+                continue
+            }
+            skippedWaits.append((method, method_setImplementation(method, imp_implementationWithBlock(noWait))))
+        }
+        if skippedWaits.isEmpty { throw XCTSkip("XCTest's idle wait has changed; this test can't turn it off") }
+    }
+
+    private func restoreIdleWaits() {
+        for wait in skippedWaits { method_setImplementation(wait.method, wait.original) }
+        skippedWaits = []
     }
 
     private func row(_ reference: String) -> XCUIElement {

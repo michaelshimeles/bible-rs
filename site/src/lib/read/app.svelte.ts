@@ -5,14 +5,19 @@
  */
 import { getContext, setContext } from 'svelte';
 import { SvelteSet } from 'svelte/reactivity';
+import { BOOKS, bookPath, chapterPath } from './books';
 import { Search } from './search.svelte';
 import { deleteImported, importedInfos, storeImported, type ImportResult } from './imports';
 import { importer } from './overlays/importer.svelte';
+import { LiveChapter, LiveError } from './live.svelte';
+import { NLT_ID, NLT_INFO } from './nlt';
 import {
 	core as startCore,
 	chapterLabel,
 	chapterVerses,
 	planDays,
+	type Book,
+	type BibleSection,
 	type ChapterContent,
 	type ContentOptions,
 	type Core,
@@ -61,6 +66,8 @@ export interface Toast {
 	text: string;
 	/** A failure that can be tried again; it stays until it's dismissed or retried. */
 	retry?: () => void;
+	/** A newer toast with the same key takes this one's place. */
+	key?: string;
 }
 
 export type Action =
@@ -148,6 +155,9 @@ export interface ReaderHandle {
 	markerRect(v: VerseRef): DOMRect | null;
 }
 
+/** Translations read live from their publisher, a chapter at a time (the NLT: nlt.ts). */
+const LIVE: TranslationInfo[] = [NLT_INFO];
+
 /** Sessions shorter than this aren't history (reading.rs). */
 const MIN_SECONDS = 8;
 const MAX_GAP = 120;
@@ -189,6 +199,12 @@ export class ReadApp {
 	coreError = $state<string | null>(null);
 	/** Every translation in the library (the bundled ones, from the page's data). */
 	translations = $state.raw<TranslationInfo[]>([]);
+	/** The core's sections, carried by the page so the sidebar renders before wasm starts. */
+	readonly sections: BibleSection[];
+	/** The live translation's one chapter. */
+	readonly liveChapter = new LiveChapter();
+	/** The translation read before a live one (see `fallback`). */
+	#before = $state(DEFAULT_TRANSLATION);
 	/** Translations decoded and ready. */
 	readonly loaded = new SvelteSet<string>();
 	/** The defaults until the saved settings are adopted after hydration (`adopt`). */
@@ -256,6 +272,7 @@ export class ReadApp {
 
 	constructor(init: {
 		translations: TranslationInfo[];
+		sections: BibleSection[];
 		translation: string;
 		chapter: number;
 		content: ChapterContent;
@@ -263,10 +280,32 @@ export class ReadApp {
 		short: string;
 	}) {
 		this.translations = init.translations;
+		this.sections = init.sections;
 		this.settings.translation = init.translation;
+		this.#before = init.translation;
 		this.here = { chapter: init.chapter, verse: 1 };
 		this.#content.set(this.#key(init.translation, init.chapter, contentOptions(defaultTypography())), init.content);
 		this.#initNames = { index: init.chapter, label: init.label, short: init.short };
+	}
+
+	/** The books: the core's, or until it loads the page's copy (books.ts). */
+	get books(): Book[] {
+		return this.core?.books ?? BOOKS;
+	}
+
+	/** A chapter's address in a translation (the one being read by default); a translation imported
+	 *  in this browser has no pages of its own, so its chapters are /read, the saved place. */
+	chapterHref(index: number, translation = this.settings.translation): string {
+		return this.info(translation)?.imported ? '/read' : chapterPath(this.books, translation, index);
+	}
+
+	/** A book's page in the translation being read (a one-chapter book's is its chapter, and so is
+	 *  any book's in a live translation, which has no book pages). */
+	bookHref(book: Book): string {
+		const t = this.settings.translation;
+		return book.chapters === 1 || this.info(t)?.imported || this.isLive(t)
+			? this.chapterHref(book.firstChapter)
+			: bookPath(t, book);
 	}
 
 	/** A result navigator shows under the toolbar while a search has results. */
@@ -297,7 +336,7 @@ export class ReadApp {
 		const saved = loadSettings();
 		if (urlTranslation) saved.translation = urlTranslation;
 		else if (!this.info(saved.translation)) saved.translation = this.settings.translation;
-		saved.parallel = saved.parallel.filter((id) => this.info(id));
+		saved.parallel = saved.parallel.filter((id) => this.info(id) && !this.isLive(id));
 		this.settings = saved;
 		this.onboarding = !saved.onboarded && !urlTranslation;
 	}
@@ -320,10 +359,12 @@ export class ReadApp {
 		}
 	}
 
-	/** Loads a translation if it isn't yet. */
+	/** Loads a translation if it isn't yet (a live one: the chapter being read). */
 	async ensure(id: string): Promise<boolean> {
 		const core = this.core;
-		if (!core || !this.translations.some((t) => t.id === id)) return false;
+		if (!core || !this.info(id)) return false;
+		// A live translation is fetched only while it's the one being read.
+		if (this.isLive(id)) return this.settings.translation === id && this.#readLive(id);
 		if (this.loaded.has(id)) return true;
 		try {
 			await core.load(id);
@@ -335,6 +376,41 @@ export class ReadApp {
 			this.toastNow(
 				offline ? `Couldn't load ${abbrev}: you're offline` : `Couldn't load ${abbrev}: ${e instanceof Error ? e.message : e}`,
 				() => void this.ensure(id)
+			);
+			return false;
+		}
+	}
+
+	/**
+	 * Reads the chapter being read in a live translation, which then holds just that chapter. If it
+	 * can't be read (offline, too many requests, an error), the reader goes back to the translation
+	 * read before, with a toast to try again.
+	 */
+	async #readLive(id: string): Promise<boolean> {
+		const core = this.core!;
+		const index = this.here.chapter;
+		if (this.liveChapter.held === index && this.loaded.has(id)) return true;
+		this.loaded.delete(id);
+		this.#forget(id);
+		void this.ensure(this.fallback());
+		try {
+			if (!(await this.liveChapter.read(core, index))) return false;
+			this.loaded.add(id);
+			return true;
+		} catch (e) {
+			if (this.settings.translation !== id) return false;
+			const abbrev = this.info(id)?.abbrev ?? id.toUpperCase();
+			const fallback = this.fallback();
+			const back = this.info(fallback)?.abbrev ?? fallback.toUpperCase();
+			const why =
+				e instanceof LiveError && e.kind === 'busy'
+					? `too many requests, try again in ${e.retryAfter < 90 ? `${e.retryAfter} s` : `${Math.ceil(e.retryAfter / 60)} min`}`
+					: e instanceof Error
+						? e.message
+						: String(e);
+			this.dispatch({ type: 'setTranslation', id: fallback });
+			this.toastNow(`Couldn't load ${abbrev} (${why}). Showing ${back}`, () =>
+				this.dispatch({ type: 'setTranslation', id })
 			);
 			return false;
 		}
@@ -382,6 +458,12 @@ export class ReadApp {
 		this.toastNow(`Removed ${info.abbrev}`);
 	}
 
+	#dropLive(id: string) {
+		if (this.core) this.liveChapter.drop(this.core);
+		this.loaded.delete(id);
+		this.#forget(id);
+	}
+
 	/** Drops a translation's chapters from the caches (an import removed, or replaced under its id). */
 	#forget(id: string) {
 		for (const cache of [this.#content, this.#verses]) {
@@ -392,7 +474,39 @@ export class ReadApp {
 	// ---------------------------------------------------------------- reading
 
 	info(id: string): TranslationInfo | undefined {
-		return this.translations.find((t) => t.id === id);
+		return this.translations.find((t) => t.id === id) ?? this.live.find((t) => t.id === id);
+	}
+
+	/**
+	 * The live translations the translation menu offers; they aren't in the library. Imports can't
+	 * take their ids (`takenIds`), but one imported before the NLT came to the web may have its id:
+	 * then that import is read instead.
+	 */
+	get live(): TranslationInfo[] {
+		return LIVE.filter((l) => !this.translations.some((t) => t.id === l.id));
+	}
+
+	isLive(id: string): boolean {
+		return this.live.some((t) => t.id === id);
+	}
+
+	/** The ids a new import mustn't take: the library's and the live translations'. */
+	takenIds(): string[] {
+		return [...this.translations, ...LIVE].map((t) => t.id);
+	}
+
+	/** What the reader goes back to when a live translation can't be read: the translation read
+	 *  before it, while it's still in the library, else the default. */
+	fallback(): string {
+		const id = this.#before;
+		return this.info(id) && !this.isLive(id) ? id : DEFAULT_TRANSLATION;
+	}
+
+	/** The translation search, the study lists and exports take their text from: the one being read,
+	 *  or while that's a live one (which holds one chapter, and isn't to be stored), the fallback. */
+	textTranslation(): string {
+		const id = this.settings.translation;
+		return this.isLive(id) ? this.fallback() : id;
 	}
 
 	/** The translations shown: the reading one, then up to three parallel columns. */
@@ -422,7 +536,7 @@ export class ReadApp {
 	/** A chapter's blocks, or null while its translation loads. */
 	content(id: string, index: number): ChapterContent | null {
 		const o = this.contentOptions();
-		const ready = this.loaded.has(id);
+		const ready = this.loaded.has(id) && this.#holds(id, index);
 		const key = this.#key(id, index, o);
 		const cached = this.#content.get(key);
 		if (cached) return cached;
@@ -434,7 +548,7 @@ export class ReadApp {
 
 	/** A chapter's verses as paragraphs (parallel columns, compare, share). */
 	verses(id: string, index: number): VerseContent[] | null {
-		if (!this.loaded.has(id) || !this.core) return null;
+		if (!this.loaded.has(id) || !this.#holds(id, index) || !this.core) return null;
 		const key = `${id}:${index}`;
 		let v = this.#verses.get(key);
 		if (!v) {
@@ -442,6 +556,11 @@ export class ReadApp {
 			this.#verses.set(key, v);
 		}
 		return v;
+	}
+
+	/** Whether a translation has a chapter in the page (a live one holds just one). */
+	#holds(id: string, index: number): boolean {
+		return !this.isLive(id) || this.liveChapter.held === index;
 	}
 
 	selectedRefs(): VerseRef[] {
@@ -595,8 +714,9 @@ export class ReadApp {
 
 	studyItems(kind: StudyKind): StudyItem[] {
 		void this.studyGen;
-		if (!this.core || !this.loaded.has(this.settings.translation)) return [];
-		return this.core.bible.studyItems(kind, this.settings.translation);
+		const id = this.textTranslation();
+		if (!this.core || !this.loaded.has(id)) return [];
+		return this.core.bible.studyItems(kind, id);
 	}
 
 	counts(): Counts {
@@ -700,7 +820,7 @@ export class ReadApp {
 	exportStudy(kind: 'json' | 'markdown') {
 		const core = this.core;
 		if (!core) return;
-		const body = core.bible.exportStudy(kind, this.settings.translation, this.settings.exportInclude);
+		const body = core.bible.exportStudy(kind, this.textTranslation(), this.settings.exportInclude);
 		download(`bible-notes.${kind === 'json' ? 'json' : 'md'}`, body, kind === 'json' ? 'application/json' : 'text/markdown');
 		this.toastNow(`Exported bible-notes.${kind === 'json' ? 'json' : 'md'}`);
 	}
@@ -797,6 +917,16 @@ export class ReadApp {
 		setTimeout(() => this.dismissToast(id), TOAST_MS);
 	}
 
+	/**
+	 * A toast that takes the place of one still showing with the same key, so toggling a
+	 * bookmark again and again shows its latest state once rather than a stack of them.
+	 */
+	toastKeyed(key: string, text: string) {
+		const id = ++this.#toastId;
+		this.toasts = [...this.toasts.filter((t) => t.key !== key), { id, text, key }];
+		setTimeout(() => this.dismissToast(id), TOAST_MS);
+	}
+
 	dismissToast(id: number) {
 		this.toasts = this.toasts.filter((t) => t.id !== id);
 	}
@@ -809,8 +939,9 @@ export class ReadApp {
 			case 'jump':
 				this.page = 'reader';
 				this.#jump(a.chapter, a.verse, a.flash ?? false);
-				// Landing on a specific verse selects it, so N/B/C/1–6 act on it right away.
-				if (a.verse && a.flash) this.setSelection(this.refAt(a.chapter, a.verse));
+				// Landing on a specific verse selects it, so N/B/C/1–6 act on it right away. Anywhere
+				// else, a selection left from before would send J/K back to where it was.
+				this.setSelection(a.verse && a.flash ? this.refAt(a.chapter, a.verse) : null);
 				break;
 			case 'back': {
 				if (this.page !== 'reader') {
@@ -845,8 +976,12 @@ export class ReadApp {
 				break;
 			case 'setTranslation':
 				if (this.info(a.id)) {
+					const before = s.translation;
+					if (!this.isLive(before)) this.#before = before;
 					s.translation = a.id;
 					s.parallel = s.parallel.filter((p) => p !== a.id);
+					// A live translation's chapter goes when the reader leaves it.
+					if (this.isLive(before) && before !== a.id) this.#dropLive(before);
 					void this.ensure(a.id);
 					this.search.invalidate();
 				}
@@ -886,11 +1021,16 @@ export class ReadApp {
 			}
 			case 'removeParallel':
 				s.parallel = s.parallel.filter((p) => p !== a.id);
+				// With no column left to pair with, columns() would fill in a default one, so the
+				// removed column seemed to stay; leave parallel view instead.
+				if (!s.parallel.some((p) => p !== s.translation && this.info(p))) s.parallelOn = false;
 				break;
 			case 'highlight': {
-				// Chosen words: just those, placed in the text they were chosen in.
+				// Chosen words: just those, placed in the text they were chosen in. A highlight of part
+				// of a verse keeps the words it covers, so in a live translation, whose text isn't to be
+				// stored, the verses are highlighted whole.
 				const w = this.wordSpan();
-				if (w) {
+				if (w && !this.isLive(w.translation)) {
 					this.study((c) => c.bible.highlightSpan(w.translation, w.span, a.color), "Couldn't save highlight");
 					break;
 				}
@@ -909,7 +1049,10 @@ export class ReadApp {
 			case 'toggleBookmark': {
 				const v = this.selectionOrLocation()[0];
 				const on = this.study((c) => c.bible.toggleBookmark(v), "Couldn't save bookmark");
-				if (on !== undefined) this.toastNow(`${on ? 'Bookmarked' : 'Removed bookmark'} ${this.label(v)}`);
+				if (on !== undefined) {
+					const ref = this.label(v);
+					this.toastKeyed(`bookmark ${ref}`, `${on ? 'Bookmarked' : 'Removed bookmark'} ${ref}`);
+				}
 				break;
 			}
 			case 'toggleBookmarkAt':

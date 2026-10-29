@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_bible_free: (a: number, b: number) => void;
+export const bibleSections: (a: number) => void;
 export const bible_chapter: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const bible_clearReading: (a: number, b: number, c: number) => void;
 export const bible_copySpan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
@@ -15,6 +16,7 @@ export const bible_has: (a: number, b: number, c: number) => number;
 export const bible_highlightSpan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
 export const bible_importStudy: (a: number, b: number, c: number, d: number) => void;
 export const bible_load: (a: number, b: number, c: number, d: number) => void;
+export const bible_loadNlt: (a: number, b: number, c: number, d: number, e: number) => void;
 export const bible_marks: (a: number, b: number, c: number, d: number, e: number) => void;
 export const bible_new: () => number;
 export const bible_note: (a: number, b: number, c: number) => void;
@@ -36,6 +38,7 @@ export const bible_startPlan: (a: number, b: number, c: number, d: number, e: nu
 export const bible_stopPlan: (a: number, b: number, c: number, d: number) => void;
 export const bible_studyItems: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const bible_toggleBookmark: (a: number, b: number, c: number) => void;
+export const bible_unload: (a: number, b: number, c: number) => void;
 export const bible_verse: (a: number, b: number, c: number, d: number, e: number) => void;
 export const bible_verses: (a: number, b: number, c: number, d: number, e: number) => void;
 export const books: (a: number) => void;

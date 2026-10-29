@@ -1,5 +1,23 @@
 import SwiftUI
 
+/// How the book picker lists the books: all 66 under their testaments, or by section of the canon.
+enum BookLayout: String, Codable, CaseIterable, Identifiable {
+    case allBooks, sections
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .allBooks: "All books"
+        case .sections: "Sections"
+        }
+    }
+}
+
+extension BibleSection {
+    func contains(_ book: BookInfo) -> Bool { (firstBook...lastBook).contains(book.index) }
+}
+
 /// Books and chapters, and a field that takes a reference: "jn 3:16", "ps 23", "1 cor 13".
 struct BookPicker: View {
     @Environment(Store.self) private var store
@@ -9,32 +27,15 @@ struct BookPicker: View {
     @State private var open: UInt8?
 
     var body: some View {
+        @Bindable var store = store
         NavigationStack {
-            ScrollViewReader { proxy in
-                List {
-                    if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                        testament("Old Testament", store.bookList.filter { !$0.newTestament })
-                        testament("New Testament", store.bookList.filter(\.newTestament))
-                    } else {
-                        let suggestions = suggestReferences(input: query, limit: 8)
-                        if suggestions.isEmpty {
-                            Text("No book matches “\(query)”")
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(suggestions, id: \.label) { reference in
-                            Button {
-                                go(reference)
-                            } label: {
-                                Label(reference.label, systemImage: reference.verse == nil ? "book" : "text.quote")
-                            }
-                        }
-                    }
-                }
-                .listStyle(.insetGrouped)
-                .onAppear {
-                    let book = store.book(of: store.position.chapter).index
-                    open = book
-                    proxy.scrollTo(book, anchor: .center)
+            Group {
+                if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    suggestions
+                } else if store.settings.bookLayout == .sections {
+                    BookSections(theme: theme, go: go(chapter:))
+                } else {
+                    allBooks
                 }
             }
             .searchable(
@@ -50,9 +51,59 @@ struct BookPicker: View {
             .navigationTitle("Books")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Picker("Show", selection: $store.settings.bookLayout) {
+                            ForEach(BookLayout.allCases) { Text($0.label).tag($0) }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(store.settings.bookLayout.label)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2.weight(.semibold))
+                        }
+                    }
+                    .accessibilityLabel("Show books by")
+                    .accessibilityValue(store.settings.bookLayout.label)
+                    .accessibilityIdentifier("book-layout")
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+        }
+    }
+
+    private var suggestions: some View {
+        List {
+            let suggestions = suggestReferences(input: query, limit: 8)
+            if suggestions.isEmpty {
+                Text("No book matches “\(query)”")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(suggestions, id: \.label) { reference in
+                Button {
+                    go(reference)
+                } label: {
+                    Label(reference.label, systemImage: reference.verse == nil ? "book" : "text.quote")
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    /// Every book under its testament; a book opens its chapters in place.
+    private var allBooks: some View {
+        ScrollViewReader { proxy in
+            List {
+                testament("Old Testament", store.bookList.filter { !$0.newTestament })
+                testament("New Testament", store.bookList.filter(\.newTestament))
+            }
+            .listStyle(.insetGrouped)
+            .onAppear {
+                let book = store.book(of: store.position.chapter).index
+                open = book
+                proxy.scrollTo(book, anchor: .center)
             }
         }
     }
@@ -95,32 +146,9 @@ struct BookPicker: View {
         }
         .accessibilityHint(book.chapters == 1 ? "Opens the book" : "Shows its chapters")
         if open == book.index && book.chapters > 1 {
-            chapters(book)
+            ChapterGrid(book: book, reading: store.position.chapter, theme: theme, go: go(chapter:))
+                .padding(.vertical, 6)
         }
-    }
-
-    private func chapters(_ book: BookInfo) -> some View {
-        let currentChapter = store.position.chapter
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 48), spacing: 8)], spacing: 8) {
-            ForEach(1...Int(book.chapters), id: \.self) { n in
-                let index = Int(book.firstChapter) + n - 1
-                let current = index == currentChapter
-                Button {
-                    go(chapter: index)
-                } label: {
-                    Text("\(n)")
-                        .font(.body.monospacedDigit().weight(current ? .semibold : .regular))
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .foregroundStyle(current ? Color(theme.onAccent) : Color(theme.ink))
-                        .background(
-                            current ? Color(theme.accent) : Color(theme.fill),
-                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(book.name) \(n)")
-            }
-        }
-        .padding(.vertical, 6)
     }
 
     private func go(chapter: Int) {
@@ -132,4 +160,40 @@ struct BookPicker: View {
         store.go(to: reference)
         dismiss()
     }
+}
+
+/// A book's chapters as numbered cells; the chapter being read is filled with the accent.
+struct ChapterGrid: View {
+    let book: BookInfo
+    /// The chapter being read, in the canonical grid.
+    let reading: Int
+    let theme: Theme
+    let go: (Int) -> Void
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 48), spacing: 8)], spacing: 8) {
+            ForEach(1...Int(book.chapters), id: \.self) { n in
+                let index = Int(book.firstChapter) + n - 1
+                let current = index == reading
+                Button {
+                    go(index)
+                } label: {
+                    Text("\(n)")
+                        .font(.body.monospacedDigit().weight(current ? .semibold : .regular))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .foregroundStyle(current ? Color(theme.onAccent) : Color(theme.ink))
+                        .background(
+                            current ? Color(theme.accent) : Color(theme.fill),
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(book.name) \(n)")
+                .accessibilityAddTraits(current ? .isSelected : [])
+                .id(Self.id(index))
+            }
+        }
+    }
+
+    /// The scroll id of a chapter's cell.
+    static func id(_ chapter: Int) -> String { "chapter-\(chapter)" }
 }

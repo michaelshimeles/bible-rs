@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use std::time::Instant;
 
-use bible_core::books::{BOOKS, CHAPTER_COUNT, FIRST_NT_BOOK};
+use bible_core::books::{BIBLE_SECTIONS, BOOKS, CHAPTER_COUNT, FIRST_NT_BOOK, Testament};
 use bible_core::library::{Chapter, Library};
 use bible_core::model::{Origin, Translation};
 use bible_core::search::{Query, Scope};
@@ -71,6 +71,16 @@ pub struct BookInfo {
     pub chapters: u8,
     /// Index of the book's first chapter in the canonical grid.
     pub first_chapter: u16,
+    pub new_testament: bool,
+}
+
+/// A run of consecutive books the book picker browses by (the Pentateuch, History, …).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct BibleSection {
+    pub name: String,
+    /// The section's first and last books, as [`BookInfo::index`].
+    pub first_book: u8,
+    pub last_book: u8,
     pub new_testament: bool,
 }
 
@@ -521,6 +531,21 @@ pub fn books() -> Vec<BookInfo> {
                 first_chapter: id.first_chapter().0,
                 new_testament: id >= FIRST_NT_BOOK,
             }
+        })
+        .collect()
+}
+
+/// The canon's eight sections in order, from the Pentateuch to the General Epistles; every book
+/// is in exactly one.
+#[uniffi::export]
+pub fn bible_sections() -> Vec<BibleSection> {
+    BIBLE_SECTIONS
+        .iter()
+        .map(|s| BibleSection {
+            name: s.name.to_string(),
+            first_book: s.first.0,
+            last_book: s.last.0,
+            new_testament: s.testament() == Testament::New,
         })
         .collect()
 }

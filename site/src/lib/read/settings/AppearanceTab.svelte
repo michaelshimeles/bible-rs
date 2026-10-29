@@ -1,6 +1,7 @@
 <!--
 	Settings › Appearance (settings_ui.rs `appearance`): theme, accent colour, the toolbar's
-	translation and the sidebar's style; names for the highlight colours; motion.
+	translation, the sidebar's style and how it groups the books; names for the highlight colours;
+	motion.
 -->
 <script lang="ts">
 	import { getApp } from '../app.svelte';
@@ -90,6 +91,18 @@
 			onchange={(v) => (s.sidebarAttached = v === 'attached')}
 			layout="tight"
 			label="Sidebar"
+		/>
+	</div>
+	<div class="row">
+		<span class="row-label">Group books by</span>
+		<Segmented
+			options={[
+				{ value: 'testament', label: 'Testament' },
+				{ value: 'section', label: 'Section' }
+			]}
+			bind:value={s.bookGrouping}
+			layout="tight"
+			label="Group books by"
 		/>
 	</div>
 </div>
