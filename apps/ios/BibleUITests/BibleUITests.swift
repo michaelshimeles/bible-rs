@@ -70,6 +70,63 @@ final class BibleUITests: XCTestCase {
         }
     }
 
+    func testReferenceRemainsUsableAtAccessibilityTextSize() {
+        for (size, category) in [
+            ("Default", "UICTContentSizeCategoryL"),
+            ("AX-XL", "UICTContentSizeCategoryAccessibilityXL"),
+            ("AX-XXXL", "UICTContentSizeCategoryAccessibilityXXXL"),
+        ] {
+            app.terminate()
+            app.launchArguments = ["--uitest", "-UIPreferredContentSizeCategoryName", category]
+            app.launch()
+            XCTAssertTrue(reference.waitForExistence(timeout: 10))
+            for (query, title, short) in [
+                ("luke 24", "Luke 24", "Luke 24"),
+                ("song 8", "Song of Solomon 8", "Song 8"),
+                ("1 thess 5", "1 Thessalonians 5", "1 Thess 5"),
+                ("lam 5", "Lamentations 5", "Lam 5"),
+            ] {
+                reference.tap()
+                let field = app.searchFields.firstMatch
+                XCTAssertTrue(field.waitForExistence(timeout: 3))
+                field.tap()
+                field.typeText(query + "\n")
+                expectChapter(title)
+                // The value comes from the chosen ViewThatFits label, not the full VoiceOver label.
+                let visible = reference.value as? String
+                let font = UIFont.preferredFont(forTextStyle: .headline, compatibleWith: UITraitCollection(
+                    preferredContentSizeCategory: size == "Default" ? .large : .extraExtraLarge))
+                let fullWidth = (title as NSString).size(withAttributes: [.font: font]).width
+                let shortWidth = (short as NSString).size(withAttributes: [.font: font]).width
+                let measurement = XCTAttachment(string: "\(size), \(title), visible=\(visible ?? "nil"), fullWidth=\(fullWidth), shortWidth=\(shortWidth), reference=\(reference.frame), translation=\(app.buttons["translation"].frame), search=\(app.buttons["search"].frame), app=\(app.frame)")
+                measurement.name = "Toolbar measurement-\(size)-\(title)"
+                measurement.lifetime = .keepAlways
+                add(measurement)
+                let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                shot.name = "Toolbar-\(size)-\(title)"
+                shot.lifetime = .keepAlways
+                add(shot)
+                XCTAssertTrue(visible == title || visible == short, "Unexpected visible reference: \(visible ?? "nil")")
+                if query == "luke 24" || (size == "Default" && app.frame.width >= 402 && query == "lam 5") {
+                    XCTAssertEqual(visible, title, "Use the full reference when it fits at \(size)")
+                }
+                if app.frame.width <= 375 && size != "Default" && query != "luke 24" {
+                    XCTAssertEqual(visible, short, "Use a readable abbreviation at \(size)")
+                }
+                let labelWidth = visible == title ? fullWidth : shortWidth
+                XCTAssertEqual(reference.frame.width, max(44, labelWidth + 26), accuracy: 1,
+                               "Size the reference pill to its visible label")
+                XCTAssertEqual(reference.frame.height, 44, accuracy: 1)
+                XCTAssertGreaterThanOrEqual(reference.frame.width, 44)
+                XCTAssertLessThanOrEqual(reference.frame.maxX, app.buttons["translation"].frame.minX)
+                XCTAssertLessThanOrEqual(app.buttons["translation"].frame.maxX, app.buttons["search"].frame.minX)
+                for id in ["reference", "translation", "search", "settings", "study"] {
+                    XCTAssertTrue(app.buttons[id].isHittable, id)
+                }
+            }
+        }
+    }
+
     func testPicksABookAndChapter() {
         reference.tap()
         let romans = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Romans'")).firstMatch
