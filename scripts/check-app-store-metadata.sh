@@ -41,9 +41,21 @@ check copyright.txt 200
 check primary_category.txt 40
 check secondary_category.txt 40
 
+# Fields App Store Connect takes as one line: a second line would be pasted along with the first.
+for field in en-US/name.txt en-US/subtitle.txt en-US/keywords.txt en-US/support_url.txt \
+  en-US/marketing_url.txt en-US/privacy_url.txt copyright.txt primary_category.txt \
+  secondary_category.txt; do
+  if [[ -s "$META/$field" && "$(cat "$META/$field")" == *$'\n'* ]]; then
+    echo "$field must be a single line" >&2
+    failed=1
+  fi
+done
+
 for url in support_url marketing_url privacy_url; do
   check "en-US/$url.txt" 255
-  if ! grep -Eq '^https://[^[:space:]]+$' "$META/en-US/$url.txt" 2>/dev/null; then
+  # The whole value, not any one line of it.
+  value="$(cat "$META/en-US/$url.txt" 2>/dev/null || true)"
+  if [[ ! "$value" =~ ^https://[^[:space:]]+$ ]]; then
     echo "en-US/$url.txt is not one https:// URL" >&2
     failed=1
   fi
