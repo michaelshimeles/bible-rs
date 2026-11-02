@@ -77,6 +77,7 @@ struct SettingsView: View {
 
                 Section {
                     LabeledContent("Version", value: Self.version)
+                    NavigationLink("Font licences") { FontLicences() }
                 }
             }
             .navigationTitle("Reading")
@@ -136,6 +137,41 @@ private struct ThemeSwatch: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(appearance.label) theme")
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// The SIL Open Font License notices for the bundled Literata and Inter, which the licence asks
+/// to travel with the fonts.
+private struct FontLicences: View {
+    private static let files = [("Literata", "OFL-Literata"), ("Inter", "OFL-Inter")]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                Text("Literata and Inter are bundled under the SIL Open Font License 1.1.")
+                    .font(.subheadline)
+                ForEach(Self.files, id: \.1) { name, file in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(name).font(.headline)
+                        Text(Self.text(file))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+        }
+        .navigationTitle("Font licences")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private static func text(_ file: String) -> String {
+        guard let url = Bundle.main.url(forResource: file, withExtension: "txt"),
+            let text = try? String(contentsOf: url, encoding: .utf8)
+        else { return "SIL Open Font License 1.1: https://openfontlicense.org" }
+        return text
     }
 }
 
