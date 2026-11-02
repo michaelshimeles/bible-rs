@@ -3,7 +3,7 @@
  * The page's buttons point at /download, which 302-redirects to DOWNLOAD_URL,
  * so the target can be changed here without touching the page.
  */
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 
 /** `scripts/release-macos.sh` builds a universal app for macOS 11 and later. */
 export const ARCH = 'Apple Silicon and Intel';
