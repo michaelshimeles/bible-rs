@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="robots" content="noindex" />
+		<title>Simply My Bible has moved</title>
+		<link rel="stylesheet" href="/move/style.css" />
+		<!-- bible.rasmic.xyz serves this page at every address (scripts/vercel-routes.js; move.js). -->
+		<script type="module">
+			import { browser, leave } from '/move/move.js';
+			const env = browser();
+			leave(env).catch(() => env.show('error', { keep: '/#keep' }));
+		</script>
+		<noscript><meta http-equiv="refresh" content="0;url=https://simplymybible.com/" /></noscript>
+	</head>
+	<body>
+		<section data-for="working">
+			<p>Simply My Bible is now at <a href="https://simplymybible.com/">simplymybible.com</a>. Taking you there…</p>
+		</section>
+		<section data-for="keep">
+			<h1>Your library on bible.rasmic.xyz</h1>
+			<p>
+				Simply My Bible moved to simplymybible.com and brings your highlights, notes, bookmarks and
+				settings with it the first time you open this address. If that didn't work, download your
+				library here and import it in the reader on simplymybible.com: Settings › Data › Import Backup…
+			</p>
+			<button type="button" data-download hidden>Download my library (JSON)</button>
+			<p>Translations you imported stay in this browser: import their files again on simplymybible.com.</p>
+			<p><a href="/">Move my library to simplymybible.com</a></p>
+		</section>
+		<section data-for="error">
+			<h1>Your library couldn't move</h1>
+			<p>It's still here, untouched. <a data-keep href="/#keep">Download it</a> and import it on simplymybible.com.</p>
+			<p><a data-continue href="https://simplymybible.com/">Go to simplymybible.com</a></p>
+		</section>
+	</body>
+</html>

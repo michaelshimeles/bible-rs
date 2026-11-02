@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="robots" content="noindex" />
+		<title>Bringing your library over · Simply My Bible</title>
+		<link rel="stylesheet" href="/move/style.css" />
+		<!-- Takes a library from bible.rasmic.xyz (move.js). -->
+		<script type="module">
+			import { arrive, browser } from '/move/move.js';
+			const env = browser();
+			arrive(env).catch(() => env.show('error', { keep: 'https://bible.rasmic.xyz/#keep', to: '/read' }));
+		</script>
+	</head>
+	<body>
+		<section data-for="working">
+			<p>Bringing your library over from bible.rasmic.xyz…</p>
+		</section>
+		<section data-for="ask">
+			<h1>Bring your library over?</h1>
+			<p>
+				This link carries highlights, notes, bookmarks and settings saved on bible.rasmic.xyz. Bring
+				them into this browser's library on simplymybible.com? Nothing you have here is deleted.
+			</p>
+			<button type="button" data-yes>Bring it over</button>
+			<button type="button" data-no>Not now</button>
+		</section>
+		<section data-for="error">
+			<h1>Your library couldn't come over</h1>
+			<p>It stayed on bible.rasmic.xyz, untouched: <span data-why></span>.</p>
+			<p>
+				<a data-keep href="https://bible.rasmic.xyz/#keep">Download it there</a>, then choose
+				Settings › Data › Import Backup… in the reader.
+			</p>
+			<p><a data-continue href="/read">Open the reader</a></p>
+		</section>
+	</body>
+</html>

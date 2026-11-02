@@ -75,6 +75,29 @@ export function addHeaders(file, src, headers) {
 }
 
 /**
+ * Serves the move pages (static/move/move.js) at the old address, ahead of every other route:
+ * `out.html` at every path but the pages' own files, and their service worker in place of the
+ * reader's. The domain must be attached to the project without a redirect for these to run.
+ *
+ * @param {string} file the adapter's `.vercel/output/config.json`
+ * @param {string} host the old address, `bible.rasmic.xyz`
+ */
+export function serveOldAddress(file, host) {
+	const config = JSON.parse(readFileSync(file, 'utf8'));
+	const has = [{ type: 'host', value: host }];
+	config.routes.unshift(
+		{ src: '^/service-worker\\.js$', has, dest: '/move/sw.js', headers: { 'Cache-Control': 'no-cache' } },
+		{
+			src: '^/(?!move/).*$',
+			has,
+			dest: '/move/out.html',
+			headers: { 'Cache-Control': 'public, max-age=0, must-revalidate', 'X-Robots-Tag': 'noindex' }
+		}
+	);
+	writeFileSync(file, JSON.stringify(config, null, '\t'));
+}
+
+/**
  * Joins patterns that are the same everywhere but segment `at`.
  *
  * @param {string[][][]} patterns

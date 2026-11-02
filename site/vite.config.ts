@@ -3,7 +3,7 @@ import vercel from '@sveltejs/adapter-vercel';
 import type { Adapter } from '@sveltejs/kit';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig, type Plugin, searchForWorkspaceRoot } from 'vite';
-import { addHeaders, compactRoutes } from './scripts/vercel-routes.js';
+import { addHeaders, compactRoutes, serveOldAddress } from './scripts/vercel-routes.js';
 
 /**
  * The object pages' 3D viewer, three.js with it: the chunks and styles that hold any of these.
@@ -40,6 +40,8 @@ const adapter: Adapter = {
 		compactRoutes('.vercel/output/config.json');
 		// An NLT chapter's address shows the KJV's page (src/hooks.ts): kept out of search results.
 		addHeaders('.vercel/output/config.json', '^/read/nlt(?:/.*)?$', { 'X-Robots-Tag': 'noindex' });
+		// The old address hands its readers' libraries over (static/move/move.js), first of all.
+		serveOldAddress('.vercel/output/config.json', 'bible.rasmic.xyz');
 	}
 };
 
