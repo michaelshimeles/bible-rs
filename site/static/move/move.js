@@ -331,19 +331,21 @@ export function pickSettings(localRaw, incomingRaw, localHasStudy) {
 }
 
 /**
- * Puts one key back as it was before a move that couldn't be saved.
+ * Puts keys back as they were before a move that couldn't be saved. Everything the move changed
+ * goes first, so the space it took is free for the values from before (which fit then).
  * @param {{ get(key: string): string | null; set(key: string, value: string): void; remove(key: string): void }} storage
- * @param {string} key
- * @param {string | null} value
+ * @param {string[]} keys
+ * @param {(string | null)[]} was
  */
-function restore(storage, key, value) {
-	try {
-		if (storage.get(key) === value) return;
-		if (value === null) storage.remove(key);
-		else storage.set(key, value);
-	} catch {
-		// it was there before, so it fits; nothing more to do if it somehow doesn't
-	}
+function rollBack(storage, keys, was) {
+	keys.forEach((k, i) => {
+		if (storage.get(k) !== was[i]) storage.remove(k);
+	});
+	keys.forEach((k, i) => {
+		const v = was[i];
+		if (v !== null && storage.get(k) !== v) storage.set(k, v);
+	});
+	if (keys.some((k, i) => storage.get(k) !== was[i])) throw new Error("couldn't put this address's library back");
 }
 
 /** What came over, for the reader to say. @param {any} payload */
@@ -378,8 +380,8 @@ export function applyMove(storage, payload, now, finish = () => {}) {
 
 	// The backups first, so the study from before the merge is kept before it changes. When storage
 	// is full, the oldest backups go (never the one from before the merge, and the old address keeps
-	// its own) until the study, settings, theme and `finish`'s records fit. If they never do,
-	// everything is put back as it was.
+	// its own) until the study, settings, theme and `finish`'s records fit. Each try that doesn't
+	// fit is undone first, and if none fits everything is as it was.
 	const theme = str(payload.theme);
 	const summary = summarize(payload);
 	const touched = [KEYS.study, KEYS.backups, KEYS.settings, KEYS.theme, MOVED_KEY, NOTICE_KEY];
@@ -395,8 +397,8 @@ export function applyMove(storage, payload, now, finish = () => {}) {
 			finish(summary);
 			break;
 		} catch (e) {
+			rollBack(storage, touched, was);
 			if (keep > 0) continue;
-			touched.forEach((k, i) => restore(storage, k, was[i]));
 			throw e;
 		}
 	}

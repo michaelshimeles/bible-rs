@@ -79,7 +79,8 @@ class Store {
 class Tight extends Store {
 	constructor(
 		init: Record<string, string>,
-		public limit: number
+		public limit: number,
+		public failOn = ''
 	) {
 		super(init);
 	}
@@ -87,7 +88,7 @@ class Tight extends Store {
 	set = (k: string, v: string) => {
 		const was = this.map.get(k);
 		this.map.set(k, v);
-		if (this.size() > this.limit) {
+		if (this.size() > this.limit || k === this.failOn) {
 			if (was === undefined) this.map.delete(k);
 			else this.map.set(k, was);
 			throw new Error('QuotaExceededError');
@@ -442,6 +443,20 @@ describe('moving a library', () => {
 		const r = await browse(`${OLD}/read`, oldLibrary(), here);
 		expect(r.shown).toEqual(['error']);
 		expect([...here.map]).toEqual(before);
+	});
+
+	it('puts every backup back when the last record of a move fails', async () => {
+		const big = (i: number) => ({ at: 100 + i, json: study({ notes: [note('PSA', 1, 1, randomBytes(1500).toString('base64'), i)] }) });
+		const mine = study({ notes: [note('ROM', 8, 28, 'here', 15)] });
+		const init = { [STUDY_KEY]: mine, [KEYS.backups]: JSON.stringify(Array.from({ length: 10 }, (_, i) => big(i))) };
+		const size = new Tight(init, Infinity).size();
+		for (const slack of [0, 50, 500, 5000]) {
+			const here = new Tight(init, size + slack, NOTICE_KEY);
+			const before = [...here.map];
+			const r = await browse(`${OLD}/read`, oldLibrary(), here);
+			expect(r.shown).toEqual(['error']);
+			expect([...here.map]).toEqual(before);
+		}
 	});
 
 	it('goes on when the browser blocks storage', async () => {
