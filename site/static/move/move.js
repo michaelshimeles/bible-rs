@@ -142,15 +142,23 @@ export function split(text, size = CHUNK) {
 export function safePath(path) {
 	if (typeof path !== 'string' || path.length > 2048 || !path.startsWith('/')) return null;
 	if (path.startsWith('//') || path.startsWith('/\\') || /[\u0000-\u001f]/.test(path)) return null;
-	// Never a move page: a link can't send someone else's library on through the old address.
-	let plain;
-	try {
-		plain = decodeURIComponent(path);
-	} catch {
-		return null;
+	// Never a move page, however the path is spelled (`/./move`, `/a/../move`, `/%6Dove`): a link
+	// can't send someone else's library on through the old address.
+	const base = 'https://path.invalid';
+	let p = path;
+	for (let k = 0; k < 4; k++) {
+		const u = new URL(p, base);
+		if (u.origin !== base || /^\/+move(?:[/.]|$)/i.test(u.pathname)) return null;
+		let plain;
+		try {
+			plain = decodeURIComponent(u.pathname);
+		} catch {
+			return null;
+		}
+		if (new URL(plain, base).pathname === u.pathname) return path;
+		p = plain;
 	}
-	if (/^[/\\]+move(?:[/\\?#.]|$)/i.test(plain)) return null;
-	return path;
+	return null;
 }
 
 /** @param {string} hash */

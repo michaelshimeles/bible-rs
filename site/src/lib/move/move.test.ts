@@ -282,6 +282,7 @@ describe('encoding', () => {
 	it('only opens paths on this site afterwards', () => {
 		expect(safePath('/read/kjv/john/3?x=1#v16')).toBe('/read/kjv/john/3?x=1#v16');
 		expect(safePath('/moved-on')).toBe('/moved-on');
+		expect(safePath('/read/kjv/song%20of%20songs/1')).toBe('/read/kjv/song%20of%20songs/1');
 		for (const p of [
 			'//evil.example',
 			'/\\evil.example',
@@ -293,7 +294,13 @@ describe('encoding', () => {
 			'/MOVE/out.html',
 			'/%6Dove/in.html',
 			'//move/in.html',
-			'/move'
+			'/move',
+			'/./move/in.html',
+			'/read/../move/in.html',
+			'/%2e/move/in.html',
+			'/read/..%2Fmove/in.html',
+			'/read/%252e%252e%252fmove/in.html',
+			'/\\move/in.html'
 		]) {
 			expect(safePath(p)).toBeNull();
 		}
@@ -410,7 +417,7 @@ describe('moving a library', () => {
 		const theirs = JSON.stringify({ v: 1, study: study({ notes: [note('ROM', 8, 28, 'replaced', 99_999)] }) });
 		const id = await digest(theirs);
 		const piece = `/move/in.html#smb=${id}.0.1.${await encode(theirs)}&to=/read`;
-		for (const to of [piece, piece.replace('/move', '/%6Dove'), `/${piece}`]) {
+		for (const to of [piece, piece.replace('/move', '/%6Dove'), `/${piece}`, `/read/..${piece}`, `/.${piece}`]) {
 			for (const via of ['smb-done=x', `smb-done=${'a'.repeat(24)}`, `smb-next=${id}.0`, 'keep']) {
 				const here = new Store({ [STUDY_KEY]: mine });
 				const r = await browse(`${OLD}/#${via}&to=${encodeURIComponent(to)}`, new Store(), here);
