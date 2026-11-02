@@ -142,6 +142,14 @@ export function split(text, size = CHUNK) {
 export function safePath(path) {
 	if (typeof path !== 'string' || path.length > 2048 || !path.startsWith('/')) return null;
 	if (path.startsWith('//') || path.startsWith('/\\') || /[\u0000-\u001f]/.test(path)) return null;
+	// Never a move page: a link can't send someone else's library on through the old address.
+	let plain;
+	try {
+		plain = decodeURIComponent(path);
+	} catch {
+		return null;
+	}
+	if (/^[/\\]+move(?:[/\\?#.]|$)/i.test(plain)) return null;
 	return path;
 }
 
@@ -323,12 +331,41 @@ export function pickSettings(localRaw, incomingRaw, localHasStudy) {
 }
 
 /**
+ * Puts one key back as it was before a move that couldn't be saved.
+ * @param {{ get(key: string): string | null; set(key: string, value: string): void; remove(key: string): void }} storage
+ * @param {string} key
+ * @param {string | null} value
+ */
+function restore(storage, key, value) {
+	try {
+		if (storage.get(key) === value) return;
+		if (value === null) storage.remove(key);
+		else storage.set(key, value);
+	} catch {
+		// it was there before, so it fits; nothing more to do if it somehow doesn't
+	}
+}
+
+/** What came over, for the reader to say. @param {any} payload */
+function summarize(payload) {
+	const counts = studyCounts(parseStudy(typeof payload.study === 'string' ? payload.study : null));
+	return {
+		highlights: counts.highlights,
+		notes: counts.notes,
+		bookmarks: counts.bookmarks,
+		translations: Array.isArray(payload.translations) ? payload.translations.map(String) : []
+	};
+}
+
+/**
  * Merges a library from the old address into this address's storage.
- * @param {{ get(key: string): string | null; set(key: string, value: string): void }} storage
+ * @param {{ get(key: string): string | null; set(key: string, value: string): void; remove(key: string): void }} storage
  * @param {any} payload what `collect` read on the old address
  * @param {number} now unix seconds
+ * @param {(summary: ReturnType<typeof summarize>) => void} [finish] writes the records that say the
+ *   move happened, tried along with the rest
  */
-export function applyMove(storage, payload, now) {
+export function applyMove(storage, payload, now, finish = () => {}) {
 	if (!payload || payload.v !== 1) throw new Error('not a library from the old address');
 	const str = (/** @type {unknown} */ v) => (typeof v === 'string' ? v : null);
 	const localStudy = storage.get(KEYS.study);
@@ -339,27 +376,32 @@ export function applyMove(storage, payload, now) {
 	const backups = mergeBackups(storage.get(KEYS.backups), str(payload.backups), before);
 	const settings = pickSettings(storage.get(KEYS.settings), str(payload.settings), hasStudy(local));
 
-	// The backups first, so the study from before the merge is kept before it changes.
-	if (backups.length) {
+	// The backups first, so the study from before the merge is kept before it changes. When storage
+	// is full, the oldest backups go (never the one from before the merge, and the old address keeps
+	// its own) until the study, settings, theme and `finish`'s records fit. If they never do,
+	// everything is put back as it was.
+	const theme = str(payload.theme);
+	const summary = summarize(payload);
+	const touched = [KEYS.study, KEYS.backups, KEYS.settings, KEYS.theme, MOVED_KEY, NOTICE_KEY];
+	const was = touched.map((k) => storage.get(k));
+	const optional = backups.filter((b) => b !== before);
+	for (let keep = optional.length; ; keep--) {
+		const list = [...(before ? [before] : []), ...optional.slice(0, keep)].sort((a, b) => b.at - a.at);
 		try {
-			storage.set(KEYS.backups, JSON.stringify(backups));
-		} catch {
-			// Full storage: the study matters more than its backups (the old address keeps its own).
-			if (before) storage.set(KEYS.backups, JSON.stringify([before]));
+			if (list.length) storage.set(KEYS.backups, JSON.stringify(list));
+			if (study !== null && study !== localStudy) storage.set(KEYS.study, study);
+			if (settings !== null && settings !== storage.get(KEYS.settings)) storage.set(KEYS.settings, settings);
+			if (theme && storage.get(KEYS.theme) === null) storage.set(KEYS.theme, theme);
+			finish(summary);
+			break;
+		} catch (e) {
+			if (keep > 0) continue;
+			touched.forEach((k, i) => restore(storage, k, was[i]));
+			throw e;
 		}
 	}
-	if (study !== null && study !== localStudy) storage.set(KEYS.study, study);
-	if (settings !== null && settings !== storage.get(KEYS.settings)) storage.set(KEYS.settings, settings);
-	const theme = str(payload.theme);
-	if (theme && storage.get(KEYS.theme) === null) storage.set(KEYS.theme, theme);
 
-	const counts = studyCounts(parseStudy(str(payload.study)));
-	return {
-		highlights: counts.highlights,
-		notes: counts.notes,
-		bookmarks: counts.bookmarks,
-		translations: Array.isArray(payload.translations) ? payload.translations.map(String) : []
-	};
+	return summary;
 }
 
 /** @param {{ get(key: string): string | null }} storage */
@@ -402,16 +444,28 @@ export async function leave(env, at = {}) {
 	const url = new URL(env.href);
 	const f = fragment(url.hash);
 	const ours = f.has('smb-next') || f.has('smb-done') || f.has('keep');
-	const to = safePath(f.get('to')) ?? `${url.pathname}${url.search}${ours ? '' : url.hash}`;
+	const to = safePath(f.get('to')) ?? safePath(`${url.pathname}${url.search}${ours ? '' : url.hash}`) ?? '/';
 	const onward = `${newOrigin}${to}`;
 	// Only the old address has a library to send (simplymybible.com serves this file too).
 	if (url.origin !== oldOrigin) return env.go(`${newOrigin}/`);
 
-	if (f.has('keep')) return env.show('keep', { study: env.storage.get(KEYS.study) });
+	if (f.has('keep')) {
+		let study = null;
+		try {
+			study = env.storage.get(KEYS.study);
+		} catch {
+			// blocked storage: the page says there's nothing to download
+		}
+		return env.show('keep', { study });
+	}
 	// simplymybible.com has the library (a made-up hash here only ever names no library).
 	const done = f.get('smb-done');
 	if (done !== null) {
-		if (/^[0-9a-f]{24}$/.test(done)) env.storage.set(SENT_KEY, done);
+		try {
+			if (/^[0-9a-f]{24}$/.test(done)) env.storage.set(SENT_KEY, done);
+		} catch {
+			// can't remember it: the next visit sends the library again and it's skipped there
+		}
 		return env.go(onward);
 	}
 
@@ -495,13 +549,19 @@ export async function arrive(env, at = {}) {
 		return env.go(here);
 	}
 	try {
-		const summary = applyMove(env.storage, payload, env.now());
-		const moved = JSON.parse(env.storage.get(MOVED_KEY) ?? '[]');
-		env.storage.set(
-			MOVED_KEY,
-			JSON.stringify([...(Array.isArray(moved) ? moved : []), { id, at: env.now(), from: new URL(oldOrigin).host }])
-		);
-		env.storage.set(NOTICE_KEY, JSON.stringify({ from: new URL(oldOrigin).host, ...summary }));
+		const host = new URL(oldOrigin).host;
+		let earlier = [];
+		try {
+			const l = JSON.parse(env.storage.get(MOVED_KEY) ?? '[]');
+			if (Array.isArray(l)) earlier = l;
+		} catch {
+			// a damaged list only ever stops a library merging twice, and this one merges once now
+		}
+		const moved = JSON.stringify([...earlier, { id, at: env.now(), from: host }]);
+		applyMove(env.storage, payload, env.now(), (summary) => {
+			env.storage.set(MOVED_KEY, moved);
+			env.storage.set(NOTICE_KEY, JSON.stringify({ from: host, ...summary }));
+		});
 	} catch (e) {
 		return fail(`this browser couldn't save it (${e instanceof Error ? e.message : e})`);
 	}
@@ -511,13 +571,21 @@ export async function arrive(env, at = {}) {
 
 // ---------------------------------------------------------------- in a browser
 
-/** @param {Storage} s @returns {Store} */
-function store(s) {
+/**
+ * A page's Storage, opened on each use: a browser that blocks storage throws on `localStorage`
+ * itself, and the pages handle that where they use it rather than before they start.
+ * @param {() => Storage} open
+ * @returns {Store}
+ */
+function store(open) {
 	return {
-		get: (k) => s.getItem(k),
-		set: (k, v) => s.setItem(k, v),
-		remove: (k) => s.removeItem(k),
-		keys: () => Array.from({ length: s.length }, (_, i) => s.key(i) ?? '')
+		get: (k) => open().getItem(k),
+		set: (k, v) => open().setItem(k, v),
+		remove: (k) => open().removeItem(k),
+		keys: () => {
+			const s = open();
+			return Array.from({ length: s.length }, (_, i) => s.key(i) ?? '');
+		}
 	};
 }
 
@@ -532,8 +600,8 @@ export function browser() {
 	return {
 		href,
 		referrer: document.referrer,
-		storage: store(localStorage),
-		session: store(sessionStorage),
+		storage: store(() => localStorage),
+		session: store(() => sessionStorage),
 		go: (url) => location.replace(url),
 		show(state, info = {}) {
 			document.body.dataset.state = state;

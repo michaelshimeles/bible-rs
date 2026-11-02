@@ -9,8 +9,12 @@
 		<!-- Takes a library from bible.rasmic.xyz (move.js). -->
 		<script type="module">
 			import { arrive, browser } from '/move/move.js';
-			const env = browser();
-			arrive(env).catch(() => env.show('error', { keep: 'https://bible.rasmic.xyz/#keep', to: '/read' }));
+			try {
+				const env = browser();
+				arrive(env).catch(() => env.show('error', { keep: 'https://bible.rasmic.xyz/#keep', to: '/read' }));
+			} catch {
+				location.replace('/read');
+			}
 		</script>
 	</head>
 	<body>

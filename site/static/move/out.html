@@ -9,8 +9,12 @@
 		<!-- bible.rasmic.xyz serves this page at every address (scripts/vercel-routes.js; move.js). -->
 		<script type="module">
 			import { browser, leave } from '/move/move.js';
-			const env = browser();
-			leave(env).catch(() => env.show('error', { keep: '/#keep' }));
+			try {
+				const env = browser();
+				leave(env).catch(() => env.show('error', { keep: '/#keep' }));
+			} catch {
+				location.replace('https://simplymybible.com/');
+			}
 		</script>
 		<noscript><meta http-equiv="refresh" content="0;url=https://simplymybible.com/" /></noscript>
 	</head>

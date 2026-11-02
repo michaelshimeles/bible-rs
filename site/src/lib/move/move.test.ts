@@ -70,9 +70,45 @@ class Store {
 		for (const [k, v] of Object.entries(init)) this.map.set(k, v);
 	}
 	get = (k: string) => this.map.get(k) ?? null;
-	set = (k: string, v: string) => void this.map.set(k, v);
-	remove = (k: string) => void this.map.delete(k);
+	set = (k: string, v: string): void => void this.map.set(k, v);
+	remove = (k: string): void => void this.map.delete(k);
 	keys = () => [...this.map.keys()];
+}
+
+/** A Store that holds `limit` characters, as localStorage holds about 5 MB. */
+class Tight extends Store {
+	constructor(
+		init: Record<string, string>,
+		public limit: number
+	) {
+		super(init);
+	}
+	size = () => [...this.map].reduce((n, [k, v]) => n + k.length + v.length, 0);
+	set = (k: string, v: string) => {
+		const was = this.map.get(k);
+		this.map.set(k, v);
+		if (this.size() > this.limit) {
+			if (was === undefined) this.map.delete(k);
+			else this.map.set(k, was);
+			throw new Error('QuotaExceededError');
+		}
+	};
+}
+
+/** A Store in a browser that blocks storage: every use throws. */
+class Blocked extends Store {
+	get = (): string | null => {
+		throw new Error('SecurityError');
+	};
+	set = () => {
+		throw new Error('SecurityError');
+	};
+	remove = () => {
+		throw new Error('SecurityError');
+	};
+	keys = (): string[] => {
+		throw new Error('SecurityError');
+	};
 }
 
 /**
@@ -244,7 +280,20 @@ describe('encoding', () => {
 	});
 	it('only opens paths on this site afterwards', () => {
 		expect(safePath('/read/kjv/john/3?x=1#v16')).toBe('/read/kjv/john/3?x=1#v16');
-		for (const p of ['//evil.example', '/\\evil.example', 'https://evil.example', 'read', '/a\nb', null]) {
+		expect(safePath('/moved-on')).toBe('/moved-on');
+		for (const p of [
+			'//evil.example',
+			'/\\evil.example',
+			'https://evil.example',
+			'read',
+			'/a\nb',
+			null,
+			'/move/in.html#smb=x',
+			'/MOVE/out.html',
+			'/%6Dove/in.html',
+			'//move/in.html',
+			'/move'
+		]) {
 			expect(safePath(p)).toBeNull();
 		}
 	});
@@ -353,6 +402,57 @@ describe('moving a library', () => {
 		const r = await browse(`${OLD}/read`, oldLibrary(), here, { tamper });
 		expect(r.shown).toEqual(['error']);
 		expect([...here.map]).toEqual(before);
+	});
+
+	it("won't pass a library someone made on through the old address", async () => {
+		const mine = study({ notes: [note('ROM', 8, 28, 'here', 15)] });
+		const theirs = JSON.stringify({ v: 1, study: study({ notes: [note('ROM', 8, 28, 'replaced', 99_999)] }) });
+		const id = await digest(theirs);
+		const piece = `/move/in.html#smb=${id}.0.1.${await encode(theirs)}&to=/read`;
+		for (const to of [piece, piece.replace('/move', '/%6Dove'), `/${piece}`]) {
+			for (const via of ['smb-done=x', `smb-done=${'a'.repeat(24)}`, `smb-next=${id}.0`, 'keep']) {
+				const here = new Store({ [STUDY_KEY]: mine });
+				const r = await browse(`${OLD}/#${via}&to=${encodeURIComponent(to)}`, new Store(), here);
+				expect(r.hops.some((h) => h.includes(id))).toBe(false);
+				expect(here.get(STUDY_KEY)).toBe(mine);
+			}
+		}
+	});
+
+	it('drops the oldest backups when storage is full, never the study', async () => {
+		const big = (i: number) => ({ at: 100 + i, json: study({ notes: [note('PSA', 1, 1, randomBytes(1500).toString('base64'), i)] }) });
+		const old = new Store({ ...Object.fromEntries(oldLibrary().map), [KEYS.backups]: JSON.stringify(Array.from({ length: 9 }, (_, i) => big(i))) });
+		const mine = study({ notes: [note('ROM', 8, 28, 'here', 15)] });
+		const here = new Tight({ [STUDY_KEY]: mine }, 9000);
+		const r = await browse(`${OLD}/read`, old, here);
+		expect(r.href).toBe(`${NEW}/read`);
+		expect(parsed(here.get(STUDY_KEY)).notes).toHaveLength(2);
+		expect(here.get(MOVED_KEY)).not.toBeNull();
+		expect(here.get(NOTICE_KEY)).not.toBeNull();
+		const kept = parsed(here.get(KEYS.backups));
+		expect(kept).toContainEqual({ at: 1_793_600_000, json: mine });
+		expect(kept.length).toBeLessThan(10);
+		expect(kept.slice(1).map((b: { at: number }) => b.at)).toEqual([...kept.slice(1).map((b: { at: number }) => b.at)].sort((a, b) => b - a));
+	});
+
+	it("changes nothing when even the study doesn't fit", async () => {
+		const mine = study({ notes: [note('ROM', 8, 28, 'here', 15)] });
+		const here = new Tight({ [STUDY_KEY]: mine }, mine.length + STUDY_KEY.length + 50);
+		const before = [...here.map];
+		const r = await browse(`${OLD}/read`, oldLibrary(), here);
+		expect(r.shown).toEqual(['error']);
+		expect([...here.map]).toEqual(before);
+	});
+
+	it('goes on when the browser blocks storage', async () => {
+		const blockedOld = await browse(`${OLD}/read`, new Blocked(), new Store());
+		expect(blockedOld.hops).toEqual([`${NEW}/read`]);
+		const keep = await browse(`${OLD}/#keep`, new Blocked(), new Store());
+		expect(keep.shown).toEqual(['keep']);
+		const done = await browse(`${OLD}/#smb-done=${'a'.repeat(24)}&to=/read`, new Blocked(), new Store());
+		expect(done.hops).toEqual([`${NEW}/read`]);
+		const blockedNew = await browse(`${OLD}/read`, oldLibrary(), new Blocked());
+		expect(blockedNew.shown).toEqual(['error']);
 	});
 
 	it('runs each page only at its own address', async () => {
