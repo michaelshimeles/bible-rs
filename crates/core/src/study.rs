@@ -143,6 +143,9 @@ pub struct StudyStore {
     device: String,
     hlc: Hlc,
     seq: i64,
+    /// Sync bookkeeping kept beside the data (`sync_meta`): the device id, how far a folder
+    /// library has been written and read.
+    meta: HashMap<String, String>,
     clock: Option<Clock>,
 }
 
@@ -416,6 +419,7 @@ impl StudyStore {
             plans: HashMap::new(),
             plan_reads: HashMap::new(),
             settings: HashMap::new(),
+            meta: HashMap::new(),
             generation: 1,
             highlight_revs: HashMap::new(),
             note_revs: HashMap::new(),
@@ -656,8 +660,13 @@ impl StudyStore {
         self.settings = query(conn, "SELECT key, value FROM settings", |r| Ok((r.get(0)?, r.get(1)?)))?
             .into_iter()
             .collect();
+        self.meta = query(conn, "SELECT key, value FROM sync_meta", |r| Ok((r.get(0)?, r.get(1)?)))?
+            .into_iter()
+            .collect();
+        // Pruned tombstones can take the newest sequence number with them: it's kept here too.
+        let floor = self.meta.get("seq").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
         self.hlc.observe(newest);
-        self.seq = self.seq.max(last_seq);
+        self.seq = self.seq.max(last_seq).max(floor);
         self.generation += 1;
         Ok(())
     }
@@ -707,6 +716,18 @@ impl StudyStore {
     /// [`changes_since`](Self::changes_since) counts from.
     pub fn seq(&self) -> i64 {
         self.seq
+    }
+
+    /// A value kept with the sync state (not exported, not synced).
+    pub fn sync_value(&self, key: &str) -> Option<&str> {
+        self.meta.get(key).map(String::as_str)
+    }
+
+    pub fn set_sync_value(&mut self, key: &str, value: &str) -> Result<()> {
+        #[cfg(feature = "native")]
+        self.exec("INSERT OR REPLACE INTO sync_meta(key, value) VALUES(?1, ?2)", params![key, value])?;
+        self.meta.insert(key.to_string(), value.to_string());
+        Ok(())
     }
 
     fn wall_ms(&self) -> i64 {
@@ -2043,6 +2064,10 @@ impl StudyStore {
         self.read_revs
             .retain(|(p, d, i), r| live.get(p).is_some_and(|s| s.contains(&(*d, *i))) || !old(&r.rev));
         n += before - self.read_revs.len();
+        if n > 0 {
+            let seq = self.seq.to_string();
+            self.set_sync_value("seq", &seq)?;
+        }
         Ok(n)
     }
 }
@@ -2712,6 +2737,26 @@ mod sync_tests {
 
     fn body(s: &StudyStore, n: u8) -> Option<&str> {
         s.note(v(n)).map(|n| n.body.as_str())
+    }
+
+    #[test]
+    fn the_sequence_survives_pruning_its_newest_tombstone() {
+        let dir =
+            std::env::temp_dir().join(format!("bible-seq-{}-{}", std::process::id(), sync::new_device_id()));
+        let path = dir.join("study.sqlite");
+        {
+            let mut s = StudyStore::open(&path).unwrap();
+            s.set_note(v(1), "one").unwrap();
+            s.set_note(v(1), "").unwrap();
+            assert_eq!(s.seq(), 2);
+            assert_eq!(s.prune_tombstones(i64::MAX).unwrap(), 1);
+            assert_eq!(s.seq(), 2);
+        }
+        // What's written after counts on from 2, so a reader that got to 2 doesn't miss it.
+        let s = StudyStore::open(&path).unwrap();
+        assert_eq!(s.seq(), 2);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -5,6 +5,8 @@ pub mod books;
 pub mod bundled;
 pub mod content;
 pub mod copy;
+#[cfg(feature = "native")]
+pub mod folder;
 pub mod format;
 pub mod highlight;
 #[cfg(feature = "import")]
