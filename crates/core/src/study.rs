@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::books::{BookId, ChapterIdx, VerseRef};
 use crate::highlight;
 pub use crate::highlight::{Highlight, TextSpan};
+use crate::memory::{Grade, Memorised, Review, Schedule};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -90,6 +91,10 @@ pub struct StudyStore {
     reading: BTreeMap<i64, ReadingSession>,
     plans: HashMap<String, PlanProgress>,
     plan_reads: HashMap<String, HashSet<(u16, u8)>>,
+    /// Passages being memorised, by their first verse.
+    memory: BTreeMap<u32, Memorised>,
+    /// Every recall of each passage being memorised, oldest first, by its first verse.
+    reviews: BTreeMap<u32, Vec<Review>>,
     settings: HashMap<String, String>,
     generation: u64,
 }
@@ -119,6 +124,15 @@ CREATE TABLE IF NOT EXISTS plans(
 CREATE TABLE IF NOT EXISTS plan_reads(
     plan TEXT NOT NULL, day INTEGER NOT NULL, passage INTEGER NOT NULL, at INTEGER NOT NULL,
     PRIMARY KEY(plan, day, passage));
+CREATE TABLE IF NOT EXISTS memory(
+    book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL, last_verse INTEGER NOT NULL,
+    translation TEXT NOT NULL, created INTEGER NOT NULL,
+    due INTEGER NOT NULL, stability REAL NOT NULL, difficulty REAL NOT NULL,
+    reps INTEGER NOT NULL, lapses INTEGER NOT NULL, last_review INTEGER,
+    PRIMARY KEY(book, chapter, verse));
+CREATE TABLE IF NOT EXISTS memory_reviews(
+    book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
+    at INTEGER NOT NULL, grade INTEGER NOT NULL);
 ";
 
 /// A stretch of reading one chapter: when it started, for how long, and how far it got.
@@ -239,6 +253,8 @@ impl StudyStore {
             reading: BTreeMap::new(),
             plans: HashMap::new(),
             plan_reads: HashMap::new(),
+            memory: BTreeMap::new(),
+            reviews: BTreeMap::new(),
             settings: HashMap::new(),
             generation: 1,
         }
@@ -349,6 +365,47 @@ impl StudyStore {
         for (plan, day, passage) in reads {
             if let (Ok(day), Ok(passage)) = (u16::try_from(day), u8::try_from(passage)) {
                 self.plan_reads.entry(plan).or_default().insert((day, passage));
+            }
+        }
+        let memory = query(
+            conn,
+            "SELECT book, chapter, verse, last_verse, translation, created, due, stability, difficulty,
+                    reps, lapses, last_review FROM memory",
+            |r| {
+                let first = verse(r)?;
+                let last_verse = u8::try_from(r.get::<_, i64>(3)?).ok();
+                let last = first.zip(last_verse).map(|(f, n)| VerseRef::new(f.book, f.chapter, n));
+                let schedule = Schedule {
+                    due: r.get(6)?,
+                    stability: r.get(7)?,
+                    difficulty: r.get(8)?,
+                    reps: r.get(9)?,
+                    lapses: r.get(10)?,
+                    last_review: r.get(11)?,
+                };
+                Ok((first, last, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, schedule))
+            },
+        )?;
+        self.memory = memory
+            .into_iter()
+            .filter_map(|(first, last, translation, created, schedule)| {
+                let (first, last) = (first?, last?);
+                Some((first.key(), Memorised { first, last, translation, created, schedule }))
+            })
+            .collect();
+        let reviews = query(
+            conn,
+            "SELECT book, chapter, verse, at, grade FROM memory_reviews ORDER BY at, rowid",
+            |r| {
+                let n: i64 = r.get(4)?;
+                let grade = Grade::ALL.into_iter().find(|g| *g as i64 == n);
+                Ok((verse(r)?, r.get::<_, i64>(3)?, grade))
+            },
+        )?;
+        self.reviews.clear();
+        for (first, at, grade) in reviews {
+            if let (Some(first), Some(grade)) = (first, grade) {
+                self.reviews.entry(first.key()).or_default().push(Review { at, grade });
             }
         }
         self.settings = query(conn, "SELECT key, value FROM settings", |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -732,6 +789,134 @@ impl StudyStore {
         Ok(())
     }
 
+    /// The passage being memorised that verse `v` is part of.
+    pub fn memorised_at(&self, v: VerseRef) -> Option<&Memorised> {
+        self.memory.range(..=v.key()).next_back().map(|(_, m)| m).filter(|m| m.contains(v))
+    }
+
+    /// Every passage being memorised, the soonest due first.
+    pub fn memorised(&self) -> Vec<&Memorised> {
+        let mut v: Vec<&Memorised> = self.memory.values().collect();
+        v.sort_by_key(|m| (m.schedule.due, m.first));
+        v
+    }
+
+    /// The passages that share a verse with `first..=last`.
+    pub fn memorised_in(&self, first: VerseRef, last: VerseRef) -> Vec<&Memorised> {
+        self.memory.values().filter(|m| m.overlaps(first, last)).collect()
+    }
+
+    /// The passages due at `now`, the longest overdue first.
+    pub fn due(&self, now: i64) -> Vec<&Memorised> {
+        self.memorised().into_iter().filter(|m| m.schedule.is_due(now)).collect()
+    }
+
+    /// Starts memorising verses `first..=last` (one chapter) as `translation` has them, due now.
+    /// Passages it overlaps are replaced.
+    pub fn memorise(&mut self, first: VerseRef, last: VerseRef, translation: &str) -> Result<()> {
+        if first.chapter_idx() != last.chapter_idx() || last < first {
+            bail!("a passage to memorise is verses of one chapter");
+        }
+        let overlapping: Vec<VerseRef> =
+            self.memory.values().filter(|m| m.overlaps(first, last)).map(|m| m.first).collect();
+        let t = now();
+        let m = Memorised {
+            first,
+            last,
+            translation: translation.to_string(),
+            created: t,
+            schedule: Schedule::new(t),
+        };
+        self.transaction(|s| {
+            for f in overlapping {
+                s.forget_passage(f)?;
+            }
+            s.put_memorised(&m)
+        })?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// Stops memorising the passage that starts at `first`.
+    pub fn forget(&mut self, first: VerseRef) -> Result<()> {
+        self.transaction(|s| s.forget_passage(first))?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    fn forget_passage(&mut self, first: VerseRef) -> Result<()> {
+        #[cfg(feature = "native")]
+        self.exec(
+            "DELETE FROM memory WHERE book = ?1 AND chapter = ?2 AND verse = ?3",
+            params![first.book.info().code, first.chapter, first.verse],
+        )?;
+        #[cfg(feature = "native")]
+        self.exec(
+            "DELETE FROM memory_reviews WHERE book = ?1 AND chapter = ?2 AND verse = ?3",
+            params![first.book.info().code, first.chapter, first.verse],
+        )?;
+        self.memory.remove(&first.key());
+        self.reviews.remove(&first.key());
+        Ok(())
+    }
+
+    /// Every recall of the passage that starts at `first`, oldest first.
+    pub fn reviews(&self, first: VerseRef) -> &[Review] {
+        self.reviews.get(&first.key()).map_or(&[], Vec::as_slice)
+    }
+
+    fn put_review(&mut self, first: VerseRef, review: Review) -> Result<()> {
+        #[cfg(feature = "native")]
+        self.exec(
+            "INSERT INTO memory_reviews(book, chapter, verse, at, grade) VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![first.book.info().code, first.chapter, first.verse, review.at, review.grade as u8],
+        )?;
+        self.reviews.entry(first.key()).or_default().push(review);
+        Ok(())
+    }
+
+    /// Records a recall of the passage that starts at `first`, scheduling it again.
+    pub fn review(&mut self, first: VerseRef, grade: Grade, at: i64) -> Result<()> {
+        let Some(mut m) = self.memory.get(&first.key()).cloned() else {
+            bail!("{first} isn't being memorised")
+        };
+        m.schedule = m.schedule.next(grade, at);
+        self.transaction(|s| {
+            s.put_review(first, Review { at, grade })?;
+            s.put_memorised(&m)
+        })?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    fn put_memorised(&mut self, m: &Memorised) -> Result<()> {
+        #[cfg(feature = "native")]
+        {
+            let s = &m.schedule;
+            self.exec(
+                "INSERT OR REPLACE INTO memory(book, chapter, verse, last_verse, translation, created, due,
+                     stability, difficulty, reps, lapses, last_review)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    m.first.book.info().code,
+                    m.first.chapter,
+                    m.first.verse,
+                    m.last.verse,
+                    m.translation,
+                    m.created,
+                    s.due,
+                    s.stability,
+                    s.difficulty,
+                    s.reps,
+                    s.lapses,
+                    s.last_review
+                ],
+            )?;
+        }
+        self.memory.insert(m.first.key(), m.clone());
+        Ok(())
+    }
+
     pub fn setting(&self, key: &str) -> Option<String> {
         self.settings.get(key).cloned()
     }
@@ -776,6 +961,7 @@ impl StudyStore {
             translation: translation.to_string(),
             history: Vec::new(),
             plans: Vec::new(),
+            memory: Vec::new(),
             highlights: self
                 .highlights()
                 .into_iter()
@@ -842,6 +1028,27 @@ impl StudyStore {
                     finished: p.finished.map(rfc3339),
                 })
                 .collect();
+            doc.memory = self
+                .memorised()
+                .into_iter()
+                .map(|m| ExportMemorised {
+                    verse: entry(m.first),
+                    last_verse: m.last.verse,
+                    translation: m.translation.clone(),
+                    created: rfc3339(m.created),
+                    due: rfc3339(m.schedule.due),
+                    stability: m.schedule.stability,
+                    difficulty: m.schedule.difficulty,
+                    reps: m.schedule.reps,
+                    lapses: m.schedule.lapses,
+                    last_review: m.schedule.last_review.map(rfc3339),
+                    reviews: self
+                        .reviews(m.first)
+                        .iter()
+                        .map(|r| ExportReview { at: rfc3339(r.at), grade: r.grade.name().to_string() })
+                        .collect(),
+                })
+                .collect();
         }
         Ok(serde_json::to_string_pretty(&doc)?)
     }
@@ -904,6 +1111,20 @@ impl StudyStore {
                 let _ = writeln!(md, "{}\n", n.body.trim_end());
             }
         }
+        let memory = if include.history { self.memorised() } else { Vec::new() };
+        if !memory.is_empty() {
+            let _ = writeln!(md, "## Memorising\n");
+            for m in memory {
+                let _ = writeln!(
+                    md,
+                    "- **{}** ({}) next due {}",
+                    m.reference(),
+                    m.translation,
+                    &rfc3339(m.schedule.due)[..10]
+                );
+            }
+            md.push('\n');
+        }
         let history = if include.history { self.reading_since(0) } else { Vec::new() };
         if !history.is_empty() {
             let _ = writeln!(md, "## Reading history\n");
@@ -944,6 +1165,37 @@ impl StudyStore {
         let notes = doc.notes.iter().map(|n| Ok((verse(&n.verse)?, n))).collect::<Result<Vec<_>>>()?;
         let bookmarks =
             doc.bookmarks.iter().map(|b| Ok((verse(&b.verse)?, b))).collect::<Result<Vec<_>>>()?;
+        let memory = doc
+            .memory
+            .iter()
+            .map(|m| {
+                let first = verse(&m.verse)?;
+                let last = VerseRef::new(first.book, first.chapter, m.last_verse);
+                if last < first {
+                    bail!("{first}: a passage can't end before it starts");
+                }
+                let created = parse_rfc3339(&m.created).unwrap_or_else(now);
+                let schedule = Schedule {
+                    due: parse_rfc3339(&m.due).unwrap_or_else(now),
+                    stability: m.stability,
+                    difficulty: m.difficulty,
+                    reps: m.reps,
+                    lapses: m.lapses,
+                    last_review: m.last_review.as_deref().and_then(parse_rfc3339),
+                };
+                let reviews = m
+                    .reviews
+                    .iter()
+                    .filter_map(|r| {
+                        Some(Review { at: parse_rfc3339(&r.at)?, grade: Grade::from_name(&r.grade)? })
+                    })
+                    .collect::<Vec<_>>();
+                Ok((
+                    Memorised { first, last, translation: m.translation.clone(), created, schedule },
+                    reviews,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let date = |s: &str| parse_rfc3339(s).unwrap_or_else(now);
         // A verse's highlights in the export replace the ones it has.
         let mut by_verse: BTreeMap<VerseRef, Vec<Highlight>> = BTreeMap::new();
@@ -986,19 +1238,32 @@ impl StudyStore {
                     s.set_plan_read(&p.id, day, passage, true)?;
                 }
             }
+            // A passage in the export replaces those it overlaps.
+            for (m, reviews) in &memory {
+                let overlapping: Vec<VerseRef> =
+                    s.memory.values().filter(|o| o.overlaps(m.first, m.last)).map(|o| o.first).collect();
+                for first in overlapping {
+                    s.forget_passage(first)?;
+                }
+                s.put_memorised(m)?;
+                for r in reviews {
+                    s.put_review(m.first, *r)?;
+                }
+            }
             Ok(())
         })?;
         self.generation += 1;
         Ok((doc.highlights.len(), doc.notes.len(), doc.bookmarks.len()))
     }
 
-    /// Erases every highlight, note, bookmark, plan and the reading history.
+    /// Erases every highlight, note, bookmark, plan, passage being memorised and the reading history.
     pub fn erase_all(&mut self) -> Result<()> {
         #[cfg(feature = "native")]
         if let Some(conn) = &self.conn {
             conn.execute_batch(
                 "DELETE FROM highlights; DELETE FROM notes; DELETE FROM bookmarks;
-                 DELETE FROM plans; DELETE FROM plan_reads; DELETE FROM reading;",
+                 DELETE FROM plans; DELETE FROM plan_reads; DELETE FROM reading; DELETE FROM memory;
+                 DELETE FROM memory_reviews;",
             )?;
         }
         self.highlights.clear();
@@ -1007,6 +1272,8 @@ impl StudyStore {
         self.plans.clear();
         self.plan_reads.clear();
         self.reading.clear();
+        self.memory.clear();
+        self.reviews.clear();
         self.generation += 1;
         Ok(())
     }
@@ -1029,6 +1296,36 @@ struct ExportDoc {
     history: Vec<ExportReading>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     plans: Vec<ExportPlan>,
+    /// Passages being memorised and their schedules, when the export includes history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    memory: Vec<ExportMemorised>,
+}
+
+/// A passage being memorised: verses `verse..=last_verse` of one chapter.
+#[derive(Serialize, Deserialize)]
+struct ExportMemorised {
+    #[serde(flatten)]
+    verse: ExportVerse,
+    last_verse: u8,
+    translation: String,
+    created: String,
+    due: String,
+    stability: f64,
+    difficulty: f64,
+    reps: u32,
+    lapses: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_review: Option<String>,
+    /// Every recall, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reviews: Vec<ExportReview>,
+}
+
+/// One recall of a passage: when, and its grade ("Again", "Hard", "Good" or "Easy").
+#[derive(Serialize, Deserialize)]
+struct ExportReview {
+    at: String,
+    grade: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1058,7 +1355,7 @@ pub struct Include {
     pub highlights: bool,
     pub notes: bool,
     pub bookmarks: bool,
-    /// Reading history and plans.
+    /// Reading history, plans and passages being memorised.
     pub history: bool,
 }
 
@@ -1222,6 +1519,89 @@ mod tests {
         assert_eq!(s.reading_since(1_500).len(), 1);
         s.clear_reading(1_500).unwrap();
         assert_eq!(s.reading_since(0).len(), 1);
+    }
+
+    #[test]
+    fn memorised_passages_are_scheduled_and_kept() {
+        let dir = std::env::temp_dir().join(format!("bible-rs-memory-{}", std::process::id()));
+        let path = dir.join("study.sqlite");
+        let _ = std::fs::remove_dir_all(&dir);
+        let v = |n| VerseRef::new(BookId(42), 3, n);
+        {
+            let mut s = StudyStore::open(&path).unwrap();
+            s.memorise(v(16), v(17), "kjv").unwrap();
+            assert_eq!(s.memorised_at(v(17)).map(|m| m.first), Some(v(16)));
+            assert!(s.memorised_at(v(18)).is_none());
+            assert_eq!(s.due(now()).len(), 1, "a new passage is due at once");
+            // One that overlaps takes its place.
+            s.memorise(v(17), v(18), "kjv").unwrap();
+            assert!(s.memorised_at(v(16)).is_none());
+            assert_eq!(s.memorised().len(), 1);
+            s.review(v(17), Grade::Good, now()).unwrap();
+            assert!(s.due(now()).is_empty());
+            assert!(s.memorise(v(18), VerseRef::new(BookId(42), 4, 1), "kjv").is_err());
+        }
+        let mut s = StudyStore::open(&path).unwrap();
+        let m = s.memorised_at(v(18)).cloned().unwrap();
+        assert_eq!((m.first, m.last, m.translation.as_str(), m.schedule.reps), (v(17), v(18), "kjv", 1));
+        s.forget(v(17)).unwrap();
+        assert!(StudyStore::open(&path).unwrap().memorised().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn memorised_passages_survive_a_backup() {
+        let v = |n| VerseRef::new(BookId(42), 3, n);
+        let mut s = StudyStore::open_in_memory().unwrap();
+        s.memorise(v(16), v(17), "bsb").unwrap();
+        s.review(v(16), Grade::Good, now()).unwrap();
+        let saved = s.memorised_at(v(16)).cloned().unwrap();
+
+        let study_only = s.export_json_with("BSB", |_| None, Include::STUDY).unwrap();
+        assert!(!study_only.contains("\"memory\""), "a notes export leaves memorising out");
+        let backup = s.export_json_with("BSB", |_| None, Include::EVERYTHING).unwrap();
+        assert!(s.export_markdown_with("BSB", |_| None, Include::EVERYTHING).contains("John 3:16–17"));
+
+        let mut restored = StudyStore::open_in_memory().unwrap();
+        // An overlapping passage already there gives way to the backup's.
+        restored.memorise(v(17), v(18), "kjv").unwrap();
+        restored.import_json(&backup).unwrap();
+        let m = restored.memorised_at(v(17)).cloned().unwrap();
+        assert_eq!((m.first, m.last, m.translation.as_str()), (v(16), v(17), "bsb"));
+        assert_eq!(m.schedule.reps, 1);
+        assert_eq!(m.schedule.due, saved.schedule.due, "the schedule carries over");
+        assert_eq!(m.schedule.stability, saved.schedule.stability);
+        assert!(restored.memorised_at(v(18)).is_none());
+        assert_eq!(restored.reviews(v(16)), s.reviews(v(16)), "and so does every recall");
+    }
+
+    #[test]
+    fn every_recall_is_logged_and_kept() {
+        let dir = std::env::temp_dir().join(format!("bible-rs-reviews-{}", std::process::id()));
+        let path = dir.join("study.sqlite");
+        let _ = std::fs::remove_dir_all(&dir);
+        let v = |n| VerseRef::new(BookId(42), 3, n);
+        let t = 1_790_000_000;
+        {
+            let mut s = StudyStore::open(&path).unwrap();
+            s.memorise(v(16), v(17), "bsb").unwrap();
+            s.review(v(16), Grade::Again, t).unwrap();
+            s.review(v(16), Grade::Good, t + 600).unwrap();
+        }
+        let mut s = StudyStore::open(&path).unwrap();
+        let log = [Review { at: t, grade: Grade::Again }, Review { at: t + 600, grade: Grade::Good }];
+        assert_eq!(s.reviews(v(16)), log);
+        let replayed = log.iter().fold(Schedule::new(t), |sch, r| sch.next(r.grade, r.at));
+        assert_eq!(
+            s.memorised_at(v(16)).unwrap().schedule.due,
+            replayed.due,
+            "the log rebuilds the schedule"
+        );
+        s.forget(v(16)).unwrap();
+        assert!(s.reviews(v(16)).is_empty());
+        let s = StudyStore::open(&path).unwrap();
+        assert!(s.reviews(v(16)).is_empty(), "forgetting a passage forgets its recalls");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

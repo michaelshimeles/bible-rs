@@ -184,6 +184,38 @@ verse in its colour. Its Highlights list has a row per highlight, and removing a
 that one. Choosing words needs hand-drawn selection handles over its custom text
 drawing, so it's left for later.
 
+## Memorising (an experiment)
+
+Memorising is speculative: it may be more than a reader that is "just the Bible" should carry, and
+it can be dropped without touching anything else. It treats memorising as one more thing you do to
+verses, like a highlight, rather than a separate flashcard app inside this one.
+
+- **A passage** is verses `first..=last` of one chapter, keyed by canonical reference as highlights
+  are. The translation it was learnt in is kept, but a recall uses the translation being read, so
+  nothing switches under you. Memorising depends on exact wording, so this is open to revisiting.
+- **Scheduling** is [FSRS](https://github.com/open-spaced-repetition/awesome-fsrs/wiki/ABC-of-FSRS)-6
+  with its default weights (a port of ts-fsrs 5.4.1): 90 % retention, intervals of 1 to 36,500
+  days, no fuzz. FSRS models how memory fades, so a passage comes back just before it would be
+  forgotten, and spends fewer reviews than fixed intervals for the same recall. Each grade shows
+  when it would bring the passage back. Where it differs from ts-fsrs, on purpose: Again's interval
+  is 0 (see below); after an Again, the other grades only keep their order rather than a day apart,
+  and another Again isn't another lapse.
+- **No learning steps to set.** Again leaves a passage due, so it comes back at the end of the
+  session (and stays due if you stop). FSRS-6's same-day terms then schedule the next recall from
+  how it went. With nothing due, recalling practises every passage early; FSRS counts an early
+  recall for less, and recalling it well never brings it back sooner.
+- **The reveal** (`memory::Reveal`) gives every character a place along one line, so a reveal
+  carries across line breaks on its own. A character fades in over the five places after its own
+  (a soft edge), and each word and phrase is followed by a pause as long as that edge, so a reveal
+  resting at a word's end shows all of it and none of the next. Letting go of a drag settles back
+  on the last whole word, so it never shows more than was dragged through.
+- **Storage** is two tables, created if missing, so older files open unchanged: `memory` holds each
+  passage and its schedule, and `memory_reviews` logs every recall (when, and its grade), only ever
+  added to. The log can rebuild any schedule, so a new scheduler, or weights fitted to a reader's
+  own recalls, needs no lossy migration. Backups (and exports that include history) carry both.
+- **Known gap:** Literata joins some letter pairs into one glyph ("Th", "fi"), so such a pair is
+  revealed together, and a first-letter hint shows both letters.
+
 ## macOS integration
 
 - Native menu bar via `muda` (`cfg(target_os = "macos")`). Menu items with key equivalents are
