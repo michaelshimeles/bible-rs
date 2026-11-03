@@ -176,7 +176,24 @@ impl FolderLibrary {
         };
         fs::create_dir_all(root.join("changes"))?;
         fs::create_dir_all(root.join("snapshots"))?;
-        Ok(Self { root: root.to_path_buf(), id })
+        let lib = Self { root: root.to_path_buf(), id };
+        lib.own_folder(&["changes"])?;
+        lib.own_folder(&["snapshots"])?;
+        Ok(lib)
+    }
+
+    /// Checks that `root/<parts…>` is a folder of the library itself, not a link (or a link
+    /// somewhere on the way) to a folder elsewhere: what this device writes stays in the library.
+    fn own_folder(&self, parts: &[&str]) -> Result<()> {
+        let root =
+            fs::canonicalize(&self.root).with_context(|| format!("reading {}", self.root.display()))?;
+        let path = parts.iter().fold(self.root.clone(), |p, part| p.join(part));
+        let real = fs::canonicalize(&path).with_context(|| format!("reading {}", path.display()))?;
+        let expected = parts.iter().fold(root, |p, part| p.join(part));
+        if real != expected || !fs::symlink_metadata(&path)?.is_dir() {
+            bail!("{} links outside the study library; not writing there", path.display());
+        }
+        Ok(())
     }
 
     pub fn root(&self) -> &Path {
@@ -410,6 +427,8 @@ impl FolderLibrary {
             return Ok(0);
         }
         fs::create_dir_all(&dir)?;
+        self.own_folder(&["changes", &me])?;
+        self.own_folder(&["snapshots"])?;
         // The next number follows everything this device ever wrote here: its files, what the
         // store remembers, and its snapshot (a store restored from an older copy remembers less).
         let mut last = mine.changes.iter().chain(&mine.pending).copied().max().unwrap_or(0).max(written);
@@ -961,6 +980,27 @@ mod tests {
         let e = FolderLibrary::open(&dir.0).unwrap_err();
         assert!(format!("{e:#}").contains("still downloading"), "{e:#}");
         assert!(!dir.0.join(MARKER).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_folders_are_not_written_into() {
+        let dir = TempDir::new("linked-dirs");
+        let outside = TempDir::new("linked-dirs-target");
+        let lib = FolderLibrary::open(&dir.0).unwrap();
+        let (mut a, _) = device(T0);
+        a.set_note(v(1), "private").unwrap();
+        // This device's change folder and the snapshots folder swapped for links elsewhere.
+        let mine = lib.changes_dir(a.device_id());
+        std::os::unix::fs::symlink(&outside.0, &mine).unwrap();
+        let e = lib.sync(&mut a).unwrap_err();
+        assert!(format!("{e:#}").contains("links outside"), "{e:#}");
+        fs::remove_file(&mine).unwrap();
+        fs::remove_dir(dir.0.join("snapshots")).unwrap();
+        std::os::unix::fs::symlink(&outside.0, dir.0.join("snapshots")).unwrap();
+        assert!(lib.sync(&mut a).is_err());
+        assert!(FolderLibrary::open(&dir.0).is_err());
+        assert!(files(&outside.0).is_empty());
     }
 
     #[cfg(unix)]
