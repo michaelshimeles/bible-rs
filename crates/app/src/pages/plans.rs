@@ -36,6 +36,9 @@ pub struct State {
     pub open: Option<(String, usize)>,
     /// The reflection being written: its verse, the note's text it started from, and the draft.
     reflection: Option<(VerseRef, String, String)>,
+    /// The text the last reflection save was sent over, until the next frame shows whether it
+    /// landed.
+    reflection_sent: Option<String>,
 }
 
 /// A plan with its progress, as of today.
@@ -871,6 +874,15 @@ impl State {
     ) -> f32 {
         let painter = ui.painter().clone();
         let saved = env.study.note(v).map(|n| n.body.clone()).unwrap_or_default();
+        // The save failed (the note is still what it was sent over): keep the draft unsaved.
+        if let Some(sent) = self.reflection_sent.take()
+            && let Some((rv, base, draft)) = &mut self.reflection
+            && *rv == v
+            && saved == sent
+            && *draft != saved
+        {
+            *base = sent;
+        }
         // New, or a sync changed the note under a draft with nothing typed: start from the note.
         if self
             .reflection
@@ -952,7 +964,9 @@ impl State {
             ui.id().with("cancel-reflection"),
         );
         if sr.clicked() {
-            actions.push(Action::SaveNote(v, draft.clone(), std::mem::replace(base, draft.clone())));
+            let sent = std::mem::replace(base, draft.clone());
+            actions.push(Action::SaveNote(v, draft.clone(), sent.clone()));
+            self.reflection_sent = Some(sent);
         }
         if cr.clicked() {
             *base = saved.clone();

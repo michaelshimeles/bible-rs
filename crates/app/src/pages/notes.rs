@@ -46,11 +46,13 @@ struct Editor {
     saved: String,
     /// When the text last changed (seconds, egui time), to save after a pause.
     changed: Option<f64>,
+    /// The text the last save was sent over, until the next frame shows whether it landed.
+    sent: Option<String>,
 }
 
 impl Editor {
     fn new(verse: VerseRef, body: &str) -> Self {
-        Self { verse, text: to_display(body), saved: body.to_string(), changed: None }
+        Self { verse, text: to_display(body), saved: body.to_string(), changed: None, sent: None }
     }
 }
 
@@ -177,6 +179,13 @@ impl State {
         // the save keeps the other version as a conflict copy (see `Action::SaveNote`).
         if let Some(e) = &mut self.editor {
             let body = env.study.note(e.verse).map(|n| n.body.clone()).unwrap_or_default();
+            // The save failed (the note is still what it was sent over): keep the draft unsaved.
+            if let Some(base) = e.sent.take()
+                && body == base
+                && body != e.saved
+            {
+                e.saved = base;
+            }
             if body != e.saved && e.changed.is_none() && to_markdown(&e.text) == e.saved {
                 *e = Editor::new(e.verse, &body);
             }
@@ -210,8 +219,9 @@ impl State {
         if let Some(e) = &mut self.editor {
             let md = to_markdown(&e.text);
             if md != e.saved {
-                actions.push(Action::SaveNote(e.verse, md.clone(), std::mem::take(&mut e.saved)));
-                e.saved = md;
+                let base = std::mem::replace(&mut e.saved, md.clone());
+                actions.push(Action::SaveNote(e.verse, md, base.clone()));
+                e.sent = Some(base);
             }
             e.changed = None;
         }
