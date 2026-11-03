@@ -62,6 +62,28 @@ struct DeviceFiles {
     snapshot_pending: bool,
 }
 
+/// Where a store has read each other device's files up to (from [`FolderLibrary::plan`]).
+#[derive(Debug, Clone, Default)]
+pub struct Plan {
+    me: String,
+    read: std::collections::HashMap<String, u64>,
+}
+
+/// The other devices' files read by [`FolderLibrary::fetch`], for [`FolderLibrary::apply`].
+#[derive(Default)]
+pub struct Fetched {
+    devices: Vec<(String, Vec<Batch>)>,
+    waiting: usize,
+    problems: Vec<String>,
+}
+
+impl Fetched {
+    /// Files read.
+    pub fn files(&self) -> usize {
+        self.devices.iter().map(|(_, b)| b.len()).sum()
+    }
+}
+
 /// What one [`FolderLibrary::sync`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncReport {
@@ -160,10 +182,8 @@ impl FolderLibrary {
 
     /// Reads the other devices' new files in, then writes what changed here.
     pub fn sync(&self, store: &mut StudyStore) -> Result<SyncReport> {
-        let mut report = SyncReport::default();
-        self.pull(store, &mut report)?;
-        report.written = self.push(store)?;
-        Ok(report)
+        let fetched = self.fetch(&self.plan(store))?;
+        self.apply(store, fetched)
     }
 
     /// Where it stands, from file names alone.
@@ -239,9 +259,30 @@ impl FolderLibrary {
         Ok(out.into_iter().collect())
     }
 
-    fn pull(&self, store: &mut StudyStore, report: &mut SyncReport) -> Result<()> {
-        for (device, files) in self.devices(store.device_id())? {
-            let mut read = self.read_upto(store, &device);
+    /// Where this store has read each device up to: what [`fetch`](Self::fetch) starts from.
+    pub fn plan(&self, store: &StudyStore) -> Plan {
+        let me = store.device_id().to_string();
+        let read = match self.devices(&me) {
+            Ok(devices) => devices
+                .into_iter()
+                .map(|(d, _)| {
+                    let n = self.read_upto(store, &d);
+                    (d, n)
+                })
+                .collect(),
+            Err(_) => Default::default(),
+        };
+        Plan { me, read }
+    }
+
+    /// Reads the other devices' new files, without the store: this is the part that can wait on
+    /// the sync service (a file iCloud hasn't downloaded yet blocks the read until it has), so
+    /// an app runs it off its UI thread and gives the result to [`apply`](Self::apply).
+    pub fn fetch(&self, plan: &Plan) -> Result<Fetched> {
+        let mut out = Fetched::default();
+        for (device, files) in self.devices(&plan.me)? {
+            let mut read = plan.read.get(&device).copied().unwrap_or(0);
+            let mut batches = Vec::new();
             // The next change file is gone (folded into the snapshot): start from the snapshot.
             if files.changes.first().is_none_or(|n| *n > read + 1)
                 && (files.snapshot || files.snapshot_pending)
@@ -250,15 +291,15 @@ impl FolderLibrary {
                 match files.snapshot.then(|| read_batch(&path, &device)) {
                     Some(Ok(batch)) => {
                         if batch.seq > read {
-                            self.take(store, &device, &batch, report)?;
                             read = batch.seq;
+                            batches.push(batch);
                         }
                     }
-                    Some(Err(e)) => report.problems.push(format!("{}: {e:#}", path.display())),
+                    Some(Err(e)) => out.problems.push(format!("{}: {e:#}", path.display())),
                     None => {}
                 }
                 if read == 0 && !files.snapshot {
-                    report.waiting += 1;
+                    out.waiting += 1;
                 }
             }
             // In order, one after another: a gap is a file still on its way.
@@ -266,33 +307,41 @@ impl FolderLibrary {
                 let path = self.changes_dir(&device).join(change_name(read + 1));
                 match read_batch(&path, &device) {
                     Ok(batch) => {
-                        self.take(store, &device, &batch, report)?;
                         read += 1;
+                        batches.push(Batch { seq: read, ..batch });
                     }
                     Err(e) => {
-                        report.problems.push(format!("{}: {e:#}", path.display()));
+                        out.problems.push(format!("{}: {e:#}", path.display()));
                         break;
                     }
                 }
             }
-            report.waiting +=
-                files.changes.range(read + 1..).count() + files.pending.range(read + 1..).count();
+            out.waiting += files.changes.range(read + 1..).count() + files.pending.range(read + 1..).count();
+            if !batches.is_empty() {
+                out.devices.push((device, batches));
+            }
         }
-        Ok(())
+        Ok(out)
     }
 
-    /// Merges one of `device`'s files and remembers it was read.
-    fn take(
-        &self,
-        store: &mut StudyStore,
-        device: &str,
-        batch: &Batch,
-        report: &mut SyncReport,
-    ) -> Result<()> {
-        let r = store.merge(&batch.changes, MergeMode::Sync)?;
-        add(&mut report.merged, &r);
-        report.read += 1;
-        store.set_sync_value(&self.key(&format!("read.{device}")), &batch.seq.to_string())
+    /// Merges what [`fetch`](Self::fetch) read into the store, then writes what changed here.
+    pub fn apply(&self, store: &mut StudyStore, fetched: Fetched) -> Result<SyncReport> {
+        let mut report =
+            SyncReport { waiting: fetched.waiting, problems: fetched.problems, ..Default::default() };
+        for (device, batches) in fetched.devices {
+            for batch in batches {
+                // Read already (another sync got there first): nothing new in it.
+                if batch.seq <= self.read_upto(store, &device) {
+                    continue;
+                }
+                let r = store.merge(&batch.changes, MergeMode::Sync)?;
+                add(&mut report.merged, &r);
+                report.read += 1;
+                store.set_sync_value(&self.key(&format!("read.{device}")), &batch.seq.to_string())?;
+            }
+        }
+        report.written = self.push(store)?;
+        Ok(report)
     }
 
     /// Writes this device's changes since the last time; how many records.
@@ -739,6 +788,22 @@ mod tests {
         let r = lib.sync(&mut a).unwrap();
         assert_eq!((r.read, r.written), (0, 0));
         assert_eq!(body(&a, 2), Some("two"));
+    }
+
+    #[test]
+    fn reads_fetched_twice_are_taken_once() {
+        let dir = TempDir::new("twice");
+        let lib = FolderLibrary::open(&dir.0).unwrap();
+        let (mut a, _) = device(T0);
+        let (mut b, _) = device(T0);
+        a.set_note(v(1), "one").unwrap();
+        lib.sync(&mut a).unwrap();
+        // Two fetches started before either was applied (off the UI thread, say).
+        let (one, two) = (lib.fetch(&lib.plan(&b)).unwrap(), lib.fetch(&lib.plan(&b)).unwrap());
+        assert_eq!((one.files(), two.files()), (1, 1));
+        assert_eq!(lib.apply(&mut b, one).unwrap().read, 1);
+        assert_eq!(lib.apply(&mut b, two).unwrap().read, 0);
+        assert_eq!(body(&b, 1), Some("one"));
     }
 
     #[test]

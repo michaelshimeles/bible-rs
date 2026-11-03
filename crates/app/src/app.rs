@@ -66,6 +66,8 @@ pub struct Settings {
     pub pinned_books: Vec<u8>,
     /// The sidebar's books in their testaments, or in the canon's sections.
     pub book_grouping: BookGrouping,
+    /// Data → Study Library (beta): the folder the study syncs with, if any.
+    pub study_library: Option<String>,
 }
 
 fn yes() -> bool {
@@ -102,6 +104,7 @@ impl Default for Settings {
             onboarded: false,
             pinned_books: Vec::new(),
             book_grouping: BookGrouping::Testament,
+            study_library: None,
         }
     }
 }
@@ -170,6 +173,32 @@ pub fn initialize(data_dir: PathBuf, notify: Arc<dyn Fn() + Send + Sync>) -> Res
     // Decode the translation being read now; the rest warm up after the first frame.
     let _ = library.load(&settings.translation);
     Ok(Init { data_dir, study, library, settings, elapsed: t.elapsed() })
+}
+
+/// iCloud Drive's folder on this Mac, when there is one: where the folder picker starts.
+fn icloud_drive() -> Option<PathBuf> {
+    let dir = dirs::home_dir()?.join("Library/Mobile Documents/com~apple~CloudDocs");
+    dir.is_dir().then_some(dir)
+}
+
+/// The study library folder for a folder the reader picked: that folder when it's empty or
+/// already a library, else a `Bible Study Library` folder made in it. Never the app's own
+/// data folder (that holds the SQLite file, which isn't synced as a file).
+pub fn study_library_in(picked: &std::path::Path, data_dir: &std::path::Path) -> Result<PathBuf> {
+    let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let (picked_c, data_c) = (canon(picked), canon(data_dir));
+    if picked_c.starts_with(&data_c) || data_c.starts_with(&picked_c) {
+        anyhow::bail!("Choose a folder outside the app's own data folder");
+    }
+    let is_library = picked.join("library.json").is_file();
+    let empty =
+        std::fs::read_dir(picked)?.flatten().all(|e| e.file_name().to_string_lossy().starts_with('.'));
+    if is_library || empty {
+        return Ok(picked.to_path_buf());
+    }
+    let inner = picked.join("Bible Study Library");
+    std::fs::create_dir_all(&inner)?;
+    Ok(inner)
 }
 
 /// Back/forward navigation history.
@@ -315,6 +344,8 @@ pub struct BibleApp {
     focus_reveal: bool,
     /// When an automatic backup was last considered (egui time).
     backup_checked: Option<f64>,
+    /// Syncing with the study library folder, when one is set.
+    study_sync: crate::study_sync::StudySync,
     /// The day the plan reminder last showed.
     reminded: Option<i64>,
     /// The page in the main area (the reader unless a library or study page is open).
@@ -448,6 +479,7 @@ impl BibleApp {
             focus: false,
             focus_reveal: false,
             backup_checked: None,
+            study_sync: Default::default(),
             pages: Default::default(),
             object_view: Default::default(),
             object_rect: None,
@@ -1021,6 +1053,21 @@ impl BibleApp {
                 }
             }
             Action::RevealDataDir => reveal(&self.data_dir),
+            Action::ChooseStudyLibrary => self.choose_study_library(ctx),
+            Action::StopStudyLibrary => {
+                self.settings.study_library = None;
+                self.toast(ctx, "Stopped syncing. Your study stays here, and in the folder.");
+            }
+            Action::SyncStudyLibrary => self.study_sync.sync_soon(),
+            Action::UseConflict(v, stamp) => match self.study.use_conflict(v, &stamp) {
+                Ok(_) => self.reader.invalidate(),
+                Err(e) => self.toast(ctx, format!("Couldn't use that version: {e:#}")),
+            },
+            Action::DismissConflict(v, stamp) => {
+                if let Err(e) = self.study.dismiss_conflict(v, &stamp) {
+                    self.toast(ctx, format!("Couldn't dismiss it: {e:#}"));
+                }
+            }
             Action::TextFormat => egui::Popup::open_id(ctx, Id::new(TEXT_POPUP)),
             Action::ToggleFocus => {
                 self.focus = !self.focus;
@@ -1285,6 +1332,44 @@ impl BibleApp {
         let (h, n, b) = self.study.counts();
         if due && h + n + b > 0 {
             let _ = self.backup_now();
+        }
+    }
+
+    /// Study Library (beta): asks for the folder to keep the study in. A folder with other things
+    /// in it gets a `Bible Study Library` folder of its own inside.
+    fn choose_study_library(&mut self, ctx: &egui::Context) {
+        let mut dialog = rfd::FileDialog::new().set_title("Choose a folder for your study library");
+        if let Some(dir) = icloud_drive() {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(picked) = dialog.pick_folder() else { return };
+        match study_library_in(&picked, &self.data_dir) {
+            Ok(folder) => {
+                self.settings.study_library = Some(folder.to_string_lossy().into_owned());
+                self.study_sync.sync_soon();
+                self.toast(ctx, format!("Syncing your study with {}", folder.display()));
+            }
+            Err(e) => self.toast(ctx, format!("{e:#}")),
+        }
+    }
+
+    /// Syncs with the study library folder when it's due, and shows what came in.
+    fn sync_study_library(&mut self, ctx: &egui::Context) {
+        if self.startup.frames < 10 {
+            return;
+        }
+        let folder = self.settings.study_library.clone();
+        let Some(report) = self.study_sync.tick(ctx, folder.as_deref(), &mut self.study) else { return };
+        if report.merged.changed() > 0 {
+            self.reader.invalidate();
+        }
+        if report.merged.conflicts > 0 {
+            let n = report.merged.conflicts;
+            let what = if n == 1 { "A note was" } else { "Notes were" };
+            self.toast(
+                ctx,
+                format!("{what} edited on two devices. Both versions are kept in Settings › Data."),
+            );
         }
     }
 
@@ -2737,6 +2822,7 @@ impl eframe::App for BibleApp {
             }
         }
         if let Some(s) = &mut self.settings_ui {
+            s.sync = self.study_sync.view();
             let tx = self.task_tx.clone();
             let mut import: Option<(PathBuf, Option<String>)> = None;
             let open = s.show(
@@ -2800,6 +2886,7 @@ impl eframe::App for BibleApp {
         self.shortcuts_help(&ctx, &mut actions);
         self.plan_reminder(&ctx);
         self.auto_backup(&ctx);
+        self.sync_study_library(&ctx);
         self.toasts(&ctx);
         self.object_view(&ctx, frame, &mut actions);
         self.end_frame(&ctx, frame, frame_start, actions);
