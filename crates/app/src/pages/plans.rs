@@ -38,7 +38,7 @@ pub struct State {
     reflection: Option<(VerseRef, String, String)>,
     /// The text the last reflection save was sent over, until the next frame shows whether it
     /// landed.
-    reflection_sent: Option<String>,
+    reflection_sent: Option<(String, String)>,
 }
 
 /// A plan with its progress, as of today.
@@ -874,12 +874,11 @@ impl State {
     ) -> f32 {
         let painter = ui.painter().clone();
         let saved = env.study.note(v).map(|n| n.body.clone()).unwrap_or_default();
-        // The save failed (the note is still what it was sent over): keep the draft unsaved.
-        if let Some(sent) = self.reflection_sent.take()
-            && let Some((rv, base, draft)) = &mut self.reflection
+        // The save didn't land (the note isn't the text sent): keep the draft unsaved.
+        if let Some((sent, body)) = self.reflection_sent.take()
+            && let Some((rv, base, _)) = &mut self.reflection
             && *rv == v
-            && saved == sent
-            && *draft != saved
+            && saved != body
         {
             *base = sent;
         }
@@ -966,7 +965,7 @@ impl State {
         if sr.clicked() {
             let sent = std::mem::replace(base, draft.clone());
             actions.push(Action::SaveNote(v, draft.clone(), sent.clone()));
-            self.reflection_sent = Some(sent);
+            self.reflection_sent = Some((sent, draft.clone()));
         }
         if cr.clicked() {
             *base = saved.clone();

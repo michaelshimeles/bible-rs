@@ -179,9 +179,9 @@ impl State {
         // the save keeps the other version as a conflict copy (see `Action::SaveNote`).
         if let Some(e) = &mut self.editor {
             let body = env.study.note(e.verse).map(|n| n.body.clone()).unwrap_or_default();
-            // The save failed (the note is still what it was sent over): keep the draft unsaved.
+            // The save didn't land (the note isn't the text sent): keep the draft unsaved, so a
+            // later save keeps whatever is stored now as a conflict copy.
             if let Some(base) = e.sent.take()
-                && body == base
                 && body != e.saved
             {
                 e.saved = base;
