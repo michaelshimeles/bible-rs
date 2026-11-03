@@ -6,6 +6,18 @@ or pasted by hand now. `scripts/check-app-store-metadata.sh` (run in CI) checks 
 against App Store Connect's limits. [../APP_STORE.md](../APP_STORE.md) covers the one-time setup,
 signing and each release.
 
+## Decisions
+
+Settled on 2 November 2026 for the first release:
+
+- **Seller:** Fabrika LLC (team 5S3KCRYBD2), so the copyright line is `2026 Fabrika LLC`.
+- **Version:** 0.2.0, from `Cargo.toml` like the Mac app; the build number is the commit count.
+- **Territories:** all of them, the United Kingdom included, as the Mac download already is. The
+  KJV's Crown letters patent in the UK are accepted as they are for the Mac.
+- **Bundle ID:** `dev.bible-rs.ios`, which can't change once the App Store Connect record exists.
+
+## Fields
+
 | Field | File | Limit |
 |---|---|---|
 | Name | `metadata/en-US/name.txt` | 30 |
@@ -52,7 +64,7 @@ The privacy policy is https://simplymybible.com/privacy and already describes th
   has no web view, messaging, user-generated content feed or ads.
 - **Content rights.** Yes, it shows third-party content, and you have the rights: the seven
   translations (KJV, WEB, BSB, ASV, YLT, Darby, Webster) are in the public domain. The KJV is
-  Crown copyright in the United Kingdom; see "Decide first" in APP_STORE.md.
+  Crown copyright in the United Kingdom; the app is offered there anyway (see Decisions above).
 - **Sign-in for App Review.** Not needed.
 - **App Review contact.** Your name, phone number and email.
 

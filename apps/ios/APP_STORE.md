@@ -13,15 +13,11 @@ The App Store name is **Bible: Fast & Offline**. The name under the icon, `CFBun
 stays "Bible". No live app in the US, UK, Canadian or Australian store used the name on 20
 October 2026; App Store Connect confirms it's free when the record is created.
 
-1. **The bundle ID.** It's `dev.bible-rs.ios`, set as `BIBLE_BUNDLE_ID` in
-   `Config/Bible.xcconfig`, and it can't change once the record exists. The Mac app is
-   `dev.bible-rs.app` and ships outside the store, so the two don't need to match.
-2. **The version.** The phone app takes its version from `Cargo.toml`, like the Mac, so it would
-   launch as 0.2.0. The store accepts that; set 1.0.0 there first if you'd rather launch at 1.0.
-3. **The UK store.** The KJV is public domain everywhere except the UK, where the Crown's letters
-   patent cover it. Either leave the UK out under Pricing and Availability, or keep it in, as the
-   Mac download already does.
-4. **A support email.** The support page sends people to GitHub issues, which needs a GitHub
+The bundle ID (`dev.bible-rs.ios`), the version (0.2.0), the seller (Fabrika LLC) and the
+territories (all, the UK included) are settled; [AppStore/](AppStore/README.md#decisions) records
+them. Still open:
+
+1. **A support email.** The support page sends people to GitHub issues, which needs a GitHub
    account. An email address there would reach everyone else.
 
 ## One-time setup
