@@ -286,6 +286,13 @@ pub fn highlighter(p: &Painter, r: Rect, c: Color32) {
     g.line(&[(9.5, 6.0), (14.0, 10.5)]);
 }
 
+/// Two cards, one behind the other: a passage being memorised.
+pub fn cards(p: &Painter, r: Rect, c: Color32) {
+    let g = Grid::new(p, r, c);
+    g.rect(3.25, 6.25, 11.0, 10.0, 2.0);
+    g.line(&[(6.75, 3.75), (14.75, 3.75), (16.75, 5.75), (16.75, 12.75)]);
+}
+
 pub fn note(p: &Painter, r: Rect, c: Color32) {
     let g = Grid::new(p, r, c);
     g.rect(4.0, 2.75, 12.0, 14.5, 2.25);

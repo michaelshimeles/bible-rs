@@ -46,6 +46,18 @@ pub enum Action {
     RemoveNote(VerseRef),
     /// Save a note's text (an empty text removes it).
     SaveNote(VerseRef, String),
+    /// Memorise the selected verses (M); passages already memorised are left as they are.
+    Memorise,
+    /// Stop memorising the passages the selection touches, forgetting their recalls.
+    StopMemorising,
+    /// Recall the memorised passages that are due, one after another in the reader.
+    StartRecall,
+    /// Reveal more or less of the passage being recalled.
+    Recall(crate::reader::recall::Step),
+    /// Grade the recall (`None`: Good) and go on to the next passage.
+    RecallGrade(Option<bible_core::memory::Grade>),
+    EndRecall,
+    ToggleRecallHints,
     /// Start (or restart) a reading plan today; stop one.
     StartPlan(String),
     StopPlan(String),

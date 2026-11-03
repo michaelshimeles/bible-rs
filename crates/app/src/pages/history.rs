@@ -15,7 +15,6 @@ use crate::widgets::{self, BadgeKind, Button, Kind, css_baseline, flow, paint_ru
 const TIMELINE: f32 = 584.0;
 const ROW: f32 = 84.0;
 const CARD: f32 = 320.0;
-const DAY: i64 = 86_400;
 
 pub struct State {
     /// 0 today, 1 the last seven days, 2 everything.
@@ -45,7 +44,7 @@ impl State {
         let now = bible_core::study::now();
         let today = time::day_start(now);
         super::title(&painter, p, left, top, "History", "Everything you’ve read, newest first");
-        let week = env.study.reading_since(today - 6 * DAY);
+        let week = env.study.reading_since(time::days_before(today, 6));
         if env.study.reading_since(0).is_empty() {
             let empty = Empty {
                 glyph: icons::history,
@@ -73,7 +72,7 @@ impl State {
                 actions.push(Action::ClearReading(today));
             }
             if ui.button("Clear the Last 7 Days").clicked() {
-                actions.push(Action::ClearReading(today - 6 * DAY));
+                actions.push(Action::ClearReading(time::days_before(today, 6)));
             }
             crate::menu::separator(ui);
             if ui.button("Clear All History").clicked() {
@@ -95,7 +94,7 @@ impl State {
         // The timeline.
         let since = match self.range {
             0 => today,
-            1 => today - 6 * DAY,
+            1 => time::days_before(today, 6),
             _ => 0,
         };
         let q = env.query.trim().to_lowercase();
@@ -118,7 +117,7 @@ impl State {
                 let l = time::local(s.started);
                 let label = if d == today {
                     format!("Today · {}", time::weekday(l.weekday))
-                } else if d >= today - 6 * DAY {
+                } else if d >= time::days_before(today, 6) {
                     time::weekday(l.weekday).to_string()
                 } else {
                     format!("{} · {}", time::weekday(l.weekday), time::short_date(s.started))
@@ -232,7 +231,7 @@ impl State {
         let days: Vec<(i64, Vec<&ReadingSession>)> = (0..7)
             .rev()
             .map(|k| {
-                let d = today - k * DAY;
+                let d = time::days_before(today, k);
                 (d, week.iter().filter(|s| time::day_start(s.started) == d).collect())
             })
             .collect();

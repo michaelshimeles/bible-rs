@@ -215,6 +215,10 @@ verses, like a highlight, rather than a separate flashcard app inside this one.
   own recalls, needs no lossy migration. Backups (and exports that include history) carry both.
 - **Known gap:** Literata joins some letter pairs into one glyph ("Th", "fi"), so such a pair is
   revealed together, and a first-letter hint shows both letters.
+- **On the Mac** a recall happens in the reader: the chapter is typeset as for reading and never
+  reflows. The passage's galleys are painted again with each glyph's vertices faded by the reveal,
+  and the rest of the chapter is dimmed. A horizontal drag or two-finger swipe moves the reveal; a
+  swipe holds the page still while it lasts.
 
 ## macOS integration
 

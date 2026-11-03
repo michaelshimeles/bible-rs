@@ -140,7 +140,36 @@ pub fn weekday_short(w: u8) -> &'static str {
 /// Local midnight at the start of the day containing `unix`.
 pub fn day_start(unix: i64) -> i64 {
     let l = local(unix);
-    unix - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - (unix + l.offset).rem_euclid(60)
+    let midnight =
+        unix - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - (unix + l.offset).rem_euclid(60);
+    // On a day the clocks change, the hours shown since midnight aren't the hours passed.
+    let midnight = midnight + l.offset - local(midnight).offset;
+    // Where the clocks go back at 1:00, midnight comes twice: the first one starts the day.
+    let earlier = local(midnight - 3600);
+    if earlier.day == l.day && earlier.hour == 0 { midnight - 3600 } else { midnight }
+}
+
+/// Whole calendar days from local midnight `from` to local midnight `to` (rounded, as a day the
+/// clocks change is an hour short or long).
+pub fn days_between(from: i64, to: i64) -> i64 {
+    (to - from + 43_200).div_euclid(86_400)
+}
+
+/// Local midnight at the start of the day `k` calendar days before the day starting at `day`.
+/// (From noon that day, so a 23- or 25-hour day in between can't shift it.)
+pub fn days_before(day: i64, k: i64) -> i64 {
+    day_start(day - k * 86_400 + 12 * 3600)
+}
+
+/// Local midnight at the end of today: what's due by then is due today.
+pub fn end_of_today() -> i64 {
+    day_end(now())
+}
+
+/// Local midnight at the end of the day containing `unix`. (Found from 36 hours after the day's
+/// start, so a 23- or 25-hour day still lands on the next one.)
+pub fn day_end(unix: i64) -> i64 {
+    day_start(day_start(unix) + 36 * 3600)
 }
 
 /// "9:41" (24-hour clock, as the design shows).
@@ -181,6 +210,20 @@ pub fn duration(seconds: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_day_ends_at_the_next_local_midnight() {
+        // Every hour of a year, so the clock changes in whatever zone the tests run in are crossed.
+        let start = civil_seconds(2026, 1, 1);
+        for t in (start..start + 366 * 86_400).step_by(3600) {
+            let (from, to) = (day_start(t), day_end(t));
+            assert!(from <= t && t < to, "{t}: {from}..{to}");
+            assert!((23 * 3600..=25 * 3600).contains(&(to - from)), "{t}: a {}-hour day", (to - from) / 3600);
+            assert_eq!(day_start(to), to, "{t}: ends at a midnight");
+            assert_eq!(days_before(to, 1), from, "{t}: the day before the next is this one");
+            assert_eq!(days_between(from, to), 1, "{t}: one calendar day");
+        }
+    }
 
     #[test]
     fn durations() {
