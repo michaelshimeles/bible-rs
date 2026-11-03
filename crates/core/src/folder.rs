@@ -73,6 +73,9 @@ pub struct Plan {
 #[derive(Default)]
 pub struct Fetched {
     devices: Vec<(String, Vec<Batch>)>,
+    /// The last change in this device's own snapshot, if it has one (read here, off the store,
+    /// so writing never waits on the sync service): numbering continues past it.
+    own_snapshot: Option<u64>,
     waiting: usize,
     problems: Vec<String>,
 }
@@ -330,6 +333,13 @@ impl FolderLibrary {
     /// an app runs it off its UI thread and gives the result to [`apply`](Self::apply).
     pub fn fetch(&self, plan: &Plan) -> Result<Fetched> {
         let mut out = Fetched::default();
+        let own = self.snapshot_path(&plan.me);
+        if own.exists() {
+            match read_batch(&own, &plan.me) {
+                Ok(b) => out.own_snapshot = Some(b.seq),
+                Err(e) => out.problems.push(format!("{}: {e:#}", own.display())),
+            }
+        }
         for (device, files) in self.devices(&plan.me)? {
             let mut read = plan.read.get(&device).copied().unwrap_or(0);
             let mut batches = Vec::new();
@@ -399,12 +409,12 @@ impl FolderLibrary {
                 store.set_sync_value(&self.key(&format!("read.{device}")), &batch.seq.to_string())?;
             }
         }
-        report.written = self.push(store)?;
+        report.written = self.push(store, fetched.own_snapshot)?;
         Ok(report)
     }
 
     /// Writes this device's changes since the last time; how many records.
-    fn push(&self, store: &mut StudyStore) -> Result<usize> {
+    fn push(&self, store: &mut StudyStore, own_snapshot: Option<u64>) -> Result<usize> {
         let me = store.device_id().to_string();
         let pushed = self.pushed(store);
         let others = self.devices(&me)?;
@@ -433,11 +443,12 @@ impl FolderLibrary {
         // store remembers, and its snapshot (a store restored from an older copy remembers less).
         let mut last = mine.changes.iter().chain(&mine.pending).copied().max().unwrap_or(0).max(written);
         if has_snapshot {
-            if !snapshot.exists() {
-                bail!("{} is still downloading", snapshot.display());
-            }
-            let b = read_batch(&snapshot, &me).with_context(|| format!("reading {}", snapshot.display()))?;
-            last = last.max(b.seq);
+            // Not read yet (still downloading, or written since the fetch): stop rather than
+            // guess a number below it; the next sync reads it.
+            let Some(seq) = own_snapshot else {
+                bail!("{} isn't readable yet", snapshot.display());
+            };
+            last = last.max(seq);
         }
         let n = last + 1;
         if n > 1 && mine.changes.is_empty() && !has_snapshot {
@@ -934,6 +945,20 @@ mod tests {
         assert_eq!(mine.changes.iter().copied().collect::<Vec<_>>(), [COMPACT_AFTER as u64 + 2]);
         lib.sync(&mut b).unwrap();
         assert_eq!(body(&b, 2), Some("after the restore"));
+    }
+
+    #[test]
+    fn an_unreadable_snapshot_of_its_own_stops_the_write() {
+        let dir = TempDir::new("own-unreadable");
+        let lib = FolderLibrary::open(&dir.0).unwrap();
+        let (mut a, clock) = device(T0);
+        compacted(&lib, &mut a, &clock);
+        fs::write(lib.snapshot_path(a.device_id()), b"{ half a fi").unwrap();
+        a.set_sync_value(&lib.key("written"), "20").unwrap();
+        later(&clock, 1000);
+        a.set_note(v(2), "waits").unwrap();
+        assert!(lib.sync(&mut a).is_err());
+        assert!(list_changes(&lib.changes_dir(a.device_id())).unwrap().changes.is_empty());
     }
 
     #[test]
