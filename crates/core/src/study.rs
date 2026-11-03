@@ -1933,15 +1933,45 @@ impl StudyStore {
             }
             copies.sort_by(|a, b| a.stamp.cmp(&b.stamp));
             copies.dedup_by(|a, b| a.stamp == b.stamp);
-            if copies != here {
+            // The note's version accounts for every copy it holds, so dismissing one later tells
+            // the other copies of the study it was seen and dropped, not merely never received.
+            let held = copies.iter().map(|k| k.stamp.clone()).collect::<Vec<_>>();
+            let copies_changed = copies != here;
+            if copies_changed {
                 self.set_conflicts(v, copies)?;
             }
+            let pick = match merged.pick {
+                NotePick::Local => match &local {
+                    Some(l) if copies_changed || held.iter().any(|t| !l.has_seen(t)) => {
+                        // Copies arrived for a note kept as it is: a change here all the same.
+                        if copies_changed {
+                            report.notes += 1;
+                        }
+                        let mut version = l.clone();
+                        version.absorb(held.iter().cloned());
+                        NotePick::LocalAbsorbing(version)
+                    }
+                    _ => NotePick::Local,
+                },
+                NotePick::LocalAbsorbing(mut version) => {
+                    version.absorb(held.iter().cloned());
+                    NotePick::LocalAbsorbing(version)
+                }
+                NotePick::Remote(mut version) => {
+                    version.absorb(held.iter().cloned());
+                    NotePick::Remote(version)
+                }
+                NotePick::Revive(mut version) => {
+                    version.absorb(held.iter().cloned());
+                    NotePick::Revive(version)
+                }
+            };
             let created = |remote: i64| match (local_note.as_ref().map(|n| n.created), remote) {
                 (Some(l), r) if l > 0 && (r == 0 || l < r) => l,
                 (_, r) if r > 0 => r,
                 _ => found,
             };
-            match merged.pick {
+            match pick {
                 NotePick::Local => {}
                 NotePick::LocalAbsorbing(version) => {
                     let seq = self.next_seq();
@@ -2818,6 +2848,45 @@ mod sync_tests {
         sync(&a, &mut b);
         for s in [&a, &b, &c] {
             assert_eq!((body(s, 16), copies(s).len()), (Some("from c"), 0));
+        }
+    }
+
+    #[test]
+    fn a_conflict_copy_dismissed_after_arriving_stays_dismissed() {
+        let (mut a, clock_a) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        let (mut c, clock_c) = device("cccc", T0);
+        a.set_note(v(3), "base").unwrap();
+        sync(&a, &mut b);
+        // b edits first, a later without knowing; c has a's edit before b's text reaches a.
+        later(&clock_b, 10);
+        b.set_note(v(3), "from b").unwrap();
+        later(&clock_a, 20);
+        a.set_note(v(3), "from a").unwrap();
+        sync(&a, &mut c);
+        assert_eq!(sync(&b, &mut a).conflicts, 1);
+        // c edits on, then hears of b's copy: it is reported and counted as a change since.
+        later(&clock_c, 30);
+        c.set_note(v(3), "from c").unwrap();
+        let since = c.seq();
+        let generation = c.generation();
+        assert_eq!(sync(&a, &mut c).notes, 1);
+        assert!(c.generation() > generation);
+        let news = c.changes_since(since, false);
+        assert_eq!(news.notes.len(), 1);
+        assert_eq!(news.notes[0].conflicts.len(), 1);
+        // Dismissed on c, it leaves a, and a's older copy of the note doesn't bring it back.
+        let copies = |s: &StudyStore| s.note_conflicts_at(v(3)).len();
+        let stamp = c.note_conflicts_at(v(3))[0].stamp.clone();
+        assert!(c.dismiss_conflict(v(3), &stamp).unwrap());
+        let a_before = a.changes_since(0, false);
+        sync(&c, &mut a);
+        c.merge(&a_before, MergeMode::Sync).unwrap();
+        sync(&a, &mut c);
+        sync(&b, &mut c);
+        sync(&c, &mut b);
+        for s in [&a, &b, &c] {
+            assert_eq!((body(s, 3), copies(s)), (Some("from c"), 0));
         }
     }
 
