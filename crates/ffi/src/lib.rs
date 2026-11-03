@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use std::time::Instant;
 
 use bible_core::books::{BIBLE_SECTIONS, BOOKS, CHAPTER_COUNT, FIRST_NT_BOOK, Testament};
+use bible_core::folder::{FolderLibrary, SyncStatus};
 use bible_core::library::{Chapter, Library};
 use bible_core::model::{Origin, Translation};
 use bible_core::search::{Query, Scope};
@@ -265,6 +266,37 @@ pub enum ExportFormat {
     Json,
 }
 
+/// How a study library folder stands (see `bible_core::folder`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct StudyLibraryStatus {
+    /// The folder can't be reached.
+    pub offline: bool,
+    /// Records changed here not yet written to the folder.
+    pub outgoing: u32,
+    /// Files from other devices not yet read (iCloud may still be downloading them).
+    pub incoming: u32,
+    /// Note conflict copies waiting for the reader.
+    pub conflicts: u32,
+    /// Other devices writing to the folder.
+    pub devices: u32,
+    /// "Synced", "3 waiting", "Offline", "2 conflicts".
+    pub label: String,
+}
+
+/// What one sync with a study library folder did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct StudyLibrarySync {
+    /// Files read from other devices, and the records they changed here.
+    pub read: u32,
+    pub changed: u32,
+    /// New note conflict copies.
+    pub conflicts: u32,
+    /// Records written for the other devices.
+    pub written: u32,
+    /// Files there not read yet.
+    pub waiting: u32,
+}
+
 /// The translations and the study store (highlights, notes, bookmarks, settings) in one data
 /// folder, laid out as the Mac app's.
 #[derive(uniffi::Object)]
@@ -498,6 +530,42 @@ impl Bible {
 
     pub fn set_setting(&self, key: String, value: String) -> Result<(), BibleError> {
         Ok(self.study().set_setting(&key, &value)?)
+    }
+
+    /// Syncs the study with a study library folder (one the Mac app syncs with too, through
+    /// iCloud Drive, say). Blocks while it reads the folder (a file iCloud hasn't downloaded
+    /// yet holds the read), so call it off the main thread; the study stays usable meanwhile.
+    pub fn sync_study_library(&self, folder: String) -> Result<StudyLibrarySync, BibleError> {
+        let lib = FolderLibrary::open(std::path::Path::new(&folder))?;
+        let plan = lib.plan(&self.study());
+        let fetched = lib.fetch(&plan)?;
+        let r = lib.apply(&mut self.study(), fetched)?;
+        let n = |n: usize| n.min(u32::MAX as usize) as u32;
+        Ok(StudyLibrarySync {
+            read: n(r.read),
+            changed: n(r.merged.changed()),
+            conflicts: n(r.merged.conflicts),
+            written: n(r.written),
+            waiting: n(r.waiting),
+        })
+    }
+
+    /// How a study library folder stands, from its file names (quick).
+    pub fn study_library_status(&self, folder: String) -> StudyLibraryStatus {
+        let study = self.study();
+        let s = match FolderLibrary::open(std::path::Path::new(&folder)) {
+            Ok(lib) => lib.status(&study),
+            Err(_) => SyncStatus { offline: true, conflicts: study.conflict_count(), ..Default::default() },
+        };
+        let n = |n: usize| n.min(u32::MAX as usize) as u32;
+        StudyLibraryStatus {
+            offline: s.offline,
+            outgoing: n(s.outgoing),
+            incoming: n(s.incoming),
+            conflicts: n(s.conflicts),
+            devices: n(s.devices),
+            label: s.label(),
+        }
     }
 }
 

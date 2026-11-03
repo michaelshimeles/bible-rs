@@ -321,3 +321,30 @@ fn a_verse_with_several_highlights_lists_each() {
     assert_eq!((left.len(), left[0].start, left[0].highlight), (1, 4, Some(HighlightColor::Yellow)));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_study_library_folder_carries_notes_between_devices() {
+    let (phone, a) = open("library-phone");
+    let (mac, b) = open("library-mac");
+    let folder = std::env::temp_dir().join(format!("bible-ffi-library-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder).unwrap();
+    let path: String = folder.to_string_lossy().into();
+
+    phone.set_note(JOHN_3_16, "For God so loved".into()).unwrap();
+    assert_eq!(phone.study_library_status(path.clone()).label, "1 waiting");
+    let r = phone.sync_study_library(path.clone()).unwrap();
+    assert_eq!((r.read, r.written), (0, 1));
+    let r = mac.sync_study_library(path.clone()).unwrap();
+    assert_eq!((r.read, r.changed, r.conflicts), (1, 1, 0));
+    assert_eq!(mac.note(JOHN_3_16).unwrap().as_deref(), Some("For God so loved"));
+    let s = mac.study_library_status(path.clone());
+    assert_eq!((s.label.as_str(), s.devices), ("Synced", 1));
+
+    let gone: String = folder.join("not-there").to_string_lossy().into();
+    assert!(mac.study_library_status(gone.clone()).offline);
+    assert!(mac.sync_study_library(gone).is_err());
+    for d in [a, b, folder] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
