@@ -3,6 +3,7 @@ import SwiftUI
 /// What you can do with the verses you've tapped: highlight, note, bookmark, copy, share.
 struct SelectionBar: View {
     @Environment(Store.self) private var store
+    @State private var confirmStop = false
     let theme: Theme
 
     var body: some View {
@@ -66,6 +67,15 @@ struct SelectionBar: View {
                 action("Note", "note.text.badge.plus") { store.noteOnSelection() }
                 action(bookmarked ? "Saved" : "Bookmark", bookmarked ? "bookmark.fill" : "bookmark") {
                     store.toggleBookmarkOnSelection()
+                }
+                action(store.selectionMemorised ? "Memorising" : "Memorise", "rectangle.on.rectangle") {
+                    // Stopping deletes the passage's recall history, so it asks first.
+                    if store.selectionMemorised { confirmStop = true } else { store.memoriseSelection() }
+                }
+                .confirmationDialog("Stop memorising?", isPresented: $confirmStop, titleVisibility: .visible) {
+                    Button("Stop Memorising", role: .destructive) { store.memoriseSelection() }
+                } message: {
+                    Text("Its recall history is deleted too.")
                 }
                 action("Copy", "doc.on.doc") { store.copySelection() }
                 ShareLink(item: store.selectionText, subject: Text(store.selectionLabel)) {

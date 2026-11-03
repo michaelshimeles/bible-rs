@@ -46,12 +46,17 @@ struct StudyView: View {
                 if items.isEmpty { empty }
             }
             .safeAreaInset(edge: .top) {
-                Picker("Show", selection: $kind) {
-                    Text("Bookmarks").tag(StudyKind.bookmarks)
-                    Text("Highlights").tag(StudyKind.highlights)
-                    Text("Notes").tag(StudyKind.notes)
+                VStack(spacing: 8) {
+                    if !store.memorisedPassages.isEmpty {
+                        RecallRow(theme: theme)
+                    }
+                    Picker("Show", selection: $kind) {
+                        Text("Bookmarks").tag(StudyKind.bookmarks)
+                        Text("Highlights").tag(StudyKind.highlights)
+                        Text("Notes").tag(StudyKind.notes)
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
             }

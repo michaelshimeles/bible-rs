@@ -10,6 +10,8 @@ protocol ReaderViewDelegate: AnyObject {
     func readerDidTapPage(_ reader: ReaderView)
     /// The reader is scrolling on through the text (`true`) or back.
     func reader(_ reader: ReaderView, isReadingOn: Bool)
+    /// A passage being recalled was revealed further.
+    func reader(_ reader: ReaderView, recallChanged status: RecallStatus)
 }
 
 /// Verses picked in one chapter.
@@ -84,6 +86,22 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
     private var accessibilityCache: [UIAccessibilityElement]?
     private lazy var tapGate = TapGate(reader: self)
 
+    /// A memorised passage being recalled in place, and one waiting for its chapter to be placed.
+    private(set) var recall: RecallSession?
+    private var recallRequest: (passage: MemorisedPassage, letters: Bool)?
+    /// Which showing of a passage the recall is (`RecallRun.id`).
+    private var recallID: UUID?
+    private var recallStatus: RecallStatus?
+    private var recallLink: CADisplayLink?
+    private lazy var recallGate = RecallGate(reader: self)
+    private lazy var recallPan: UIPanGestureRecognizer = {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(recallPanned(_:)))
+        pan.delegate = recallGate
+        pan.isEnabled = false
+        return pan
+    }()
+    private let recallTicks = UISelectionFeedbackGenerator()
+
     private let tileHeight: CGFloat = 256
     private var tileOrigin: CGFloat = 0
     private var tiles: [Int: Tile] = [:]
@@ -112,6 +130,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
         tap.delegate = tapGate
         addGestureRecognizer(tap)
+        addGestureRecognizer(recallPan)
         isAccessibilityElement = false
     }
 
@@ -173,6 +192,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         }
         if placed.isEmpty { return }
         fill(style)
+        bindRecall()
         updateTiles()
         report()
         typesetAhead(style)
@@ -374,9 +394,13 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
             ctx.saveGState()
             ctx.translateBy(x: 0, y: p.y - tile.frame.minY)
             let selected = selection?.chapter == p.layout.index ? selection?.verses ?? [] : []
-            p.layout.draw(
-                area.offsetBy(dx: 0, dy: -p.y),
-                decorations: .init(theme: theme, selected: selected))
+            var decorations = ChapterLayout.Decorations(theme: theme, selected: selected)
+            if let recall, recall.layout === p.layout {
+                decorations.recall = recall
+            } else if recall != nil || recallRequest != nil {
+                decorations.dimmed = true
+            }
+            p.layout.draw(area.offsetBy(dx: 0, dy: -p.y), decorations: decorations)
             ctx.restoreGState()
         }
         LaunchClock.mark("First page drawn")
@@ -475,6 +499,11 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
     }
 
     @objc private func tapped(_ tap: UITapGestureRecognizer) {
+        // Recalling, a tap anywhere shows the next word.
+        if recall != nil {
+            showNextWord()
+            return
+        }
         let point = tap.location(in: self)
         guard let p = placed.first(where: { point.y >= $0.y && point.y < $0.maxY }) else {
             readerDelegate?.readerDidTapPage(self)
@@ -491,6 +520,152 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
             readerDelegate?.reader(self, didTapVerse: verse, inChapter: p.layout.index)
         } else {
             readerDelegate?.readerDidTapPage(self)
+        }
+    }
+
+    // MARK: Recall
+
+    /// Recalls a memorised passage in place (or stops, with `nil`): its words hidden until a
+    /// horizontal drag or a tap reveals them, the rest of the text dimmed.
+    func setRecall(_ passage: MemorisedPassage?, id: UUID?, letters: Bool) {
+        guard let passage else {
+            if recall != nil || recallRequest != nil { endRecall() }
+            return
+        }
+        if let recall, recallID == id {
+            if recall.letters != letters {
+                recall.letters = letters
+                refreshRecall()
+            }
+            return
+        }
+        if recallRequest != nil, recallID == id { return }
+        endRecall()
+        recallID = id
+        recallRequest = (passage, letters)
+        recallPan.isEnabled = true
+        setNeedsLayout()
+    }
+
+    private func endRecall() {
+        recall = nil
+        recallRequest = nil
+        recallStatus = nil
+        recallPan.isEnabled = false
+        recallLink?.invalidate()
+        recallLink = nil
+        redrawTiles()
+        // VoiceOver reads the passage again.
+        accessibilityCache = nil
+        UIAccessibility.post(notification: .layoutChanged, argument: nil)
+    }
+
+    /// Makes the recall once its chapter is placed, and reads it again from a new layout.
+    private func bindRecall() {
+        let chapter = Int(recall?.passage.chapterIndex ?? recallRequest?.passage.chapterIndex ?? 0)
+        guard recall != nil || recallRequest != nil,
+            let p = placed.first(where: { $0.layout.index == chapter })
+        else { return }
+        if let request = recallRequest {
+            recallRequest = nil
+            recall = RecallSession(passage: request.passage, layout: p.layout, letters: request.letters)
+            if recall == nil {
+                let status = RecallStatus(unavailable: true)
+                recallStatus = status
+                readerDelegate?.reader(self, recallChanged: status)
+                return
+            }
+            #if DEBUG
+                // Screenshots and checks without touch (see Store.recallDemo).
+                let args = ProcessInfo.processInfo.arguments
+                if let i = args.firstIndex(of: "--recall-steps"), i + 1 < args.count, let n = Int(args[i + 1]) {
+                    recall?.showPhrases(n)
+                }
+            #endif
+            redrawTiles()
+        } else if let recall, recall.layout !== p.layout {
+            recall.rebind(to: p.layout)
+        } else {
+            return
+        }
+        refreshRecall()
+    }
+
+    private func showNextWord() {
+        recall?.nextWord()
+        refreshRecall()
+        animateRecall()
+    }
+
+    private func refreshRecall() {
+        guard let recall else { return }
+        redrawTiles()
+        let status = recall.status
+        if status != recallStatus {
+            recallStatus = status
+            // VoiceOver hears the passage once it's all shown.
+            accessibilityCache = nil
+            readerDelegate?.reader(self, recallChanged: status)
+        }
+    }
+
+    private func animateRecall() {
+        guard recallLink == nil, recall?.animating == true else { return }
+        let link = CADisplayLink(target: self, selector: #selector(recallFrame(_:)))
+        link.add(to: .main, forMode: .common)
+        recallLink = link
+    }
+
+    @objc private func recallFrame(_ link: CADisplayLink) {
+        let moving = recall?.tick(Float(link.duration), reduceMotion: UIAccessibility.isReduceMotionEnabled) ?? false
+        refreshRecall()
+        if !moving {
+            link.invalidate()
+            recallLink = nil
+        }
+    }
+
+    @objc private func recallPanned(_ pan: UIPanGestureRecognizer) {
+        guard let recall else { return }
+        let width = effectiveStyle?.column.width ?? bounds.width
+        switch pan.state {
+        case .began:
+            recallTicks.prepare()
+            recallLink?.invalidate()
+            recallLink = nil
+        case .changed:
+            let dx = pan.translation(in: self).x
+            pan.setTranslation(.zero, in: self)
+            if recall.drag(by: dx, width: width) { recallTicks.selectionChanged() }
+            refreshRecall()
+        case .ended, .cancelled:
+            recall.release()
+            animateRecall()
+        default:
+            break
+        }
+    }
+
+    /// The recall's pan starts only on a sideways drag, and the reader's scrolling waits to see
+    /// whether it does.
+    private final class RecallGate: NSObject, UIGestureRecognizerDelegate {
+        weak var reader: ReaderView?
+
+        init(reader: ReaderView) { self.reader = reader }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let reader, reader.recall != nil, let pan = gestureRecognizer as? UIPanGestureRecognizer else {
+                return false
+            }
+            let v = pan.velocity(in: reader)
+            return abs(v.x) > abs(v.y)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer
+        ) -> Bool {
+            guard let reader, reader.recall != nil else { return false }
+            return other === reader.panGestureRecognizer
         }
     }
 
@@ -524,6 +699,15 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
                     // every verse while reading on.
                     e.accessibilityLabel = "\(top.verse). \(text)"
                     e.accessibilityHint = "\(reference). Double-tap to select."
+                    // Recalling, VoiceOver doesn't give the passage away: double-tap shows it word by
+                    // word, as a tap does.
+                    if let recall, !recall.status.done,
+                        recall.passage.chapterIndex == layout.index,
+                        (Int(recall.passage.first.verse)...Int(recall.passage.last.verse)).contains(top.verse)
+                    {
+                        e.accessibilityLabel = "\(top.verse). Hidden while recalling"
+                        e.accessibilityHint = "Double-tap to show the next word."
+                    }
                     e.accessibilityTraits = .staticText
                     e.accessibilityIdentifier = reference
                     e.accessibilityFrameInContainerSpace = bands.dropFirst().reduce(first) { $0.union($1) }
@@ -547,7 +731,11 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
 
         override func accessibilityActivate() -> Bool {
             guard let reader else { return false }
-            reader.readerDelegate?.reader(reader, didTapVerse: verse, inChapter: chapter)
+            if reader.recall != nil {
+                reader.showNextWord()
+            } else {
+                reader.readerDelegate?.reader(reader, didTapVerse: verse, inChapter: chapter)
+            }
             return true
         }
     }

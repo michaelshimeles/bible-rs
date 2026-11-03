@@ -14,7 +14,7 @@ struct RootView: View {
                 ReaderContainer(
                     store: store, theme: theme, style: typography(theme), translation: store.settings.translation,
                     readingLine: safeTop + 60, selection: store.selection, marksVersion: store.marksVersion,
-                    jump: store.jump
+                    jump: store.jump, recall: store.recall, recallLetters: store.settings.recallLetters
                 )
                 .overlay(alignment: .top) {
                     // Paper under the status bar, fading out below it.
@@ -45,7 +45,10 @@ struct RootView: View {
                             .glass(in: Capsule(), theme: theme, interactive: false)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
-                    if store.selection != nil {
+                    if store.recall != nil {
+                        RecallBar(theme: theme)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    } else if store.selection != nil {
                         SelectionBar(theme: theme)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
@@ -57,6 +60,7 @@ struct RootView: View {
         .animation(.smooth(duration: 0.28), value: store.barsHidden)
         .animation(.smooth(duration: 0.28), value: store.selection != nil)
         .animation(.smooth(duration: 0.28), value: store.toast)
+        .animation(.smooth(duration: 0.28), value: store.recall?.status.done)
         .statusBarHidden(store.barsHidden)
         .preferredColorScheme(preferredScheme)
         .tint(Color(theme.accent))

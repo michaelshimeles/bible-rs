@@ -246,8 +246,14 @@ fn study_marks_follow_the_verse_and_persist() {
     assert_eq!(
         marks,
         [
-            VerseMarks { verse: 1, highlight: None, note: false, bookmark: true },
-            VerseMarks { verse: 16, highlight: Some(HighlightColor::Green), note: true, bookmark: false },
+            VerseMarks { verse: 1, highlight: None, note: false, bookmark: true, memorised: false },
+            VerseMarks {
+                verse: 16,
+                highlight: Some(HighlightColor::Green),
+                note: true,
+                bookmark: false,
+                memorised: false
+            },
         ]
     );
     assert_eq!(bible.note(JOHN_3_16).unwrap().as_deref(), Some("God's love"));
@@ -319,5 +325,38 @@ fn a_verse_with_several_highlights_lists_each() {
     bible.remove_highlight(JOHN_3_16, 96).unwrap();
     let left = bible.study_items(StudyKind::Highlights, "kjv".into());
     assert_eq!((left.len(), left[0].start, left[0].highlight), (1, 4, Some(HighlightColor::Yellow)));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn memorising_and_recall_plans() {
+    let (bible, dir) = open("memory");
+    let v17 = VerseRef { verse: 17, ..JOHN_3_16 };
+    bible.memorise(JOHN_3_16, v17, "kjv".into()).unwrap();
+    let m = bible.memorised_at(v17).unwrap();
+    assert_eq!(
+        (m.reference.as_str(), m.translation.as_str(), m.chapter_index),
+        ("John 3:16–17", "kjv", index("jn 3"))
+    );
+    assert_eq!(bible.due_passages(bible_core::study::now()).len(), 1);
+    assert_eq!(bible.grade_labels(JOHN_3_16), ["today", "1 day", "2 days", "8 days"]);
+    let marks = bible.marks("kjv".into(), index("jn 3"));
+    assert!(marks.iter().any(|m| m.verse == 16 && m.memorised), "the passage's first verse is marked");
+    assert!(!marks.iter().any(|m| m.verse == 17 && m.memorised));
+    bible.review(JOHN_3_16, RecallGrade::Good).unwrap();
+    assert!(bible.due_passages(bible_core::study::now()).is_empty());
+    assert_eq!(bible.memorised_passages().len(), 1);
+    bible.forget(JOHN_3_16).unwrap();
+    assert!(bible.memorised_at(JOHN_3_16).is_none());
+
+    let text = "I have hidden Your word in my heartthat I might not sin against You.";
+    let at = text.find("that").unwrap() as u32;
+    let plan = recall_plan(vec![RecallVerse { text: text.into(), breaks: vec![at] }]);
+    assert_eq!(plan.phrases.len(), 2);
+    assert_eq!(plan.phrases[0].parts, [RecallPart { verse: 0, start: 0, end: at }]);
+    assert_eq!(plan.verses[0].places.len(), text.chars().count());
+    assert!(plan.verses[0].places[1] < 0.0, "a space has no place");
+    assert!(plan.verses[0].first_letters[at as usize]);
+    assert_eq!(plan.end, plan.phrases[1].stop);
     let _ = std::fs::remove_dir_all(dir);
 }

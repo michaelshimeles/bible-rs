@@ -381,8 +381,9 @@ bible-rs open bible://jhn.3.16-18
 `apps/ios` is the iPhone app (iPad runs it too): SwiftUI around the same Rust core, through
 UniFFI (`crates/ffi`). It has the Mac's typesetting, themes and colours. You can scroll through all
 1,189 chapters, jump to a reference (`jn 3:16`), search as you type, and highlight, annotate,
-bookmark, copy or share verses. Parallel and compare views, import and online translations are
-Mac-only for now.
+bookmark, copy or share verses. Memorising works as on the Mac: Memorise in the selection bar,
+then Study › Memory to recall what's due.
+Parallel and compare views, import and online translations are Mac-only for now.
 
 <table>
 <tr>
