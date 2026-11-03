@@ -189,12 +189,12 @@ impl FolderLibrary {
     /// Where it stands, from file names alone.
     pub fn status(&self, store: &StudyStore) -> SyncStatus {
         let mut s = SyncStatus { conflicts: store.conflict_count(), ..Default::default() };
-        let pushed = self.pushed(store);
-        s.outgoing = store.changes_since(pushed, true).len();
         let Ok(devices) = self.devices(store.device_id()) else {
             s.offline = true;
+            s.outgoing = store.changes_since(self.pushed(store), true).len();
             return s;
         };
+        s.outgoing = self.outgoing(store, self.pushed(store), &devices).len();
         s.devices = devices.len();
         for (device, files) in &devices {
             let read = self.read_upto(store, device);
@@ -215,6 +215,15 @@ impl FolderLibrary {
         let n = store.sync_value(&self.key("pushed")).and_then(|v| v.parse().ok()).unwrap_or(0);
         // A store that went back (restored from an older copy) writes all its records again.
         if n > store.seq() { 0 } else { n }
+    }
+
+    /// What this device writes: what changed here since `since`, but for the records the other
+    /// devices here wrote themselves. So what came in from elsewhere (an imported backup, an
+    /// older version's records) goes out too, and what was read from this folder doesn't go back.
+    fn outgoing(&self, store: &StudyStore, since: i64, others: &[(String, DeviceFiles)]) -> Changes {
+        let mut c = store.changes_since(since, false);
+        c.retain_stamps(|s| !others.iter().any(|(d, _)| *d == s.device));
+        c
     }
 
     fn read_upto(&self, store: &StudyStore, device: &str) -> u64 {
@@ -348,7 +357,8 @@ impl FolderLibrary {
     fn push(&self, store: &mut StudyStore) -> Result<usize> {
         let me = store.device_id().to_string();
         let pushed = self.pushed(store);
-        let changes = store.changes_since(pushed, true);
+        let others = self.devices(&me)?;
+        let changes = self.outgoing(store, pushed, &others);
         let seq = store.seq();
         let count = changes.len();
         if changes.is_empty() {
@@ -370,7 +380,7 @@ impl FolderLibrary {
         if n > 1 && mine.changes.is_empty() && !snapshot.exists() {
             // This device's files were removed from the folder: write all of it again, as a
             // snapshot, so a device starting from nothing doesn't wait for changes 1 to n - 1.
-            let all = Batch { format: FORMAT, device: me, seq: n, changes: store.changes_since(0, true) };
+            let all = Batch { format: FORMAT, device: me, seq: n, changes: self.outgoing(store, 0, &others) };
             write_atomic(&snapshot, &serde_json::to_vec(&all)?)?;
             store.set_sync_value(&self.key("written"), &n.to_string())?;
             store.set_sync_value(&self.key("pushed"), &seq.to_string())?;
@@ -383,7 +393,7 @@ impl FolderLibrary {
         store.set_sync_value(&self.key("pushed"), &seq.to_string())?;
         if mine.changes.len() > COMPACT_AFTER {
             // Everything this device's records say now, as of change n; then its files up to n go.
-            let all = Batch { format: FORMAT, device: me, seq: n, changes: store.changes_since(0, true) };
+            let all = Batch { format: FORMAT, device: me, seq: n, changes: self.outgoing(store, 0, &others) };
             write_atomic(&snapshot, &serde_json::to_vec(&all)?)?;
             for old in mine.changes.range(..=n) {
                 let _ = fs::remove_file(dir.join(change_name(*old)));
@@ -531,6 +541,47 @@ mod tests {
         walk(dir, dir, &mut out);
         out.sort();
         out
+    }
+
+    #[test]
+    fn what_came_from_elsewhere_goes_out_too() {
+        let dir = TempDir::new("elsewhere");
+        let lib = FolderLibrary::open(&dir.0).unwrap();
+        let (mut a, _) = device(T0);
+        let (mut b, _) = device(T0 + 5);
+        // A backup from before sync (no device), and a record from a device not in this folder.
+        a.import_json(
+            r#"{"app":"bible-rs","format":1,"exported_at":"2026-10-14T12:00:00Z","translation":"KJV",
+                "notes":[{"reference":"John 3:16","book":"JHN","chapter":3,"verse":16,
+                "note":"old","created":"2026-10-14T12:00:00Z","updated":"2026-10-14T12:00:00Z"}]}"#,
+        )
+        .unwrap();
+        let mut other = Changes::default();
+        other.notes.push(crate::sync::NoteChange {
+            verse: crate::sync::VerseKey { book: "JHN".into(), chapter: 3, verse: 17 },
+            stamp: crate::sync::Stamp::new(T0 - 1_000, "elsewhere"),
+            deleted: false,
+            body: "from elsewhere".into(),
+            created: 1_790_000_000,
+            updated: 1_790_000_000,
+            base_updated: 0,
+            seen: vec![],
+            conflicts: vec![],
+        });
+        a.merge(&other, MergeMode::Import).unwrap();
+        assert_eq!(lib.status(&a).outgoing, 2);
+        assert_eq!(lib.sync(&mut a).unwrap().written, 2);
+        let r = lib.sync(&mut b).unwrap();
+        assert_eq!((r.read, r.merged.changed()), (1, 2));
+        assert_eq!((body(&b, 16), body(&b, 17)), (Some("old"), Some("from elsewhere")));
+        // b passes those on once too (it can't tell them from its own imports); a takes nothing
+        // new from that, and neither writes what it read from the other.
+        lib.sync(&mut b).unwrap();
+        let r = lib.sync(&mut a).unwrap();
+        assert_eq!((r.merged.changed(), r.written), (0, 0));
+        assert_eq!(lib.sync(&mut b).unwrap().written, 0);
+        assert_eq!(lib.status(&a).label(), "Synced");
+        assert_eq!(lib.status(&b).label(), "Synced");
     }
 
     #[test]

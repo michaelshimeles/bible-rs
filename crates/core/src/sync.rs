@@ -392,6 +392,15 @@ impl Changes {
             + self.plan_reads.len()
     }
 
+    /// Keeps the records whose stamps `keep` says to.
+    pub fn retain_stamps(&mut self, mut keep: impl FnMut(&Stamp) -> bool) {
+        self.highlights.retain(|c| keep(&c.stamp));
+        self.notes.retain(|c| keep(&c.stamp));
+        self.bookmarks.retain(|c| keep(&c.stamp));
+        self.plans.retain(|c| keep(&c.stamp));
+        self.plan_reads.retain(|c| keep(&c.stamp));
+    }
+
     /// Every stamp in it.
     pub fn stamps(&self) -> impl Iterator<Item = &Stamp> {
         self.highlights
