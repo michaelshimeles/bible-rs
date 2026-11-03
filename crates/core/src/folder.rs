@@ -60,6 +60,8 @@ pub struct DeviceFiles {
     pending: BTreeSet<u64>,
     snapshot: bool,
     snapshot_pending: bool,
+    /// The snapshot's size and modification time, to tell one already read from a new one.
+    snapshot_version: Option<String>,
 }
 
 /// Where a store has read each other device's files up to (from [`FolderLibrary::plan`]).
@@ -76,6 +78,8 @@ pub struct Fetched {
     /// The last change in this device's own snapshot, if it has one (read here, off the store,
     /// so writing never waits on the sync service): numbering continues past it.
     own_snapshot: Option<u64>,
+    /// The other devices' snapshots read (whole), by version: once merged, they aren't new.
+    snapshots_read: Vec<(String, String)>,
     waiting: usize,
     problems: Vec<String>,
 }
@@ -241,6 +245,16 @@ impl FolderLibrary {
             if files.snapshot_pending && read == 0 && !files.snapshot {
                 s.incoming += 1;
             }
+            // A snapshot this store hasn't read, where the next change file is missing (folded
+            // into it): there is something to read.
+            let gap = !files.changes.contains(&(read + 1)) && !files.pending.contains(&(read + 1));
+            let seen = store.sync_value(&self.key(&format!("snapshot.{device}")));
+            if files.snapshot
+                && gap
+                && (files.snapshot_version.is_none() || files.snapshot_version.as_deref() != seen)
+            {
+                s.incoming += 1;
+            }
         }
         s
     }
@@ -307,6 +321,7 @@ impl FolderLibrary {
                 files.snapshot_pending = true;
             } else {
                 files.snapshot = true;
+                files.snapshot_version = file_version(&self.snapshot_path(device));
             }
         }
         Ok(out.into_iter().collect())
@@ -367,13 +382,21 @@ impl FolderLibrary {
                 }
                 snapshot_tried = true;
                 let path = self.snapshot_path(&device);
+                let version = files.snapshot_version.clone();
                 match files.snapshot.then(|| read_batch(&path, &device)) {
-                    Some(Ok(batch)) if batch.seq > read => {
+                    Some(Ok(batch)) => {
+                        if let Some(version) = version {
+                            out.snapshots_read.push((device.clone(), version));
+                        }
+                        if batch.seq <= read {
+                            break;
+                        }
                         read = batch.seq;
                         batches.push(batch);
                     }
-                    Some(Ok(_)) => break,
                     Some(Err(e)) => {
+                        // Half downloaded, or damaged: not synced until it reads.
+                        out.waiting += 1;
                         out.problems.push(format!("{}: {e:#}", path.display()));
                         break;
                     }
@@ -408,6 +431,9 @@ impl FolderLibrary {
                 report.read += 1;
                 store.set_sync_value(&self.key(&format!("read.{device}")), &batch.seq.to_string())?;
             }
+        }
+        for (device, version) in &fetched.snapshots_read {
+            store.set_sync_value(&self.key(&format!("snapshot.{device}")), version)?;
         }
         report.written = self.push(store, fetched.own_snapshot)?;
         Ok(report)
@@ -524,6 +550,13 @@ fn list_changes(dir: &Path) -> Result<DeviceFiles> {
     // Downloaded since it was listed both ways.
     files.pending.retain(|n| !files.changes.contains(n));
     Ok(files)
+}
+
+/// A file's size and modification time, as a string.
+fn file_version(path: &Path) -> Option<String> {
+    let m = fs::metadata(path).ok()?;
+    let at = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(format!("{}-{}", m.len(), at.as_nanos()))
 }
 
 fn read_batch(path: &Path, device: &str) -> Result<Batch> {
@@ -959,6 +992,26 @@ mod tests {
         a.set_note(v(2), "waits").unwrap();
         assert!(lib.sync(&mut a).is_err());
         assert!(list_changes(&lib.changes_dir(a.device_id())).unwrap().changes.is_empty());
+    }
+
+    #[test]
+    fn a_snapshot_not_yet_read_is_not_synced() {
+        let dir = TempDir::new("snapshot-unread");
+        let lib = FolderLibrary::open(&dir.0).unwrap();
+        let (mut a, clock) = device(T0);
+        compacted(&lib, &mut a, &clock);
+        let (mut b, _) = device(T0);
+        assert_eq!(lib.status(&b).incoming, 1);
+        // Damaged (or half downloaded): waiting, not synced.
+        let path = lib.snapshot_path(a.device_id());
+        let whole = fs::read(&path).unwrap();
+        fs::write(&path, &whole[..whole.len() / 2]).unwrap();
+        assert_eq!(lib.sync(&mut b).unwrap().waiting, 1);
+        assert_ne!(lib.status(&b).label(), "Synced");
+        fs::write(&path, &whole).unwrap();
+        lib.sync(&mut b).unwrap();
+        assert_eq!(body(&b, 1), Some("draft 64"));
+        assert_eq!(lib.status(&b).label(), "Synced");
     }
 
     #[test]
