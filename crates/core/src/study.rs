@@ -171,7 +171,8 @@ CREATE TABLE IF NOT EXISTS notes(
     body TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL,
     updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
     deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
-    base_updated INTEGER NOT NULL DEFAULT 0, seen TEXT NOT NULL DEFAULT '',
+    base_updated INTEGER NOT NULL DEFAULT 0, base_device TEXT NOT NULL DEFAULT '',
+    seen TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(book, chapter, verse));
 CREATE TABLE IF NOT EXISTS bookmarks(
     book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
@@ -297,13 +298,17 @@ fn highlight_of(p: &HighlightPart) -> Highlight {
 }
 
 #[cfg(feature = "native")]
-fn join_seen(seen: &[i64]) -> String {
-    seen.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+fn join_seen(seen: &[Stamp]) -> String {
+    if seen.is_empty() { String::new() } else { serde_json::to_string(seen).unwrap_or_default() }
 }
 
+/// A note's superseded versions: JSON stamps (or, as first written, times alone).
 #[cfg(feature = "native")]
-fn split_seen(s: &str) -> Vec<i64> {
-    s.split(',').filter_map(|t| t.trim().parse().ok()).collect()
+fn split_seen(s: &str) -> Vec<Stamp> {
+    if s.trim_start().starts_with('[') {
+        return serde_json::from_str(s).unwrap_or_default();
+    }
+    s.split(',').filter_map(|t| t.trim().parse().ok()).map(|t| Stamp::new(t, "")).collect()
 }
 
 /// This device's id, made the first time the file is opened.
@@ -378,6 +383,7 @@ fn migrate(conn: &Connection, device: &str) -> Result<()> {
         }
     }
     add("notes", "base_updated", "INTEGER NOT NULL DEFAULT 0")?;
+    add("notes", "base_device", "TEXT NOT NULL DEFAULT ''")?;
     add("notes", "seen", "TEXT NOT NULL DEFAULT ''")?;
     add("plans", "reset_ms", "INTEGER NOT NULL DEFAULT 0")?;
     for (table, newest) in [
@@ -522,8 +528,13 @@ impl StudyStore {
             },
         )?;
         let (mut newest, mut last_seq) = (0, 0);
+        // As when merging: a stamp more than a day ahead (a device set to the wrong year) doesn't
+        // move the clock.
+        let limit = self.wall_ms() + MAX_DRIFT_MS;
         let mut saw = |rev: &Rev| {
-            newest = newest.max(rev.stamp.at);
+            if rev.stamp.at <= limit {
+                newest = newest.max(rev.stamp.at);
+            }
             last_seq = last_seq.max(rev.seq);
         };
         self.highlights.clear();
@@ -543,15 +554,15 @@ impl StudyStore {
         let notes = query(
             conn,
             &format!(
-                "SELECT book, chapter, verse, body, created, updated, {META}, base_updated, seen FROM notes"
+                "SELECT book, chapter, verse, body, created, updated, {META}, base_updated, base_device, seen FROM notes"
             ),
             |r| {
                 let (rev, deleted) = meta(r, 6)?;
                 let version = NoteVersion {
                     stamp: rev.stamp,
                     live: !deleted,
-                    base: r.get(10)?,
-                    seen: split_seen(&r.get::<_, String>(11)?),
+                    base: Stamp::new(r.get(10)?, r.get::<_, String>(11)?),
+                    seen: split_seen(&r.get::<_, String>(12)?),
                 };
                 let note = Note { body: r.get(3)?, created: r.get(4)?, updated: r.get(5)? };
                 Ok((verse(r)?, note, version, rev.seq))
@@ -946,12 +957,12 @@ impl StudyStore {
                 note.as_ref().map_or(("", 0, 0), |n| (n.body.as_str(), n.created, n.updated));
             self.exec(
                 "INSERT INTO notes(book, chapter, verse, body, created, updated, updated_ms, device, deleted, seq,
-                     base_updated, seen)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                     base_updated, base_device, seen)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT(book, chapter, verse) DO UPDATE SET body = excluded.body, created = excluded.created,
                      updated = excluded.updated, updated_ms = excluded.updated_ms, device = excluded.device,
                      deleted = excluded.deleted, seq = excluded.seq, base_updated = excluded.base_updated,
-                     seen = excluded.seen",
+                     base_device = excluded.base_device, seen = excluded.seen",
                 params![
                     v.book.info().code,
                     v.chapter,
@@ -963,7 +974,8 @@ impl StudyStore {
                     version.stamp.device,
                     !version.live,
                     seq,
-                    version.base,
+                    version.base.at,
+                    version.base.device,
                     join_seen(&version.seen)
                 ],
             )?;
@@ -1301,7 +1313,8 @@ impl StudyStore {
                         updated: rfc3339(n.updated),
                         updated_ms: Some(version.stamp.at),
                         device: Some(version.stamp.device),
-                        base_updated: version.base,
+                        base_updated: version.base.at,
+                        base_device: version.base.device,
                         seen: version.seen,
                         conflicts: self.note_conflicts_at(v).into_iter().cloned().collect(),
                     }
@@ -1563,6 +1576,7 @@ impl StudyStore {
                 created,
                 updated,
                 base_updated: n.base_updated,
+                base_device: n.base_device.clone(),
                 seen: n.seen.clone(),
                 conflicts: n.conflicts.clone(),
             });
@@ -1772,7 +1786,8 @@ impl StudyStore {
                 body: note.map(|n| n.body.clone()).unwrap_or_default(),
                 created: note.map_or(0, |n| n.created),
                 updated: note.map_or(0, |n| n.updated),
-                base_updated: version.base,
+                base_updated: version.base.at,
+                base_device: version.base.device.clone(),
                 seen: version.seen.clone(),
                 conflicts: self.note_conflicts_at(v).into_iter().cloned().collect(),
             });
@@ -1885,12 +1900,20 @@ impl StudyStore {
             });
             let found = self.now_s();
             // The note's conflict copies: the descendant's when one side simply follows on from
-            // the other, both sides' otherwise, and the losing side's text when there is one.
+            // the other (it dismissed the ones it no longer has), with any of the other side's
+            // its version never took in; both sides' otherwise; and the losing side's text.
             let here = self.note_conflicts_at(v).into_iter().cloned().collect::<Vec<_>>();
-            let follows_on = local.as_ref().is_none_or(|l| c.version().has_seen(l.stamp.at));
-            let mut copies = match &merged.pick {
-                NotePick::Local => here.clone(),
-                NotePick::Remote(_) if follows_on && mode == MergeMode::Sync => c.conflicts.clone(),
+            let incoming = c.version();
+            let follows_on = local.as_ref().is_none_or(|l| incoming.has_seen(&l.stamp));
+            let unseen = |by: &NoteVersion, copies: &[NoteConflict]| -> Vec<NoteConflict> {
+                copies.iter().filter(|k| !by.has_seen(&k.stamp)).cloned().collect()
+            };
+            let mut copies = match (&merged.pick, &local) {
+                (NotePick::Local, Some(l)) => here.iter().cloned().chain(unseen(l, &c.conflicts)).collect(),
+                (NotePick::Local, None) => here.clone(),
+                (NotePick::Remote(_), _) if follows_on && mode == MergeMode::Sync => {
+                    c.conflicts.iter().cloned().chain(unseen(&incoming, &here)).collect()
+                }
                 _ => here.iter().chain(&c.conflicts).cloned().collect(),
             };
             let lost = match merged.conflict_copy {
@@ -1968,8 +1991,10 @@ impl StudyStore {
             let rev =
                 match lww(local.as_ref().map(|r| (&r.rev.stamp, live_here)), (&c.stamp, !c.deleted), mode) {
                     Pick::Local => {
-                        // A restart elsewhere still forgets the progress before it.
-                        if let Some(mut r) = local.filter(|_| reset > local_reset) {
+                        // A restart elsewhere still forgets the progress before it; but an import
+                        // never takes anything away, so its restarts count only when its plan wins.
+                        let sync = mode == MergeMode::Sync;
+                        if let Some(mut r) = local.filter(|_| sync && reset > local_reset) {
                             r.reset = reset;
                             r.rev.seq = self.next_seq();
                             let plan = self.plans.get(&c.id).map(|p| (p.started, p.finished));
@@ -2216,11 +2241,13 @@ struct ExportNote {
     updated_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     device: Option<String>,
-    /// The version it was edited from (ms) and older ones it supersedes.
+    /// The version it was edited from (ms and device) and older ones it supersedes.
     #[serde(default, skip_serializing_if = "is_zero_i64")]
     base_updated: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    base_device: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    seen: Vec<i64>,
+    seen: Vec<Stamp>,
     /// Versions that lost to it, edited at the same time elsewhere.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     conflicts: Vec<NoteConflict>,
@@ -2740,6 +2767,104 @@ mod sync_tests {
     }
 
     #[test]
+    fn notes_written_in_the_same_millisecond_agree_after_syncing() {
+        let (mut a, _) = device("aaaa", T0);
+        let (mut b, _) = device("bbbb", T0);
+        a.set_note(v(16), "from a").unwrap();
+        b.set_note(v(16), "from b").unwrap();
+        assert_eq!(a.note_version(v(16)).stamp.at, b.note_version(v(16)).stamp.at);
+        let (a0, b0) = (a.changes_since(0, false), b.changes_since(0, false));
+        assert_eq!(a.merge(&b0, MergeMode::Sync).unwrap().conflicts, 1);
+        assert_eq!(b.merge(&a0, MergeMode::Sync).unwrap().conflicts, 1);
+        // bbbb's id is the larger, so its text is the note on both, and a's the copy.
+        assert_eq!((body(&a, 16), body(&b, 16)), (Some("from b"), Some("from b")));
+        for s in [&a, &b] {
+            let copies: Vec<&str> = s.note_conflicts_at(v(16)).iter().map(|c| c.body.as_str()).collect();
+            assert_eq!(copies, ["from a"]);
+        }
+        assert_eq!(a.note_version(v(16)), b.note_version(v(16)));
+    }
+
+    #[test]
+    fn a_later_edit_keeps_conflict_copies_its_writer_never_saw() {
+        let (mut a, clock_a) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        let (mut c, clock_c) = device("cccc", T0);
+        a.set_note(v(16), "base").unwrap();
+        sync(&a, &mut b);
+        sync(&a, &mut c);
+        // b edits first, a later without knowing: a's is the note, b's the copy, on a.
+        later(&clock_b, 10);
+        b.set_note(v(16), "from b").unwrap();
+        later(&clock_a, 20);
+        a.set_note(v(16), "from a").unwrap();
+        sync(&a, &mut c);
+        assert_eq!(sync(&b, &mut a).conflicts, 1);
+        // c edits a's note, never having seen b's: b's text stays a copy on a.
+        later(&clock_c, 30);
+        c.set_note(v(16), "from c").unwrap();
+        sync(&c, &mut a);
+        assert_eq!(body(&a, 16), Some("from c"));
+        let copies = |s: &StudyStore| -> Vec<String> {
+            s.note_conflicts_at(v(16)).iter().map(|k| k.body.clone()).collect()
+        };
+        assert_eq!(copies(&a), ["from b"]);
+        // Dismissed on a, it goes everywhere, even where it arrived late.
+        sync(&b, &mut c);
+        assert_eq!(copies(&c), ["from b"]);
+        let stamp = a.note_conflicts_at(v(16))[0].stamp.clone();
+        assert!(a.dismiss_conflict(v(16), &stamp).unwrap());
+        sync(&a, &mut c);
+        sync(&a, &mut b);
+        for s in [&a, &b, &c] {
+            assert_eq!((body(s, 16), copies(s).len()), (Some("from c"), 0));
+        }
+    }
+
+    #[test]
+    fn reopening_ignores_stamps_from_far_ahead() {
+        let dir = std::env::temp_dir().join(format!(
+            "bible-ahead-{}-{}",
+            std::process::id(),
+            sync::new_device_id()
+        ));
+        let path = dir.join("study.sqlite");
+        let year = 365 * 24 * 3600 * 1000;
+        {
+            let mut s = StudyStore::open(&path).unwrap();
+            let (mut wrong, _) = device("wrong-year", sync::now_ms() + year);
+            wrong.set_note(v(1), "next year").unwrap();
+            s.merge(&wrong.changes_since(0, false), MergeMode::Import).unwrap();
+            assert_eq!(body(&s, 1), Some("next year"));
+        }
+        let mut s = StudyStore::open(&path).unwrap();
+        s.set_note(v(2), "today").unwrap();
+        assert!(s.note_version(v(2)).stamp.at < sync::now_ms() + MAX_DRIFT_MS);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn importing_a_stopped_restart_keeps_progress_here() {
+        let (mut a, clock_a) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.start_plan("john-21", 1_790_000_000).unwrap();
+        later(&clock_a, 10);
+        a.set_plan_read("john-21", 1, 0, true).unwrap();
+        a.set_plan_read("john-21", 2, 0, true).unwrap();
+        // The file's copy restarted the plan later, then stopped it.
+        later(&clock_b, 100);
+        b.start_plan("john-21", 1_790_000_000).unwrap();
+        b.stop_plan("john-21").unwrap();
+        a.merge(&b.changes_since(0, false), MergeMode::Import).unwrap();
+        assert!(a.plans().iter().any(|p| p.id == "john-21"));
+        assert_eq!(a.plan_reads("john-21").len(), 2);
+        // Syncing, the later stop wins.
+        sync(&b, &mut a);
+        assert!(a.plans().is_empty());
+    }
+
+    #[test]
     fn the_sequence_survives_pruning_its_newest_tombstone() {
         let dir =
             std::env::temp_dir().join(format!("bible-seq-{}-{}", std::process::id(), sync::new_device_id()));
@@ -3167,6 +3292,7 @@ mod sync_tests {
             created: 1,
             updated: 1,
             base_updated: 0,
+            base_device: String::new(),
             seen: Vec::new(),
             conflicts: Vec::new(),
         });

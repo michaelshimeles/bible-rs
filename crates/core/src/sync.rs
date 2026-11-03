@@ -133,25 +133,27 @@ pub fn lww(local: Option<(&Stamp, bool)>, remote: (&Stamp, bool), mode: MergeMod
 pub struct NoteVersion {
     pub stamp: Stamp,
     pub live: bool,
-    /// The version this one was edited from (its stamp's time; 0 for a new note).
-    pub base: i64,
+    /// The version this one was edited from (time 0 for a new note).
+    pub base: Stamp,
     /// Older versions it also supersedes: the base's own history, and versions merged into it.
-    pub seen: Vec<i64>,
+    /// Versions are told apart by their whole stamps: two devices can write in the same
+    /// millisecond.
+    pub seen: Vec<Stamp>,
 }
 
 /// How many superseded versions a note remembers.
 pub const NOTE_HISTORY: usize = 32;
 
 impl NoteVersion {
-    /// Whether this version already took `at` into account (is it, or came after it).
-    pub fn has_seen(&self, at: i64) -> bool {
-        at == self.stamp.at || (at != 0 && at == self.base) || self.seen.contains(&at)
+    /// Whether this version already took `version` into account (is it, or came after it).
+    pub fn has_seen(&self, version: &Stamp) -> bool {
+        *version == self.stamp || (version.at != 0 && *version == self.base) || self.seen.contains(version)
     }
 
     /// Every version it supersedes, newest first.
-    pub fn ancestors(&self) -> Vec<i64> {
-        let mut v: Vec<i64> =
-            std::iter::once(self.base).chain(self.seen.iter().copied()).filter(|&t| t != 0).collect();
+    pub fn ancestors(&self) -> Vec<Stamp> {
+        let mut v: Vec<Stamp> =
+            std::iter::once(&self.base).chain(&self.seen).filter(|t| t.at != 0).cloned().collect();
         v.sort_unstable_by(|a, b| b.cmp(a));
         v.dedup();
         v.truncate(NOTE_HISTORY);
@@ -159,9 +161,9 @@ impl NoteVersion {
     }
 
     /// Also supersedes `others`.
-    pub fn absorb(&mut self, others: impl IntoIterator<Item = i64>) {
+    pub fn absorb(&mut self, others: impl IntoIterator<Item = Stamp>) {
         let mut seen = self.seen.clone();
-        seen.extend(others.into_iter().filter(|&t| t != 0 && t != self.stamp.at && t != self.base));
+        seen.extend(others.into_iter().filter(|t| t.at != 0 && *t != self.stamp && *t != self.base));
         seen.sort_unstable_by(|a, b| b.cmp(a));
         seen.dedup();
         seen.truncate(NOTE_HISTORY);
@@ -170,7 +172,7 @@ impl NoteVersion {
 
     /// The version an edit of this one makes, stamped `stamp`.
     pub fn edited(&self, stamp: Stamp, live: bool) -> NoteVersion {
-        let mut v = NoteVersion { stamp, live, base: self.stamp.at, seen: Vec::new() };
+        let mut v = NoteVersion { stamp, live, base: self.stamp.clone(), seen: Vec::new() };
         v.absorb(self.ancestors());
         v
     }
@@ -215,7 +217,7 @@ pub fn merge_note(
     if mode == MergeMode::Import && !l.live {
         // Deleted here, and the file has it: bring it back, superseding both.
         let mut v = l.edited(revive(), true);
-        v.absorb(remote.ancestors().into_iter().chain([remote.stamp.at]));
+        v.absorb(remote.ancestors().into_iter().chain([remote.stamp.clone()]));
         return keep(NotePick::Revive(v));
     }
     if l.stamp == remote.stamp {
@@ -224,10 +226,10 @@ pub fn merge_note(
         v.absorb(remote.ancestors());
         return keep(if v == *l { NotePick::Local } else { NotePick::LocalAbsorbing(v) });
     }
-    if l.has_seen(remote.stamp.at) {
+    if l.has_seen(&remote.stamp) {
         return keep(NotePick::Local);
     }
-    if remote.has_seen(l.stamp.at) {
+    if remote.has_seen(&l.stamp) {
         let mut v = remote.clone();
         v.absorb(l.ancestors());
         return keep(NotePick::Remote(v));
@@ -235,7 +237,7 @@ pub fn merge_note(
     // Changed on both sides since they last agreed.
     let both = |winner: &NoteVersion, loser: &NoteVersion| {
         let mut v = winner.clone();
-        v.absorb(loser.ancestors().into_iter().chain([loser.stamp.at]));
+        v.absorb(loser.ancestors().into_iter().chain([loser.stamp.clone()]));
         v
     };
     let remote_wins = remote.stamp > l.stamp;
@@ -297,12 +299,14 @@ pub struct NoteChange {
     pub created: i64,
     #[serde(default)]
     pub updated: i64,
-    /// The version this one was edited from (ms; 0 for a new note).
+    /// The version this one was edited from (ms and device; 0 for a new note).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub base_updated: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_device: String,
     /// Older versions it supersedes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub seen: Vec<i64>,
+    pub seen: Vec<Stamp>,
     /// Its conflict copies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<NoteConflict>,
@@ -313,7 +317,7 @@ impl NoteChange {
         NoteVersion {
             stamp: self.stamp.clone(),
             live: !self.deleted,
-            base: self.base_updated,
+            base: Stamp::new(self.base_updated, self.base_device.clone()),
             seen: self.seen.clone(),
         }
     }
@@ -513,9 +517,17 @@ mod tests {
         );
     }
 
-    fn v(at: i64, device: &str, base: i64, seen: &[i64]) -> NoteVersion {
-        NoteVersion { stamp: s(at, device), live: true, base, seen: seen.to_vec() }
+    /// A version; ancestors as (time, device).
+    fn v(at: i64, device: &str, base: (i64, &str), seen: &[(i64, &str)]) -> NoteVersion {
+        NoteVersion {
+            stamp: s(at, device),
+            live: true,
+            base: s(base.0, base.1),
+            seen: seen.iter().map(|&(t, d)| s(t, d)).collect(),
+        }
     }
+
+    const NEW: (i64, &str) = (0, "");
 
     fn here() -> Stamp {
         s(99, "here")
@@ -525,9 +537,9 @@ mod tests {
     fn notes_fast_forward() {
         use MergeMode::*;
         // b edited the version a still has: b's wins without a copy.
-        let a = v(10, "a", 0, &[]);
+        let a = v(10, "a", NEW, &[]);
         let b = a.edited(s(20, "b"), true);
-        assert_eq!(b.base, 10);
+        assert_eq!(b.base, s(10, "a"));
         let m = merge_note(Some(&a), &b, false, Sync, here);
         assert_eq!(m.conflict_copy, None);
         assert!(matches!(m.pick, NotePick::Remote(ref x) if x.stamp == b.stamp));
@@ -536,7 +548,7 @@ mod tests {
         assert_eq!(m, NoteMerge { pick: NotePick::Local, conflict_copy: None });
         // Several edits in a row still descend from the first.
         let c = b.edited(s(30, "b"), true).edited(s(40, "b"), true);
-        assert!(c.has_seen(10) && c.has_seen(20) && c.has_seen(30));
+        assert!(c.has_seen(&s(10, "a")) && c.has_seen(&s(20, "b")) && c.has_seen(&s(30, "b")));
         assert_eq!(merge_note(Some(&a), &c, false, Sync, here).conflict_copy, None);
         // A new note arrives as it is.
         assert!(matches!(merge_note(None, &a, false, Sync, here).pick, NotePick::Remote(_)));
@@ -545,7 +557,7 @@ mod tests {
     #[test]
     fn notes_edited_on_both_sides_keep_both() {
         use MergeMode::*;
-        let base = v(10, "a", 0, &[]);
+        let base = v(10, "a", NEW, &[]);
         let mine = base.edited(s(20, "a"), true);
         let theirs = base.edited(s(30, "b"), true);
         // Theirs is newer: it becomes the note, mine the copy.
@@ -553,7 +565,7 @@ mod tests {
         assert_eq!(m.conflict_copy, Some(true));
         let NotePick::Remote(won) = &m.pick else { panic!("{m:?}") };
         assert_eq!(won.stamp, theirs.stamp);
-        assert!(won.has_seen(20), "the merged note supersedes the copy's version");
+        assert!(won.has_seen(&s(20, "a")), "the merged note supersedes the copy's version");
         // The other device decides the same: its own stays, mine becomes the copy.
         let m2 = merge_note(Some(&theirs), &mine, false, Sync, here);
         assert_eq!(m2.conflict_copy, Some(false));
@@ -564,14 +576,14 @@ mod tests {
         // The same words written on both sides need no copy.
         assert_eq!(merge_note(Some(&mine), &theirs, true, Sync, here).conflict_copy, None);
         // Two notes started apart on the same verse are concurrent too.
-        let m = merge_note(Some(&v(5, "a", 0, &[])), &v(6, "b", 0, &[]), false, Sync, here);
+        let m = merge_note(Some(&v(5, "a", NEW, &[])), &v(6, "b", NEW, &[]), false, Sync, here);
         assert_eq!(m.conflict_copy, Some(true));
     }
 
     #[test]
     fn note_deletes() {
         use MergeMode::*;
-        let base = v(10, "a", 0, &[]);
+        let base = v(10, "a", NEW, &[]);
         let deleted = base.edited(s(20, "a"), false);
         // A delete of the version the other side has wins quietly.
         assert!(matches!(merge_note(Some(&base), &deleted, true, Sync, here).pick, NotePick::Remote(_)));
@@ -589,7 +601,7 @@ mod tests {
             NoteMerge {
                 pick: NotePick::Remote({
                     let mut x = late.clone();
-                    x.absorb([20]);
+                    x.absorb([s(20, "a")]);
                     x
                 }),
                 conflict_copy: None
@@ -599,22 +611,44 @@ mod tests {
         let m = merge_note(Some(&deleted), &edited, false, Import, here);
         let NotePick::Revive(back) = &m.pick else { panic!("{m:?}") };
         assert_eq!(back.stamp, here());
-        assert!(back.live && back.has_seen(20) && back.has_seen(15));
+        assert!(back.live && back.has_seen(&s(20, "a")) && back.has_seen(&s(15, "b")));
         // Even when the file has the very version that was deleted.
         let m = merge_note(Some(&deleted), &base, false, Import, here);
-        assert!(matches!(m.pick, NotePick::Revive(ref x) if x.live && x.has_seen(20)));
+        assert!(matches!(m.pick, NotePick::Revive(ref x) if x.live && x.has_seen(&s(20, "a"))));
         // Importing never deletes.
         assert_eq!(merge_note(Some(&base), &deleted, false, Import, here).pick, NotePick::Local);
     }
 
     #[test]
+    fn versions_written_in_the_same_millisecond_are_told_apart() {
+        use MergeMode::*;
+        // Two new notes, and two edits of one shared version, at the same time on two devices.
+        let base = v(10, "a", NEW, &[]);
+        for (a, b) in [
+            (v(20, "a", NEW, &[]), v(20, "b", NEW, &[])),
+            (base.edited(s(20, "a"), true), base.edited(s(20, "b"), true)),
+        ] {
+            assert!(!a.has_seen(&b.stamp) && !b.has_seen(&a.stamp));
+            let on_a = merge_note(Some(&a), &b, false, Sync, here);
+            let on_b = merge_note(Some(&b), &a, false, Sync, here);
+            // b's device id is the larger: its text stays the note on both, a's is the copy.
+            assert_eq!((on_a.conflict_copy, on_b.conflict_copy), (Some(true), Some(false)));
+            let (NotePick::Remote(x), NotePick::LocalAbsorbing(y)) = (&on_a.pick, &on_b.pick) else {
+                panic!("{on_a:?} {on_b:?}")
+            };
+            assert_eq!(x, y);
+            assert_eq!(merge_note(Some(x), y, true, Sync, here).pick, NotePick::Local);
+        }
+    }
+
+    #[test]
     fn note_history_is_bounded() {
-        let mut n = v(1, "a", 0, &[]);
+        let mut n = v(1, "a", NEW, &[]);
         for t in 2..100 {
             n = n.edited(s(t, "a"), true);
         }
         assert!(n.seen.len() <= NOTE_HISTORY);
-        assert!(n.has_seen(98) && n.has_seen(70) && !n.has_seen(2));
+        assert!(n.has_seen(&s(98, "a")) && n.has_seen(&s(70, "a")) && !n.has_seen(&s(2, "a")));
     }
 
     #[test]
@@ -628,7 +662,8 @@ mod tests {
                 created: 1,
                 updated: 2,
                 base_updated: 5,
-                seen: vec![3],
+                base_device: "abc".into(),
+                seen: vec![s(3, "def")],
                 conflicts: vec![NoteConflict { body: "old".into(), stamp: s(4, "def"), found: 9 }],
             }],
             plan_reads: vec![PlanReadChange {

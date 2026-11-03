@@ -565,6 +565,7 @@ mod tests {
             created: 1_790_000_000,
             updated: 1_790_000_000,
             base_updated: 0,
+            base_device: String::new(),
             seen: vec![],
             conflicts: vec![],
         });
