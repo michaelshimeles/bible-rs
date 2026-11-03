@@ -53,7 +53,7 @@ struct Batch {
 
 /// A device's files, as found in the folder.
 #[derive(Default)]
-struct DeviceFiles {
+pub struct DeviceFiles {
     /// Change files here in full.
     changes: BTreeSet<u64>,
     /// Change files the sync service hasn't downloaded yet (iCloud's `.<name>.icloud`).
@@ -135,6 +135,9 @@ impl SyncStatus {
     }
 }
 
+/// The other devices' files in a library, as listed (`None`: the folder couldn't be read).
+pub struct Listing(Option<Vec<(String, DeviceFiles)>>);
+
 /// A study library folder.
 #[derive(Debug, Clone)]
 pub struct FolderLibrary {
@@ -160,6 +163,11 @@ impl FolderLibrary {
                 m.id
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // The library is there but its marker hasn't downloaded yet: making a new one
+                // would give it another identity.
+                if root.join(format!(".{MARKER}.icloud")).exists() {
+                    bail!("{MARKER} in {} is still downloading", root.display());
+                }
                 let m = Marker { app: APP.into(), format: FORMAT, id: crate::sync::new_device_id() };
                 write_atomic(&marker, &serde_json::to_vec_pretty(&m)?)?;
                 m.id
@@ -188,15 +196,26 @@ impl FolderLibrary {
 
     /// Where it stands, from file names alone.
     pub fn status(&self, store: &StudyStore) -> SyncStatus {
+        self.status_of(store, &self.listing(store.device_id()))
+    }
+
+    /// The other devices' file names, read without the store (so an app needn't hold it while
+    /// the folder is listed), for [`status_of`](Self::status_of).
+    pub fn listing(&self, me: &str) -> Listing {
+        Listing(self.devices(me).ok())
+    }
+
+    /// [`status`](Self::status), from a [`listing`](Self::listing).
+    pub fn status_of(&self, store: &StudyStore, listing: &Listing) -> SyncStatus {
         let mut s = SyncStatus { conflicts: store.conflict_count(), ..Default::default() };
-        let Ok(devices) = self.devices(store.device_id()) else {
+        let Some(devices) = &listing.0 else {
             s.offline = true;
             s.outgoing = store.changes_since(self.pushed(store), true).len();
             return s;
         };
-        s.outgoing = self.outgoing(store, self.pushed(store), &devices).len();
+        s.outgoing = self.outgoing(store, self.pushed(store), devices).len();
         s.devices = devices.len();
-        for (device, files) in &devices {
+        for (device, files) in devices {
             let read = self.read_upto(store, device);
             s.incoming += files.changes.range(read + 1..).count() + files.pending.range(read + 1..).count();
             if files.snapshot_pending && read == 0 && !files.snapshot {
@@ -220,9 +239,14 @@ impl FolderLibrary {
     /// What this device writes: what changed here since `since`, but for the records the other
     /// devices here wrote themselves. So what came in from elsewhere (an imported backup, an
     /// older version's records) goes out too, and what was read from this folder doesn't go back.
+    /// A note that carries conflict copies always goes: merging here may have added a copy (this
+    /// device's losing text) to another device's winning version, and that device needs it.
     fn outgoing(&self, store: &StudyStore, since: i64, others: &[(String, DeviceFiles)]) -> Changes {
         let mut c = store.changes_since(since, false);
-        c.retain_stamps(|s| !others.iter().any(|(d, _)| *d == s.device));
+        let theirs = |s: &crate::sync::Stamp| others.iter().any(|(d, _)| *d == s.device);
+        let notes = std::mem::take(&mut c.notes);
+        c.retain_stamps(|s| !theirs(s));
+        c.notes = notes.into_iter().filter(|n| !theirs(&n.stamp) || !n.conflicts.is_empty()).collect();
         c
     }
 
@@ -292,35 +316,44 @@ impl FolderLibrary {
         for (device, files) in self.devices(&plan.me)? {
             let mut read = plan.read.get(&device).copied().unwrap_or(0);
             let mut batches = Vec::new();
-            // The next change file is gone (folded into the snapshot): start from the snapshot.
-            if files.changes.first().is_none_or(|n| *n > read + 1)
-                && (files.snapshot || files.snapshot_pending)
-            {
-                let path = self.snapshot_path(&device);
-                match files.snapshot.then(|| read_batch(&path, &device)) {
-                    Some(Ok(batch)) => {
-                        if batch.seq > read {
-                            read = batch.seq;
-                            batches.push(batch);
+            let mut snapshot_tried = false;
+            loop {
+                // In order, one after another: a gap is a file still on its way.
+                while files.changes.contains(&(read + 1)) {
+                    let path = self.changes_dir(&device).join(change_name(read + 1));
+                    match read_batch(&path, &device) {
+                        Ok(batch) => {
+                            read += 1;
+                            batches.push(Batch { seq: read, ..batch });
+                        }
+                        Err(e) => {
+                            out.problems.push(format!("{}: {e:#}", path.display()));
+                            break;
                         }
                     }
-                    Some(Err(e)) => out.problems.push(format!("{}: {e:#}", path.display())),
-                    None => {}
                 }
-                if read == 0 && !files.snapshot {
-                    out.waiting += 1;
+                // The next change file is gone (folded into the snapshot) or not there yet: the
+                // snapshot may cover it. Leftover older files don't matter.
+                let gap = !files.changes.contains(&(read + 1)) && !files.pending.contains(&(read + 1));
+                if snapshot_tried || !gap || !(files.snapshot || files.snapshot_pending) {
+                    break;
                 }
-            }
-            // In order, one after another: a gap is a file still on its way.
-            while files.changes.contains(&(read + 1)) {
-                let path = self.changes_dir(&device).join(change_name(read + 1));
-                match read_batch(&path, &device) {
-                    Ok(batch) => {
-                        read += 1;
-                        batches.push(Batch { seq: read, ..batch });
+                snapshot_tried = true;
+                let path = self.snapshot_path(&device);
+                match files.snapshot.then(|| read_batch(&path, &device)) {
+                    Some(Ok(batch)) if batch.seq > read => {
+                        read = batch.seq;
+                        batches.push(batch);
                     }
-                    Err(e) => {
+                    Some(Ok(_)) => break,
+                    Some(Err(e)) => {
                         out.problems.push(format!("{}: {e:#}", path.display()));
+                        break;
+                    }
+                    None => {
+                        if read == 0 {
+                            out.waiting += 1;
+                        }
                         break;
                     }
                 }
@@ -361,23 +394,34 @@ impl FolderLibrary {
         let changes = self.outgoing(store, pushed, &others);
         let seq = store.seq();
         let count = changes.len();
-        if changes.is_empty() {
+        let dir = self.changes_dir(&me);
+        let snapshot = self.snapshot_path(&me);
+        let written: u64 = store.sync_value(&self.key("written")).and_then(|v| v.parse().ok()).unwrap_or(0);
+        let mut mine = if dir.is_dir() { list_changes(&dir)? } else { DeviceFiles::default() };
+        let snapshot_pending = self.root.join("snapshots").join(format!(".{me}.json.icloud")).exists();
+        let has_snapshot = snapshot.exists() || snapshot_pending;
+        // This device wrote here before, but its files were removed: they need writing again
+        // even with nothing new.
+        let removed = written > 0 && mine.changes.is_empty() && mine.pending.is_empty() && !has_snapshot;
+        if changes.is_empty() && !removed {
             if pushed != seq {
                 store.set_sync_value(&self.key("pushed"), &seq.to_string())?;
             }
             return Ok(0);
         }
-        let dir = self.changes_dir(&me);
         fs::create_dir_all(&dir)?;
-        let mut mine = list_changes(&dir)?;
-        let snapshot = self.snapshot_path(&me);
-        let written: u64 = store.sync_value(&self.key("written")).and_then(|v| v.parse().ok()).unwrap_or(0);
-        let mut last = mine.changes.last().copied().unwrap_or(0).max(written);
-        if last == 0 && snapshot.exists() {
-            last = read_batch(&snapshot, &me).map_or(0, |b| b.seq);
+        // The next number follows everything this device ever wrote here: its files, what the
+        // store remembers, and its snapshot (a store restored from an older copy remembers less).
+        let mut last = mine.changes.iter().chain(&mine.pending).copied().max().unwrap_or(0).max(written);
+        if has_snapshot {
+            if !snapshot.exists() {
+                bail!("{} is still downloading", snapshot.display());
+            }
+            let b = read_batch(&snapshot, &me).with_context(|| format!("reading {}", snapshot.display()))?;
+            last = last.max(b.seq);
         }
         let n = last + 1;
-        if n > 1 && mine.changes.is_empty() && !snapshot.exists() {
+        if n > 1 && mine.changes.is_empty() && !has_snapshot {
             // This device's files were removed from the folder: write all of it again, as a
             // snapshot, so a device starting from nothing doesn't wait for changes 1 to n - 1.
             let all = Batch { format: FORMAT, device: me, seq: n, changes: self.outgoing(store, 0, &others) };
@@ -465,11 +509,25 @@ fn read_batch(path: &Path, device: &str) -> Result<Batch> {
 }
 
 /// Writes beside the file, then renames over it, so another device never reads half a file.
+/// The temporary file is new (made exclusively, under a name no one can guess ahead), so a link
+/// planted in the folder can't redirect the write; the rename replaces a link at `path` itself
+/// rather than following it.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let tmp = path.with_file_name(format!(".{name}.tmp"));
-    fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", crate::sync::new_device_id()));
+    let write = || -> std::io::Result<()> {
+        let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()
+    };
+    if let Err(e) = write() {
+        let _ = fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("writing {}", tmp.display()));
+    }
+    fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display())).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })?;
     Ok(())
 }
 
@@ -798,6 +856,124 @@ mod tests {
         let (mut b, _) = device(T0);
         lib.sync(&mut b).unwrap();
         assert_eq!((body(&b, 1), body(&b, 2)), (Some("one"), Some("two")));
+    }
+
+    /// `a` writes 65 changes, folding them into its snapshot (no change files left).
+    fn compacted(lib: &FolderLibrary, a: &mut StudyStore, clock: &AtomicI64) {
+        for i in 0..=COMPACT_AFTER as u8 {
+            later(clock, 10);
+            a.set_note(v(1), &format!("draft {i}")).unwrap();
+            lib.sync(a).unwrap();
+        }
+        assert!(lib.snapshot_path(a.device_id()).exists());
+        assert!(list_changes(&lib.changes_dir(a.device_id())).unwrap().changes.is_empty());
+    }
+
+    #[test]
+    fn a_conflict_copy_made_here_reaches_the_other_device() {
+        let dir = TempDir::new("copy-out");
+        let lib = FolderLibrary::open(&dir.0).unwrap();
+        let (mut a, clock_a) = device(T0);
+        let (mut b, clock_b) = device(T0);
+        a.set_note(v(16), "base").unwrap();
+        lib.sync(&mut a).unwrap();
+        lib.sync(&mut b).unwrap();
+        // a edits without syncing; b edits later and writes first.
+        later(&clock_a, 10);
+        a.set_note(v(16), "from a").unwrap();
+        later(&clock_b, 20);
+        b.set_note(v(16), "from b").unwrap();
+        lib.sync(&mut b).unwrap();
+        // a reads b's (the newer) and keeps its own as a copy on b's version: b needs that copy.
+        assert_eq!(lib.sync(&mut a).unwrap().merged.conflicts, 1);
+        assert_eq!(body(&a, 16), Some("from b"));
+        lib.sync(&mut b).unwrap();
+        for s in [&a, &b] {
+            let copies: Vec<_> = s.note_conflicts_at(v(16)).iter().map(|k| k.body.clone()).collect();
+            assert_eq!((body(s, 16), copies), (Some("from b"), vec!["from a".to_string()]));
+        }
+        // And a new device gets it too.
+        let (mut c, _) = device(T0);
+        lib.sync(&mut c).unwrap();
+        assert_eq!(c.note_conflicts_at(v(16)).len(), 1);
+    }
+
+    #[test]
+    fn a_restored_device_numbers_past_its_snapshot() {
+        let dir = TempDir::new("restored");
+        let lib = FolderLibrary::open(&dir.0).unwrap();
+        let (mut a, clock) = device(T0);
+        compacted(&lib, &mut a, &clock);
+        let (mut b, _) = device(T0);
+        lib.sync(&mut b).unwrap();
+        // An older copy of a's store remembers writing only 20.
+        a.set_sync_value(&lib.key("written"), "20").unwrap();
+        later(&clock, 1000);
+        a.set_note(v(2), "after the restore").unwrap();
+        lib.sync(&mut a).unwrap();
+        let mine = list_changes(&lib.changes_dir(a.device_id())).unwrap();
+        assert_eq!(mine.changes.iter().copied().collect::<Vec<_>>(), [COMPACT_AFTER as u64 + 2]);
+        lib.sync(&mut b).unwrap();
+        assert_eq!(body(&b, 2), Some("after the restore"));
+    }
+
+    #[test]
+    fn removed_files_are_written_again_with_nothing_new() {
+        let dir = TempDir::new("repair");
+        let lib = FolderLibrary::open(&dir.0).unwrap();
+        let (mut a, _) = device(T0);
+        a.set_note(v(1), "one").unwrap();
+        lib.sync(&mut a).unwrap();
+        fs::remove_dir_all(lib.changes_dir(a.device_id())).unwrap();
+        assert_eq!(lib.sync(&mut a).unwrap().written, 1);
+        let (mut b, _) = device(T0);
+        lib.sync(&mut b).unwrap();
+        assert_eq!(body(&b, 1), Some("one"));
+        // Once written, nothing more.
+        assert_eq!(lib.sync(&mut a).unwrap().written, 0);
+    }
+
+    #[test]
+    fn a_leftover_file_does_not_hide_the_snapshot() {
+        let dir = TempDir::new("leftover");
+        let lib = FolderLibrary::open(&dir.0).unwrap();
+        let (mut a, clock) = device(T0);
+        let (mut b, _) = device(T0);
+        let me = a.device_id().to_string();
+        compacted(&lib, &mut a, &clock);
+        // Compaction couldn't remove change 1; b had read up to 20.
+        let old = Batch { format: FORMAT, device: me.clone(), seq: 1, changes: Changes::default() };
+        write_atomic(&lib.changes_dir(&me).join(change_name(1)), &serde_json::to_vec(&old).unwrap()).unwrap();
+        b.set_sync_value(&lib.key(&format!("read.{me}")), "20").unwrap();
+        later(&clock, 1000);
+        a.set_note(v(2), "next").unwrap();
+        lib.sync(&mut a).unwrap();
+        let r = lib.sync(&mut b).unwrap();
+        assert_eq!(r.waiting, 0);
+        assert_eq!((body(&b, 1), body(&b, 2)), (Some("draft 64"), Some("next")));
+        assert_eq!(lib.read_upto(&b, &me), COMPACT_AFTER as u64 + 2);
+    }
+
+    #[test]
+    fn a_marker_still_downloading_is_waited_for() {
+        let dir = TempDir::new("marker-pending");
+        fs::write(dir.0.join(".library.json.icloud"), b"").unwrap();
+        let e = FolderLibrary::open(&dir.0).unwrap_err();
+        assert!(format!("{e:#}").contains("still downloading"), "{e:#}");
+        assert!(!dir.0.join(MARKER).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_planted_in_the_folder_is_not_written_through() {
+        let dir = TempDir::new("link");
+        let outside = TempDir::new("link-target");
+        let target = outside.0.join("precious.txt");
+        fs::write(&target, b"keep me").unwrap();
+        std::os::unix::fs::symlink(&target, dir.0.join(".library.json.tmp")).unwrap();
+        FolderLibrary::open(&dir.0).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"keep me");
+        assert!(dir.0.join(MARKER).is_file());
     }
 
     #[test]

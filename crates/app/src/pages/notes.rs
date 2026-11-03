@@ -173,6 +173,14 @@ impl State {
             let body = env.study.note(v).map(|n| n.body.clone()).unwrap_or_default();
             self.editor = Some(Editor::new(v, &body));
         }
+        // A sync changed the note under the editor: show it if nothing is typed here; otherwise
+        // the save keeps the other version as a conflict copy (see `Action::SaveNote`).
+        if let Some(e) = &mut self.editor {
+            let body = env.study.note(e.verse).map(|n| n.body.clone()).unwrap_or_default();
+            if body != e.saved && e.changed.is_none() && to_markdown(&e.text) == e.saved {
+                *e = Editor::new(e.verse, &body);
+            }
+        }
 
         let list = Rect::from_min_max(area.min, pos2(area.left() + LIST_W, area.bottom()));
         let editor = Rect::from_min_max(pos2(list.right(), area.top()), area.max);
@@ -202,7 +210,7 @@ impl State {
         if let Some(e) = &mut self.editor {
             let md = to_markdown(&e.text);
             if md != e.saved {
-                actions.push(Action::SaveNote(e.verse, md.clone()));
+                actions.push(Action::SaveNote(e.verse, md.clone(), std::mem::take(&mut e.saved)));
                 e.saved = md;
             }
             e.changed = None;

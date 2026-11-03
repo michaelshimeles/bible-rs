@@ -1,8 +1,8 @@
 //! The study library folder (Settings → Data, beta): when one is set, the study is synced with
 //! it in the background, a little after each change and every half minute.
 //!
-//! Reading the other devices' files happens on a thread (iCloud can hold a read until it has
-//! downloaded the file); merging them and writing this device's changes happen on the UI thread,
+//! Opening the folder and reading the other devices' files happen on a thread (iCloud can hold a
+//! read until it has downloaded the file); merging them and writing this device's changes happen on the UI thread,
 //! where the store lives. See [`bible_core::folder`].
 
 use std::path::PathBuf;
@@ -25,8 +25,8 @@ pub struct StudySync {
     /// The folder set in Settings, and the library opened in it.
     folder: Option<PathBuf>,
     library: Option<FolderLibrary>,
-    /// A fetch running on its thread.
-    fetching: Option<Receiver<Result<Fetched>>>,
+    /// An open or a fetch running on its thread.
+    fetching: Option<Receiver<Fetch>>,
     /// When the last sync started, and the study's generation then (egui time).
     last_sync: Option<f64>,
     synced_gen: u64,
@@ -41,6 +41,13 @@ pub struct StudySync {
     pub synced_at: Option<i64>,
     /// Asked for from Settings.
     now: bool,
+}
+
+/// What the sync thread sends back.
+enum Fetch {
+    /// The library opened (its marker read or made); the fetch follows.
+    Opened(Result<FolderLibrary>),
+    Fetched(Result<Fetched>),
 }
 
 /// What the Data tab shows.
@@ -75,9 +82,21 @@ impl StudySync {
         let mut report = None;
         if let Some(rx) = &self.fetching {
             match rx.try_recv() {
-                Ok(fetched) => {
+                Ok(Fetch::Fetched(fetched)) => {
                     self.fetching = None;
                     report = self.finish(fetched, study);
+                    self.status_at = None;
+                }
+                Ok(Fetch::Opened(opened)) => {
+                    self.fetching = None;
+                    match opened {
+                        Ok(lib) => {
+                            self.library = Some(lib);
+                            // Fetch straight away.
+                            self.now = true;
+                        }
+                        Err(e) => self.error = Some(format!("{e:#}")),
+                    }
                     self.status_at = None;
                 }
                 Err(TryRecvError::Empty) => {
@@ -120,20 +139,19 @@ impl StudySync {
         self.last_sync = Some(now);
         self.changed_at = None;
         self.synced_gen = study.generation();
-        if self.library.is_none() {
-            match FolderLibrary::open(folder) {
-                Ok(lib) => self.library = Some(lib),
-                Err(e) => {
-                    self.error = Some(format!("{e:#}"));
-                    return;
-                }
-            }
-        }
-        let Some(lib) = self.library.clone() else { return };
-        let plan = lib.plan(study);
         let (tx, rx) = channel();
+        let job: Box<dyn FnOnce() -> Fetch + Send> = match self.library.clone() {
+            Some(lib) => {
+                let plan = lib.plan(study);
+                Box::new(move || Fetch::Fetched(lib.fetch(&plan)))
+            }
+            None => {
+                let folder = folder.to_path_buf();
+                Box::new(move || Fetch::Opened(FolderLibrary::open(&folder)))
+            }
+        };
         let spawned = std::thread::Builder::new().name("study-sync".into()).spawn(move || {
-            let _ = tx.send(lib.fetch(&plan));
+            let _ = tx.send(job());
         });
         match spawned {
             Ok(_) => self.fetching = Some(rx),

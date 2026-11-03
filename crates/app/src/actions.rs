@@ -44,8 +44,9 @@ pub enum Action {
     /// Removes one highlight of a verse: the one stored from that char.
     RemoveHighlight(VerseRef, u32),
     RemoveNote(VerseRef),
-    /// Save a note's text (an empty text removes it).
-    SaveNote(VerseRef, String),
+    /// Save a note's text (an empty text removes it), written over the text the editor started
+    /// from (if the note changed meanwhile, that change is kept as a conflict copy).
+    SaveNote(VerseRef, String, String),
     /// Start (or restart) a reading plan today; stop one.
     StartPlan(String),
     StopPlan(String),

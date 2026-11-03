@@ -39,8 +39,15 @@ impl NotePopover {
 
     pub fn save(&mut self, study: &mut StudyStore, actions: &mut Vec<Action>) {
         if self.note != self.saved {
-            match study.set_note(self.verse, &self.note) {
-                Ok(()) => {
+            match study.set_note_over(self.verse, &self.note, &self.saved) {
+                Ok(kept) => {
+                    if kept {
+                        actions.push(Action::Toast(
+                            "This note was also edited on another device. Both versions are kept in \
+                             Settings › Data."
+                                .into(),
+                        ));
+                    }
                     self.saved = self.note.clone();
                     self.saved_at = Some(bible_core::study::now());
                 }
@@ -63,6 +70,14 @@ impl NotePopover {
         actions: &mut Vec<Action>,
     ) -> bool {
         let now = ctx.input(|i| i.time);
+        // A sync changed the note while it was open: show it if nothing is typed here (otherwise
+        // saving keeps the other version as a conflict copy).
+        let stored = study.note(self.verse).map(|n| n.body.clone()).unwrap_or_default();
+        if stored != self.saved && self.note == self.saved {
+            self.saved_at = study.note(self.verse).map(|n| n.updated);
+            self.note = stored.clone();
+            self.saved = stored;
+        }
         let esc = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
         let done_key = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
         if esc || done_key {

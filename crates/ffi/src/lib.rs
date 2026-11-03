@@ -536,6 +536,7 @@ impl Bible {
     /// iCloud Drive, say). Blocks while it reads the folder (a file iCloud hasn't downloaded
     /// yet holds the read), so call it off the main thread; the study stays usable meanwhile.
     pub fn sync_study_library(&self, folder: String) -> Result<StudyLibrarySync, BibleError> {
+        // Opening reads library.json, which may wait on the sync service: not under the lock.
         let lib = FolderLibrary::open(std::path::Path::new(&folder))?;
         let plan = lib.plan(&self.study());
         let fetched = lib.fetch(&plan)?;
@@ -552,9 +553,15 @@ impl Bible {
 
     /// How a study library folder stands, from its file names (quick).
     pub fn study_library_status(&self, folder: String) -> StudyLibraryStatus {
+        // The folder is read without the study lock (it may wait on the sync service).
+        let me = self.study().device_id().to_string();
+        let opened = FolderLibrary::open(std::path::Path::new(&folder)).map(|lib| {
+            let listing = lib.listing(&me);
+            (lib, listing)
+        });
         let study = self.study();
-        let s = match FolderLibrary::open(std::path::Path::new(&folder)) {
-            Ok(lib) => lib.status(&study),
+        let s = match opened {
+            Ok((lib, listing)) => lib.status_of(&study, &listing),
             Err(_) => SyncStatus { offline: true, conflicts: study.conflict_count(), ..Default::default() },
         };
         let n = |n: usize| n.min(u32::MAX as usize) as u32;

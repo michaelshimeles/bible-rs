@@ -1016,11 +1016,15 @@ impl BibleApp {
                 Err(e) => self.toast(ctx, format!("{e:#}")),
             },
             Action::OpenPage(page) => self.pages.open(page),
-            Action::SaveNote(v, body) => {
-                if let Err(e) = self.study.set_note(v, &body) {
-                    self.toast(ctx, format!("Couldn't save note: {e:#}"));
-                }
-            }
+            Action::SaveNote(v, body, base) => match self.study.set_note_over(v, &body, &base) {
+                Ok(true) => self.toast(
+                    ctx,
+                    "This note was also edited on another device. Both versions are kept in Settings › Data."
+                        .to_string(),
+                ),
+                Ok(false) => {}
+                Err(e) => self.toast(ctx, format!("Couldn't save note: {e:#}")),
+            },
             Action::StartPlan(id) => {
                 let today = crate::time::day_start(bible_core::study::now());
                 if let Err(e) = self.study.start_plan(&id, today) {
