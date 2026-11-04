@@ -56,6 +56,8 @@ pub enum Action {
     Recall(crate::reader::recall::Step),
     /// Grade the recall (`None`: Good) and go on to the next passage.
     RecallGrade(Option<bible_core::memory::Grade>),
+    /// Go on from a passage the translation doesn't have all of, without grading it.
+    SkipRecall,
     EndRecall,
     ToggleRecallHints,
     /// Start (or restart) a reading plan today; stop one.

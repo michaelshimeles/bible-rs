@@ -1,7 +1,8 @@
 //! Memorising and recalling in the running app: a recall hides a memorised verse in place, a click
 //! reveals a word and a drag across the reader the rest, and Return grades it Good, scheduling it
-//! days on; M memorises the selected verse, and the verse menu stops it. Its own test binary
-//! because it sets `BIBLE_RS_OFFSCREEN` (see `book_picker_app.rs`).
+//! days on; M memorises the selected verse, and the verse menu stops it. A passage the translation
+//! doesn't have all of is skipped, parallel columns wait, and Back returns to the reading place.
+//! Its own test binary because it sets `BIBLE_RS_OFFSCREEN` (see `book_picker_app.rs`).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -206,5 +207,45 @@ fn a_memorised_verse_is_recalled_in_place() {
     let stop = text_at(&h, "Stop Memorising").expect("the verse menu offers Stop Memorising");
     click(&mut h, stop);
     assert!(h.state().study.memorised_at(v17).is_none());
+
+    // Recalling from Genesis 1 in the WEB, beside a parallel column. Luke 17:35–36 is memorised from
+    // the KJV, but the WEB leaves out verse 36; Romans 8:38–39 is due after it.
+    h.state_mut().study.review(v16, bible_core::memory::Grade::Good, bible_core::study::now()).unwrap();
+    let luke = VerseRef::new(BookId(41), 17, 35);
+    let romans = VerseRef::new(BookId(44), 8, 38);
+    h.state_mut().study.memorise(luke, VerseRef::new(BookId(41), 17, 36), "kjv").unwrap();
+    h.state_mut().study.memorise(romans, VerseRef::new(BookId(44), 8, 39), "kjv").unwrap();
+    h.state_mut().settings.translation = "web".into();
+    h.state_mut().settings.parallel_on = true;
+    let genesis = ChapterIdx::new(BookId(0), 1).unwrap();
+    h.state_mut().reader.jump(genesis, Some(1), false);
+    h.run_steps(20);
+    assert_eq!(h.state().columns().len(), 2);
+    h.state_mut().settings.sidebar_open = true;
+    h.run_steps(30);
+    let row = text_at(&h, "Memory").expect("the sidebar's Memory row");
+    click(&mut h, row);
+    h.state_mut().settings.sidebar_open = false;
+    h.run_steps(30);
+    assert_eq!(h.state().columns().len(), 1, "one column, so another translation can't give it away");
+
+    // Part of Luke 17:35–36 can't be graded for all of it; Return skips it and the session goes on.
+    let recall = h.state().reader.recall.as_ref().expect("recalling");
+    assert_eq!((recall.passage.first, recall.index, recall.total), (luke, 1, 2));
+    assert!(recall.unavailable() && !recall.done());
+    assert!(text_at(&h, "Not all of it is in this translation").is_some());
+    key(&mut h, Key::Enter);
+    let recall = h.state().reader.recall.as_ref().expect("the rest of the session");
+    assert_eq!((recall.passage.first, recall.index, recall.total), (romans, 1, 1));
+    assert!(!recall.unavailable());
+    assert!(h.state().study.reviews(luke).is_empty(), "skipped, not graded");
+    assert!(h.state().study.memorised_at(luke).is_some());
+
+    // Back ends the recall and returns to where you were reading.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::OpenBracket);
+    h.run_steps(10);
+    assert!(h.state().reader.recall.is_none());
+    assert_eq!(h.state().reader.location.0, genesis);
+    assert_eq!(h.state().columns().len(), 2, "parallel again");
     let _ = std::fs::remove_dir_all(&dir);
 }

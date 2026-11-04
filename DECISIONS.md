@@ -193,6 +193,9 @@ verses, like a highlight, rather than a separate flashcard app inside this one.
 - **A passage** is verses `first..=last` of one chapter, keyed by canonical reference as highlights
   are. The translation it was learnt in is kept, but a recall uses the translation being read, so
   nothing switches under you. Memorising depends on exact wording, so this is open to revisiting.
+  A translation that lacks any of the passage (the WEB leaves out Luke 17:36) can't grade it, since
+  a grade schedules all of it: the recall offers Skip, which leaves it due. Parallel columns wait
+  while recalling, so another translation can't give the passage away.
 - **Scheduling** is [FSRS](https://github.com/open-spaced-repetition/awesome-fsrs/wiki/ABC-of-FSRS)-6
   with its default weights (a port of ts-fsrs 5.4.1): 90 % retention, intervals of 1 to 36,500
   days, no fuzz. FSRS models how memory fades, so a passage comes back just before it would be
@@ -219,6 +222,10 @@ verses, like a highlight, rather than a separate flashcard app inside this one.
   reflows. The passage's galleys are painted again with each glyph's vertices faded by the reveal,
   and the rest of the chapter is dimmed. A horizontal drag or two-finger swipe moves the reveal; a
   swipe holds the page still while it lasts.
+- **On iPhone** the same, in TextKit 1: iOS has no draw-only text colours, so the passage is drawn
+  in runs of characters at their own opacity over the unchanged layout. A sideways pan reveals; the
+  reader's scrolling waits only for it to decide it isn't one. The FFI gives the phone the
+  scheduling and the reveal's plan (`recall_plan`), so the two apps reveal alike.
 
 ## macOS integration
 

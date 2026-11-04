@@ -481,7 +481,8 @@ impl BibleApp {
 
     pub fn columns(&self) -> Vec<String> {
         let mut cols = vec![self.settings.translation.clone()];
-        if self.settings.parallel_on {
+        // Recalling shows one column, so another translation can't give the passage away.
+        if self.settings.parallel_on && self.reader.recall.is_none() {
             for id in &self.settings.parallel {
                 if cols.len() < 4 && !cols.contains(id) && self.library.contains(id) {
                     cols.push(id.clone());
@@ -620,6 +621,9 @@ impl BibleApp {
                 key(Modifiers::NONE, Key::ArrowRight, Action::Recall(Step::NextWord));
                 key(Modifiers::NONE, Key::ArrowLeft, Action::Recall(Step::PreviousWord));
                 key(Modifiers::NONE, Key::Escape, Action::EndRecall);
+                if recall.unavailable() {
+                    key(Modifiers::NONE, Key::Enter, Action::SkipRecall);
+                }
                 if done {
                     key(Modifiers::NONE, Key::Enter, Action::RecallGrade(None));
                     for (g, k) in bible_core::memory::Grade::ALL.into_iter().zip([
@@ -673,6 +677,24 @@ impl BibleApp {
         let (first, last) = (m.first, m.last);
         self.reader.recall = Some(crate::reader::recall::Recall::new(m, i + 1, self.recall_queue.len()));
         self.reader.jump_centered(first.chapter_idx(), first.verse, last.verse, false);
+    }
+
+    /// Recalls the session's passage `i`, or past its last, ends the session.
+    fn next_recall(&mut self, ctx: &egui::Context, i: usize) {
+        if i < self.recall_queue.len() {
+            self.start_recall(i);
+            return;
+        }
+        let mut firsts: Vec<_> = self.recall_queue.iter().map(|m| m.first).collect();
+        firsts.sort();
+        firsts.dedup();
+        let n = firsts.len();
+        self.apply_one(ctx, Action::EndRecall);
+        match n {
+            0 => {}
+            1 => self.toast(ctx, "Recalled 1 passage"),
+            n => self.toast(ctx, format!("Recalled {n} passages")),
+        }
     }
 
     fn apply(&mut self, ctx: &egui::Context, actions: Vec<Action>) {
@@ -916,6 +938,8 @@ impl BibleApp {
                 } else {
                     due
                 };
+                // Back returns to where you were reading.
+                self.history.push(self.here());
                 self.start_recall(0);
             }
             Action::Recall(step) => {
@@ -947,23 +971,17 @@ impl BibleApp {
                 {
                     self.recall_queue.push(m.clone());
                 }
-                if index < self.recall_queue.len() {
-                    self.start_recall(index);
-                } else {
-                    let mut firsts: Vec<_> = self.recall_queue.iter().map(|m| m.first).collect();
-                    firsts.sort();
-                    firsts.dedup();
-                    let n = firsts.len();
-                    self.apply_one(ctx, Action::EndRecall);
-                    self.toast(
-                        ctx,
-                        if n == 1 {
-                            "Recalled 1 passage".to_string()
-                        } else {
-                            format!("Recalled {n} passages")
-                        },
-                    );
+                self.next_recall(ctx, index);
+            }
+            Action::SkipRecall => {
+                let Some(r) = &self.reader.recall else { return };
+                if !r.unavailable() {
+                    return;
                 }
+                // Dropped from this session only: it stays due.
+                let index = r.index - 1;
+                self.recall_queue.remove(index);
+                self.next_recall(ctx, index);
             }
             Action::EndRecall => {
                 self.reader.recall = None;
@@ -1739,7 +1757,7 @@ impl BibleApp {
                 .unwrap_or_else(|| c.book().ref_name().into())
         };
         let title = format!("{book_name} {}", c.chapter());
-        let abbrev = if self.settings.parallel_on {
+        let abbrev = if self.columns().len() > 1 {
             self.columns()
                 .iter()
                 .filter_map(|id| self.library.get(id).map(|e| e.meta.abbrev.clone()))

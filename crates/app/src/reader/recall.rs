@@ -54,7 +54,8 @@ pub struct Recall {
     drag: Option<(f32, f32)>,
     /// When the last two-finger swipe moved the reveal.
     swiped_at: Option<f64>,
-    /// The translation being read doesn't have the passage, so it can't be recalled or graded.
+    /// The translation being read doesn't have all of the passage, so it can't be recalled or
+    /// graded, only skipped.
     unavailable: bool,
 }
 
@@ -97,11 +98,12 @@ impl Recall {
                 return;
             }
         };
-        let views: Vec<_> = t.verses_in(chapter).filter(|v| (first..=last).contains(&v.number)).collect();
-        self.unavailable = views.is_empty();
-        if views.is_empty() {
+        // Only all of it: a grade from part of the passage would schedule the whole.
+        self.unavailable = !t.has_passage(chapter, first, last);
+        if self.unavailable {
             return;
         }
+        let views: Vec<_> = t.verses_in(chapter).filter(|v| (first..=last).contains(&v.number)).collect();
         let verses = views.iter().map(|v| (v.index, v.number)).collect();
         let reveal = Reveal::of_verses(&views, SOFT);
         self.position = self.position.min(reveal.end);
@@ -346,8 +348,9 @@ pub fn bar(recall: &Recall, ui: &mut Ui, rect: Rect, p: &Palette, letters: bool,
         painter.layout_no_wrap(format!("{} of {}", recall.index, recall.total), font.clone(), p.ink_3)
     });
     let done = recall.done();
-    let status = if recall.unavailable() {
-        "Not in this translation"
+    let unavailable = recall.unavailable();
+    let status = if unavailable {
+        "Not all of it is in this translation"
     } else if done {
         "How well did you know it?"
     } else if recall.started() {
@@ -367,6 +370,9 @@ pub fn bar(recall: &Recall, ui: &mut Ui, rect: Rect, p: &Palette, letters: bool,
     let hints = if letters { "Hints: first letters" } else { "Hints: none" };
     // `short`: the grades without when each brings the passage back, for a narrow window.
     let buttons_for = |short: bool| -> Vec<(Button<'_>, Action)> {
+        if unavailable {
+            return vec![(Button::new(Kind::Primary, "Skip").small(), Action::SkipRecall)];
+        }
         if !done {
             return vec![(Button::new(Kind::Plain, hints).small(), Action::ToggleRecallHints)];
         }
