@@ -55,8 +55,9 @@ export class Bible {
      */
     highlightSpan(translation: string, span: any, color?: string | null): void;
     /**
-     * Merges a JSON export in (entries for the same verse are overwritten); returns how many
-     * highlights, notes and bookmarks it held.
+     * Merges a JSON export in, as an import (newer wins; a note edited on both sides keeps a
+     * conflict copy; nothing here is deleted); returns how many highlights, notes and bookmarks
+     * it held.
      */
     importStudy(json: string): any;
     /**
@@ -75,6 +76,11 @@ export class Bible {
      * or the KJV's numbering when it isn't loaded).
      */
     marks(translation: string, index: number): any;
+    /**
+     * Takes in another copy's `snapshot` (another tab's), keeping what changed here since:
+     * newer wins, deletes included; a note edited in both keeps a conflict copy.
+     */
+    mergeSnapshot(json: string): void;
     constructor();
     note(verse: any): any;
     /**
@@ -264,6 +270,7 @@ export interface InitOutput {
     readonly bible_load: (a: number, b: number, c: number, d: number) => void;
     readonly bible_loadNlt: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly bible_marks: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly bible_mergeSnapshot: (a: number, b: number, c: number, d: number) => void;
     readonly bible_new: () => number;
     readonly bible_note: (a: number, b: number, c: number) => void;
     readonly bible_planReads: (a: number, b: number, c: number, d: number) => void;

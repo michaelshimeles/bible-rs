@@ -780,14 +780,14 @@ export class ReadApp {
 	}
 
 	/**
-	 * Another tab saved its study: take it, or with changes here still to save, add it to them
-	 * (what that tab deleted then comes back, rather than losing what this one added).
+	 * Another tab saved its study: take it, or with changes here still to save, merge it with
+	 * them (newer wins, deletes included; a note edited in both keeps a conflict copy).
 	 */
 	studySaved(json: string | null) {
 		const core = this.core;
 		if (!core || json === null) return;
 		try {
-			if (this.#studyDirty) core.bible.importStudy(json);
+			if (this.#studyDirty) core.bible.mergeSnapshot(json);
 			else core.bible.restore(json);
 			this.studyGen++;
 		} catch (e) {
