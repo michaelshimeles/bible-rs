@@ -34,7 +34,11 @@ pub struct State {
     tab: Tab,
     /// The plan and day open in the day view.
     pub open: Option<(String, usize)>,
-    reflection: Option<(VerseRef, String)>,
+    /// The reflection being written: its verse, the note's text it started from, and the draft.
+    reflection: Option<(VerseRef, String, String)>,
+    /// The text the last reflection save was sent over, until the next frame shows whether it
+    /// landed.
+    reflection_sent: Option<(String, String)>,
 }
 
 /// A plan with its progress, as of today.
@@ -870,10 +874,23 @@ impl State {
     ) -> f32 {
         let painter = ui.painter().clone();
         let saved = env.study.note(v).map(|n| n.body.clone()).unwrap_or_default();
-        if self.reflection.as_ref().is_none_or(|(rv, _)| *rv != v) {
-            self.reflection = Some((v, saved.clone()));
+        // The save didn't land (the note isn't the text sent): keep the draft unsaved.
+        if let Some((sent, body)) = self.reflection_sent.take()
+            && let Some((rv, base, _)) = &mut self.reflection
+            && *rv == v
+            && saved != body
+        {
+            *base = sent;
         }
-        let Some((_, draft)) = &mut self.reflection else { return at.top() };
+        // New, or a sync changed the note under a draft with nothing typed: start from the note.
+        if self
+            .reflection
+            .as_ref()
+            .is_none_or(|(rv, base, draft)| *rv != v || (*base != saved && draft == base))
+        {
+            self.reflection = Some((v, saved.clone(), saved.clone()));
+        }
+        let Some((_, base, draft)) = &mut self.reflection else { return at.top() };
         let x = at.left() + 16.0;
         let w = at.width() - 32.0;
         let verse = t.and_then(|t| t.find(v)).map(|v| v.plain_text()).unwrap_or_default();
@@ -946,9 +963,12 @@ impl State {
             ui.id().with("cancel-reflection"),
         );
         if sr.clicked() {
-            actions.push(Action::SaveNote(v, draft.clone()));
+            let sent = std::mem::replace(base, draft.clone());
+            actions.push(Action::SaveNote(v, draft.clone(), sent.clone()));
+            self.reflection_sent = Some((sent, draft.clone()));
         }
         if cr.clicked() {
+            *base = saved.clone();
             *draft = saved;
             ui.memory_mut(|m| m.surrender_focus(id));
         }

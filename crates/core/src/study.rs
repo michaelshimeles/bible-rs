@@ -945,6 +945,33 @@ impl StudyStore {
         Ok(())
     }
 
+    /// Saves a note written in an editor opened on `base` (the text it started from). If the
+    /// note changed underneath it (a sync brought another device's edit), that text is kept as a
+    /// conflict copy rather than overwritten. Whether one was kept.
+    pub fn set_note_over(&mut self, v: VerseRef, body: &str, base: &str) -> Result<bool> {
+        let theirs = self
+            .notes
+            .get(&v.key())
+            .filter(|n| n.body != base && n.body != body && !n.body.trim().is_empty())
+            .map(|n| n.body.clone());
+        let Some(theirs) = theirs else {
+            self.set_note(v, body)?;
+            return Ok(false);
+        };
+        let stamp = self.note_version(v).stamp;
+        let found = self.now_s();
+        let mut copies: Vec<NoteConflict> = self.note_conflicts_at(v).into_iter().cloned().collect();
+        if !copies.iter().any(|k| k.stamp == stamp) {
+            copies.push(NoteConflict { body: theirs, stamp, found });
+        }
+        self.transaction(|s| {
+            s.set_note(v, body)?;
+            s.put_conflicts(v, copies)
+        })?;
+        self.generation += 1;
+        Ok(true)
+    }
+
     fn note_version(&self, v: VerseRef) -> NoteVersion {
         self.note_revs.get(&v.key()).map(|(n, _)| n.clone()).unwrap_or_default()
     }
@@ -2888,6 +2915,27 @@ mod sync_tests {
         for s in [&a, &b, &c] {
             assert_eq!((body(s, 3), copies(s)), (Some("from c"), 0));
         }
+    }
+
+    #[test]
+    fn an_editor_saving_over_a_synced_note_keeps_it_as_a_copy() {
+        let (mut a, clock_a) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.set_note(v(5), "base").unwrap();
+        sync(&a, &mut b);
+        // b's editor opens on "base"; a's edit arrives while it is open.
+        later(&clock_a, 10);
+        a.set_note(v(5), "from a").unwrap();
+        sync(&a, &mut b);
+        later(&clock_b, 20);
+        assert!(b.set_note_over(v(5), "typed on b", "base").unwrap());
+        let copies: Vec<_> = b.note_conflicts_at(v(5)).iter().map(|k| k.body.clone()).collect();
+        assert_eq!((body(&b, 5), copies), (Some("typed on b"), vec!["from a".to_string()]));
+        // Saving again over its own text keeps nothing more.
+        assert!(!b.set_note_over(v(5), "typed more", "typed on b").unwrap());
+        assert_eq!(b.note_conflicts_at(v(5)).len(), 1);
+        sync(&b, &mut a);
+        assert_eq!((body(&a, 5), a.note_conflicts_at(v(5)).len()), (Some("typed more"), 1));
     }
 
     #[test]
