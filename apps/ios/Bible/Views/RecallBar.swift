@@ -38,7 +38,9 @@ struct RecallBar: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
-                    if !run.status.done {
+                    if run.status.unavailable {
+                        skip
+                    } else if !run.status.done {
                         hints
                     }
                 }
@@ -53,9 +55,21 @@ struct RecallBar: View {
     }
 
     private func status(_ status: RecallStatus) -> String {
-        if status.unavailable { return "Not in this translation" }
+        if status.unavailable { return "Not all of it is in this translation" }
         if status.done { return "How well did you know it?" }
         return status.started ? "Tap for the next word" : "Say it from memory, then tap or drag to check"
+    }
+
+    /// On to the next passage, leaving this one due.
+    private var skip: some View {
+        Button("Skip") { store.skipRecall() }
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(Color(theme.onAccent))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(Color(theme.accent), in: Capsule())
+            .accessibilityHint("Leaves it due, and goes on to the next passage")
+            .accessibilityIdentifier("skip-recall")
     }
 
     /// The hint style, as a pop-up of its two choices.

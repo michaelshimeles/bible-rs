@@ -41,7 +41,7 @@ struct ReaderContainer: UIViewRepresentable {
             c.jump = jump.id
             view.jump(to: jump.chapter, verse: jump.verse, animated: jump.animated, flash: jump.flash)
         }
-        view.setRecall(recall?.passage, id: recall?.id, letters: recallLetters)
+        view.setRecall(recall?.passage, id: recall?.id, letters: recallLetters, whole: recall?.whole ?? true)
     }
 
     @MainActor

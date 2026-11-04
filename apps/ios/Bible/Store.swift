@@ -70,6 +70,8 @@ struct RecallRun: Equatable {
     let id = UUID()
     var queue: [MemorisedPassage]
     var index = 0
+    /// The translation being read has all of the passage, so it can be recalled and graded.
+    var whole = true
     var status = RecallStatus()
 
     var passage: MemorisedPassage { queue[index] }
@@ -156,7 +158,7 @@ final class Store {
                 try? bible.memorise(first: first, last: last, translation: settings.translation)
             }
             guard let m = bible.memorisedAt(verse: first) else { return }
-            recall = RecallRun(queue: [m])
+            recall = run([m])
             showRecalled()
         }
     #endif
@@ -203,7 +205,7 @@ final class Store {
     private func translationChanged() {
         selection = nil
         // Another translation's words: the recall starts the passage over.
-        if let run = recall { recall = RecallRun(queue: run.queue, index: run.index) }
+        if let run = recall { recall = self.run(run.queue, index: run.index) }
         warm()
     }
 
@@ -372,8 +374,16 @@ final class Store {
             return
         }
         if due.isEmpty { show("Nothing is due, so this is extra practice") }
-        recall = RecallRun(queue: queue)
+        recall = run(queue)
         showRecalled()
+    }
+
+    /// Recalls `queue[index]`, in the translation being read.
+    private func run(_ queue: [MemorisedPassage], index: Int = 0) -> RecallRun {
+        var run = RecallRun(queue: queue, index: index)
+        // Only all of it: a grade from part of the passage would schedule the whole.
+        run.whole = bible.hasPassage(translation: settings.translation, passage: run.passage)
+        return run
     }
 
     private func showRecalled() {
@@ -400,13 +410,25 @@ final class Store {
         guard study({ try bible.review(first: run.passage.first, grade: grade) }) else { return }
         // Again stays due: it comes back at the end of this session.
         let queue = grade == .again ? run.queue + [run.passage] : run.queue
-        if run.index + 1 < queue.count {
-            recall = RecallRun(queue: queue, index: run.index + 1)
+        next(queue, index: run.index + 1)
+    }
+
+    /// Goes on from a passage the translation doesn't have all of, without grading it. It stays due.
+    func skipRecall() {
+        guard let run = recall, run.status.unavailable else { return }
+        var queue = run.queue
+        queue.remove(at: run.index)
+        next(queue, index: run.index)
+    }
+
+    private func next(_ queue: [MemorisedPassage], index: Int) {
+        if index < queue.count {
+            recall = run(queue, index: index)
             showRecalled()
         } else {
             recall = nil
             let n = Set(queue.map(\.first)).count
-            show(n == 1 ? "Recalled 1 passage" : "Recalled \(n) passages")
+            if n > 0 { show(n == 1 ? "Recalled 1 passage" : "Recalled \(n) passages") }
         }
     }
 

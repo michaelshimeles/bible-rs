@@ -88,7 +88,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
 
     /// A memorised passage being recalled in place, and one waiting for its chapter to be placed.
     private(set) var recall: RecallSession?
-    private var recallRequest: (passage: MemorisedPassage, letters: Bool)?
+    private var recallRequest: (passage: MemorisedPassage, letters: Bool, whole: Bool)?
     /// Which showing of a passage the recall is (`RecallRun.id`).
     private var recallID: UUID?
     private var recallStatus: RecallStatus?
@@ -239,6 +239,8 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         let local = max(0, top + anchor.lines * style.lineHeight)
         contentOffset = CGPoint(x: 0, y: p.y + local - readingLine)
         fill(style)
+        // Before the new tiles draw, or they'd show the passage from the old layout's recall.
+        bindRecall()
         updateTiles()
     }
 
@@ -527,7 +529,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
 
     /// Recalls a memorised passage in place (or stops, with `nil`): its words hidden until a
     /// horizontal drag or a tap reveals them, the rest of the text dimmed.
-    func setRecall(_ passage: MemorisedPassage?, id: UUID?, letters: Bool) {
+    func setRecall(_ passage: MemorisedPassage?, id: UUID?, letters: Bool, whole: Bool) {
         guard let passage else {
             if recall != nil || recallRequest != nil { endRecall() }
             return
@@ -542,7 +544,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         if recallRequest != nil, recallID == id { return }
         endRecall()
         recallID = id
-        recallRequest = (passage, letters)
+        recallRequest = (passage, letters, whole)
         recallPan.isEnabled = true
         setNeedsLayout()
     }
@@ -568,7 +570,9 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         else { return }
         if let request = recallRequest {
             recallRequest = nil
-            recall = RecallSession(passage: request.passage, layout: p.layout, letters: request.letters)
+            recall =
+                request.whole
+                ? RecallSession(passage: request.passage, layout: p.layout, letters: request.letters) : nil
             if recall == nil {
                 let status = RecallStatus(unavailable: true)
                 recallStatus = status

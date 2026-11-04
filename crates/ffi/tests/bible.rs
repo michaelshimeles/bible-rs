@@ -349,6 +349,13 @@ fn memorising_and_recall_plans() {
     bible.forget(JOHN_3_16).unwrap();
     assert!(bible.memorised_at(JOHN_3_16).is_none());
 
+    // The WEB leaves out Luke 17:36, so recalling Luke 17:35–36 there would test only half of it.
+    let luke = VerseRef { book: 41, chapter: 17, verse: 35 };
+    bible.memorise(luke, VerseRef { verse: 36, ..luke }, "kjv".into()).unwrap();
+    let m = bible.memorised_at(luke).unwrap();
+    assert!(bible.has_passage("kjv".into(), m.clone()));
+    assert!(!bible.has_passage("web".into(), m));
+
     let text = "I have hidden Your word in my heartthat I might not sin against You.";
     let at = text.find("that").unwrap() as u32;
     let plan = recall_plan(vec![RecallVerse { text: text.into(), breaks: vec![at] }]);

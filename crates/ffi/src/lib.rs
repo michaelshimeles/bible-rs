@@ -662,6 +662,17 @@ impl Bible {
         m.schedule.preview(now).iter().map(|&due| bible_core::memory::interval_label(now, due)).collect()
     }
 
+    /// Whether `translation` has all of a passage, so recalling it there tests all of it.
+    pub fn has_passage(&self, translation: String, passage: MemorisedPassage) -> bool {
+        let c = ChapterIdx(passage.chapter_index.min(CHAPTER_COUNT as u16 - 1));
+        match self.library().chapter(&translation, c) {
+            Chapter::Ready(t) => t.has_passage(c, passage.first.verse, passage.last.verse),
+            // An online chapter still on its way: the reader finds out when it arrives.
+            Chapter::Pending => true,
+            _ => false,
+        }
+    }
+
     /// Records a recall of the passage that starts at `first`, scheduling it again.
     pub fn review(&self, first: VerseRef, grade: RecallGrade) -> Result<(), BibleError> {
         Ok(self.study().review(first.core()?, grade.into(), study::now())?)
