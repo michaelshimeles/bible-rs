@@ -5,10 +5,25 @@
 -->
 <script lang="ts">
 	import { getApp } from '../app.svelte';
-	import { Badge, Button, EmptyState, Icon, PillTab } from '../ui';
+	import { Badge, Button, EmptyState, Icon, PillTab, Sheet } from '../ui';
 	import PageHead from './PageHead.svelte';
 	import PlanDay from './PlanDay.svelte';
-	import { DAY, ICONS, MONTHS, Under, minutes, openPassage, passageSize, plan, plans, plansPage } from './plans.svelte';
+	import PlanEditor from './PlanEditor.svelte';
+	import {
+		DAY,
+		ICONS,
+		MONTHS,
+		Under,
+		blankEditor,
+		daysOf,
+		editorFrom,
+		minutes,
+		openPassage,
+		passageSize,
+		plan,
+		plans,
+		plansPage
+	} from './plans.svelte';
 
 	const app = getApp();
 
@@ -18,23 +33,24 @@
 	const q = $derived(app.pageQuery.trim().toLowerCase());
 	const matches = (p: { title: string; description: string }) =>
 		!q || p.title.toLowerCase().includes(q) || p.description.toLowerCase().includes(q);
+	const mine = $derived(app.customPlans().filter((p) => matches(p)));
 	const browse = $derived(plans().filter((p) => !active.some((s) => s.id === p.id) && matches(p)));
 	const done = $derived(
 		completed.flatMap((s) => {
-			const p = plan(s.id);
+			const p = plan(s.id, mine);
 			return p && matches(p) ? [p] : [];
 		})
 	);
 	const unders = $derived(
 		active.flatMap((s) => {
-			const p = plan(s.id);
+			const p = plan(s.id, mine);
 			return p && matches(p) ? [new Under(p, s, app)] : [];
 		})
 	);
 
 	const opened = $derived.by(() => {
 		const o = plansPage.open;
-		const p = o && plan(o.id);
+		const p = o && plan(o.id, mine);
 		const s = o && started.find((x) => x.id === o.id);
 		return o && p && s ? { under: new Under(p, s, app), day: o.day } : null;
 	});
@@ -46,6 +62,12 @@
 	});
 
 	$effect(() => {
+		const tab = (app.demo['plans-tab'] ?? '').toLowerCase();
+		if (tab === 'mine' || tab === 'my' || tab === 'my-plans') plansPage.tab = 'mine';
+		else if (tab === 'browse' || tab === 'completed' || tab === 'active') plansPage.tab = tab;
+	});
+
+	$effect(() => {
 		void app.ensure(app.textTranslation());
 	});
 
@@ -54,12 +76,58 @@
 		plansPage.tab = 'active';
 	}
 
+	function startOrRestart(p: { id: string; title: string }, action: string) {
+		if (action === 'Restart') {
+			plansPage.confirm = { kind: 'reset', id: p.id, title: p.title };
+			return;
+		}
+		start(p.id);
+	}
+
+	function edit(p: (typeof mine)[number]) {
+		plansPage.confirm = null;
+		plansPage.editor = editorFrom(
+			p,
+			daysOf(p.id, (id) => app.lookupPlanDays(id)).map((d) => d.label)
+		);
+	}
+
+	function goMine(p: (typeof mine)[number]) {
+		const progress = started.find((s) => s.id === p.id);
+		if (progress?.finished !== null && progress !== undefined) {
+			plansPage.confirm = { kind: 'reset', id: p.id, title: p.title };
+			return;
+		}
+		if (progress) {
+			const under = new Under(p, progress, app);
+			plansPage.open = { id: p.id, day: under.currentDay() };
+			return;
+		}
+		start(p.id);
+	}
+
+	function confirmGo() {
+		const c = plansPage.confirm;
+		plansPage.confirm = null;
+		if (!c) return;
+		if (c.kind === 'delete') app.dispatch({ type: 'deleteCustomPlan', id: c.id });
+		else start(c.id);
+	}
+
 	const dayLabel = (u: Under, d: number) => u.days[d - 1]?.label ?? '';
 	const date = (unix: number) => new Date(unix * 1000);
+	const mineAction = (id: string) => {
+		const progress = started.find((s) => s.id === id);
+		if (progress?.finished !== null && progress !== undefined) return 'Restart';
+		if (progress) return 'Continue';
+		return 'Start';
+	};
 </script>
 
 {#if opened}
 	<PlanDay under={opened.under} day={opened.day} />
+{:else if plansPage.editor}
+	<PlanEditor />
 {:else}
 	<PageHead title="Reading Plans" subtitle="Read a little every day">
 		{#snippet actions()}
@@ -69,6 +137,12 @@
 					count={active.length}
 					selected={plansPage.tab === 'active'}
 					onclick={() => (plansPage.tab = 'active')}
+				/>
+				<PillTab
+					label="My Plans"
+					count={mine.length}
+					selected={plansPage.tab === 'mine'}
+					onclick={() => (plansPage.tab = 'mine')}
 				/>
 				<PillTab
 					label="Browse"
@@ -91,7 +165,7 @@
 			{#each list as p (p.id)}
 				<div class="card">
 					<span class="tile"><Icon name={ICONS[p.icon]} size={20} /></span>
-					<Button size="sm" label={action} class="start" onclick={() => start(p.id)} />
+					<Button size="sm" label={action} class="start" onclick={() => startOrRestart(p, action)} />
 					<h3 class="card-title">{p.title}</h3>
 					<p class="meta">{p.meta}</p>
 					<p class="description">{p.description}</p>
@@ -171,7 +245,8 @@
 			</div>
 		{/each}
 		{#if active.length === 0}
-			<p class="nothing">No plan under way — start one below.</p>
+			<p class="nothing">No plan under way — start one from Browse, or write your own.</p>
+			<Button kind="secondary" icon="plus" label="New plan" onclick={() => (plansPage.editor = blankEditor())} />
 		{/if}
 		{#if browse.length}
 			<div class="section">
@@ -179,6 +254,49 @@
 				<span>{browse.length} {browse.length === 1 ? 'plan' : 'plans'}</span>
 			</div>
 			{@render grid(browse, 'Start')}
+		{/if}
+	{:else if plansPage.tab === 'mine'}
+		<div class="mine-head">
+			<Button kind="primary" icon="plus" label="New plan" onclick={() => (plansPage.editor = blankEditor())} />
+		</div>
+		{#if mine.length}
+			<div class="grid mine-grid">
+				{#each mine as p (p.id)}
+					{@const progress = started.find((s) => s.id === p.id)}
+					<div class="card mine-card">
+						<span class="tile"><Icon name={ICONS[p.icon]} size={20} /></span>
+						<h3 class="card-title">{p.title}</h3>
+						<p class="meta">{p.meta}</p>
+						{#if p.description}<p class="description">{p.description}</p>{/if}
+						<div class="mine-actions">
+							<Button size="sm" label={mineAction(p.id)} onclick={() => goMine(p)} />
+							<Button kind="plain" size="sm" label="Edit" onclick={() => edit(p)} />
+							<Button
+								kind="plain"
+								size="sm"
+								label="Duplicate"
+								onclick={() => app.dispatch({ type: 'duplicateCustomPlan', id: p.id })}
+							/>
+							<Button
+								kind="ghost"
+								size="sm"
+								label="Delete"
+								onclick={() =>
+									(plansPage.confirm = {
+										kind: 'delete',
+										id: p.id,
+										title: p.title,
+										started: !!progress
+									})}
+							/>
+						</div>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<p class="nothing">
+				No plans of your own yet — write one from books you choose, or list each day's passages.
+			</p>
 		{/if}
 	{:else if plansPage.tab === 'browse'}
 		{@render grid(browse, 'Start')}
@@ -202,6 +320,40 @@
 			</EmptyState>
 		</div>
 	{/if}
+{/if}
+
+{#if plansPage.confirm}
+	{@const c = plansPage.confirm}
+	<Sheet
+		label={c.kind === 'delete' ? `Delete “${c.title}”?` : `Reset progress on “${c.title}”?`}
+		onclose={() => (plansPage.confirm = null)}
+		width={420}
+		dismissable
+	>
+		<div class="confirm">
+			<h2 class="confirm-title">
+				{c.kind === 'delete' ? `Delete “${c.title}”?` : `Reset progress on “${c.title}”?`}
+			</h2>
+			<p class="confirm-body">
+				{#if c.kind === 'delete' && c.started}
+					This deletes the plan from My Plans and removes its reading progress. Leaving a plan you
+					started (without deleting it) is separate — that only takes it off Active.
+				{:else if c.kind === 'delete'}
+					This deletes the plan from My Plans. It was not started, so no reading progress is lost.
+				{:else}
+					This forgets which days you have marked read and starts the plan again today.
+				{/if}
+			</p>
+			<footer class="confirm-foot">
+				<Button kind="plain" label="Cancel" onclick={() => (plansPage.confirm = null)} />
+				<Button
+					kind="destructive"
+					label={c.kind === 'delete' ? 'Delete plan' : 'Reset progress'}
+					onclick={confirmGo}
+				/>
+			</footer>
+		</div>
+	</Sheet>
 {/if}
 
 <style>
@@ -461,5 +613,38 @@
 		right: 40px;
 		bottom: 0;
 		left: 40px;
+	}
+
+	.mine-head {
+		margin-bottom: 16px;
+	}
+
+	.mine-card .mine-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin-top: 16px;
+	}
+
+	.confirm {
+		padding: 20px;
+	}
+
+	.confirm-title {
+		color: var(--ink);
+		font: 600 16px/22px var(--font-ui);
+	}
+
+	.confirm-body {
+		margin-top: 12px;
+		color: var(--ink-2);
+		font: 400 13px/20px var(--font-ui);
+	}
+
+	.confirm-foot {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		margin-top: 28px;
 	}
 </style>

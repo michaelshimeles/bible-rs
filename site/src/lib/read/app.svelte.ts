@@ -25,6 +25,8 @@ import {
 	type Counts,
 	type HighlightColor,
 	type Note,
+	type PlanDay,
+	type PlanInfo,
 	type PlanProgress,
 	type ReadingSession,
 	type StudyItem,
@@ -97,6 +99,9 @@ export type Action =
 	| { type: 'saveNote'; verse: VerseRef; body: string }
 	| { type: 'startPlan'; id: string }
 	| { type: 'stopPlan'; id: string }
+	| { type: 'saveCustomPlan'; id: string; title: string; description: string; days: string[] }
+	| { type: 'deleteCustomPlan'; id: string }
+	| { type: 'duplicateCustomPlan'; id: string }
 	| { type: 'setPlanRead'; plan: string; day: number; passage: number; read: boolean }
 	| { type: 'finishPlan'; id: string; at: number | null }
 	| { type: 'setPlanReminder'; on: boolean }
@@ -731,6 +736,28 @@ export class ReadApp {
 		return this.core?.bible.plans() ?? [];
 	}
 
+	customPlans(): PlanInfo[] {
+		void this.studyGen;
+		try {
+			return this.core?.bible.customPlans() ?? [];
+		} catch {
+			return [];
+		}
+	}
+
+	lookupPlanDays(id: string): PlanDay[] {
+		void this.studyGen;
+		try {
+			return this.core?.bible.lookupPlanDays(id) ?? planDays(id);
+		} catch {
+			try {
+				return planDays(id);
+			} catch {
+				return [];
+			}
+		}
+	}
+
 	planReads(id: string): Set<string> {
 		void this.studyGen;
 		const reads: [number, number][] = this.core?.bible.planReads(id) ?? [];
@@ -893,7 +920,7 @@ export class ReadApp {
 		for (const p of this.plans()) {
 			if (p.finished !== null) continue;
 			const day = Math.floor((today - p.started) / 86_400) + 1;
-			const due = planDays(p.id)[day - 1];
+			const due = this.lookupPlanDays(p.id)[day - 1];
 			const reads = this.planReads(p.id);
 			if (due?.passages.some((_, i) => !reads.has(`${day}:${i}`))) {
 				this.toastNow(`Today's reading: ${due.label}`);
@@ -1079,6 +1106,31 @@ export class ReadApp {
 			case 'stopPlan':
 				this.study((c) => c.bible.stopPlan(a.id));
 				break;
+			case 'saveCustomPlan': {
+				const saved = this.study(
+					(c) =>
+						c.bible.saveCustomPlan({
+							id: a.id,
+							title: a.title,
+							description: a.description,
+							days: a.days
+						}) as PlanInfo,
+					"Couldn't save plan"
+				);
+				if (saved) this.toastNow(`Saved ${saved.title}`);
+				break;
+			}
+			case 'deleteCustomPlan':
+				this.study((c) => c.bible.deleteCustomPlan(a.id), "Couldn't delete plan");
+				break;
+			case 'duplicateCustomPlan': {
+				const copy = this.study(
+					(c) => c.bible.duplicateCustomPlan(a.id) as PlanInfo,
+					"Couldn't copy plan"
+				);
+				if (copy) this.toastNow(`Copied “${copy.title}”`);
+				break;
+			}
 			case 'setPlanRead':
 				this.study((c) => c.bible.setPlanRead(a.plan, a.day, a.passage, a.read));
 				break;

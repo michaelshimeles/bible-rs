@@ -221,6 +221,7 @@ export interface PlanInfo {
 	description: string;
 	icon: 'calendar' | 'book' | 'quote' | 'history' | 'flame' | 'note';
 	days: number;
+	custom: boolean;
 }
 
 export interface PlanDay {
@@ -338,6 +339,9 @@ export const chapterVerses = (index: number): number => wasm.chapterVerses(index
 export const rangeLabel = (from: VerseRef, to: VerseRef): string => wasm.rangeLabel(from, to);
 export const planCatalogue = (): PlanInfo[] => wasm.planCatalogue();
 export const planDays = (id: string): PlanDay[] => wasm.planDays(id);
+/** Day labels from typed books and passages. `inDays` is used when `chaptersPerDay` is 0. */
+export const fillPlanDays = (source: string, chaptersPerDay: number, inDays: number): string[] =>
+	wasm.fillPlanDays(source, chaptersPerDay, inDays);
 export const translationInfo = (bytes: Uint8Array): TranslationInfo => wasm.translationInfo(bytes);
 
 /** The canonical grid's size: Genesis 1 is 0, Revelation 22 is 1188. */

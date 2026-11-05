@@ -23,22 +23,85 @@ export const MONTHS = [
 	'December'
 ];
 
+export type PlansTab = 'active' | 'browse' | 'completed' | 'mine';
+
+export type PlanConfirm =
+	| { kind: 'delete'; id: string; title: string; started: boolean }
+	| { kind: 'reset'; id: string; title: string };
+
+export type PlanEditor = {
+	id: string | null;
+	title: string;
+	description: string;
+	source: string;
+	paceIdx: number;
+	inDays: string;
+	days: string[];
+	error: string | null;
+	confirmDelete: boolean;
+};
+
 /** Kept across visits to the page, as the Mac keeps it. */
-export const plansPage = $state<{ tab: 'active' | 'browse' | 'completed'; open: { id: string; day: number } | null }>({
+export const plansPage = $state<{
+	tab: PlansTab;
+	open: { id: string; day: number } | null;
+	editor: PlanEditor | null;
+	confirm: PlanConfirm | null;
+}>({
 	tab: 'active',
-	open: null
+	open: null,
+	editor: null,
+	confirm: null
+});
+
+export const blankEditor = (): PlanEditor => ({
+	id: null,
+	title: '',
+	description: '',
+	source: '',
+	paceIdx: 0,
+	inDays: '30',
+	days: [''],
+	error: null,
+	confirmDelete: false
+});
+
+export const editorFrom = (p: PlanInfo, labels: string[]): PlanEditor => ({
+	id: p.id,
+	title: p.title,
+	description: p.description,
+	source: '',
+	paceIdx: 0,
+	inDays: '30',
+	days: labels.length ? labels : [''],
+	error: null,
+	confirmDelete: false
 });
 
 let catalogue: PlanInfo[] | null = null;
 const days = new Map<string, PlanDay[]>();
 
 export const plans = () => (catalogue ??= planCatalogue());
-export const plan = (id: string) => plans().find((p) => p.id === id);
+export const plan = (id: string, mine: PlanInfo[] = []) =>
+	mine.find((p) => p.id === id) ?? plans().find((p) => p.id === id);
 
-export function daysOf(id: string): PlanDay[] {
+export function daysOf(id: string, lookup?: (id: string) => PlanDay[]): PlanDay[] {
+	if (lookup) {
+		try {
+			return lookup(id);
+		} catch {
+			// Fall through to the built-in catalogue.
+		}
+	}
 	let d = days.get(id);
-	if (!d) days.set(id, (d = planDays(id)));
-	return d;
+	if (!d) {
+		try {
+			days.set(id, (d = planDays(id)));
+		} catch {
+			return [];
+		}
+	}
+	return d ?? [];
 }
 
 export const ICONS: Record<PlanInfo['icon'], IconName> = {
@@ -66,7 +129,7 @@ export class Under {
 		readonly state: PlanProgress,
 		app: ReadApp
 	) {
-		this.days = daysOf(info.id);
+		this.days = daysOf(info.id, (planId) => app.lookupPlanDays(planId));
 		this.reads = app.planReads(info.id);
 		this.finished = new Set(
 			app
