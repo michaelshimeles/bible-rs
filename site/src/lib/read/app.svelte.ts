@@ -10,6 +10,7 @@ import { Search } from './search.svelte';
 import { deleteImported, importedInfos, storeImported, type ImportResult } from './imports';
 import { importer } from './overlays/importer.svelte';
 import { LiveChapter, LiveError } from './live.svelte';
+import { takeMovedNotice } from './moved';
 import { NLT_ID, NLT_INFO } from './nlt';
 import {
 	core as startCore,
@@ -353,6 +354,7 @@ export class ReadApp {
 			}
 			this.core = core;
 			this.studyGen++;
+			for (const text of takeMovedNotice(localStorage)) this.toastNow(text);
 			await Promise.all(this.columns().map((id) => this.ensure(id)));
 		} catch (e) {
 			this.coreError = e instanceof Error ? e.message : String(e);

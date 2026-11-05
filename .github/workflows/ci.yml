@@ -127,6 +127,9 @@ jobs:
         run: npm ci
       - name: objects/*.json against the KJV and BSB
         run: node site/src/lib/objects/check.mjs
+      - name: Site unit tests
+        working-directory: site
+        run: npm test
 
   ios:
     name: iOS · framework, simulator and device builds
