@@ -338,6 +338,50 @@ final class BibleUITests: XCTestCase {
         XCTAssertTrue(verse("John 1:1").exists)
     }
 
+    func testStudyLibraryToggleDefaultsOff() {
+        app.buttons["settings"].tap()
+        let toggle = app.switches["study-library-icloud"]
+        for _ in 0..<12 where !toggle.exists || !toggle.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(toggle.waitForExistence(timeout: 3), "Study Library toggle should be in Settings")
+        XCTAssertEqual(toggle.value as? String, "0", "Study Library should be off by default")
+        saveStudyLibraryScreenshot("settings-study-library-off")
+
+        // The Form row is wider than the switch; a center tap can miss the control.
+        if toggle.isHittable {
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        } else {
+            toggle.tap()
+        }
+        let turnedOn = NSPredicate(format: "value == %@", "1")
+        let wait = XCTNSPredicateExpectation(predicate: turnedOn, object: toggle)
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [wait], timeout: 3), .completed, "toggle stayed \(toggle.value ?? "nil")")
+        let status = app.descendants(matching: .any)["study-library-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        // Simulator (and a signed-out phone) cannot reach the ubiquity container.
+        let shown = status.label
+        XCTAssertFalse(shown.isEmpty)
+        XCTAssertTrue(
+            shown.contains("iCloud") || shown.contains("Waiting") || shown.contains("Synced")
+                || shown.contains("Offline") || shown.contains("Couldn’t"),
+            "unexpected status: \(shown)"
+        )
+        XCTAssertTrue(app.buttons["study-library-sync-now"].waitForExistence(timeout: 3))
+        saveStudyLibraryScreenshot("settings-study-library-on")
+    }
+
+    private func saveStudyLibraryScreenshot(_ name: String) {
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
+        let dir = URL(fileURLWithPath: "/tmp/bible-ios-study-library")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? XCUIScreen.main.screenshot().pngRepresentation.write(to: dir.appendingPathComponent("\(name).png"))
+    }
+
     func testScrollingDoesNotHitch() {
         let options = XCTMeasureOptions()
         options.iterationCount = 5

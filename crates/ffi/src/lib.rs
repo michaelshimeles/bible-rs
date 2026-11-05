@@ -512,6 +512,12 @@ impl Bible {
         Ok(self.study().set_note(verse.core()?, &body)?)
     }
 
+    /// Saves a note written over `base` (the text the editor started from). If the stored
+    /// note changed meanwhile, that text is kept as a conflict copy and this returns true.
+    pub fn set_note_over(&self, verse: VerseRef, body: String, base: String) -> Result<bool, BibleError> {
+        Ok(self.study().set_note_over(verse.core()?, &body, &base)?)
+    }
+
     pub fn set_bookmark(&self, verse: VerseRef, on: bool) -> Result<(), BibleError> {
         Ok(self.study().set_bookmark(verse.core()?, on.then_some(""))?)
     }

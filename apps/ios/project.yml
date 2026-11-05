@@ -64,6 +64,11 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        NSUbiquitousContainers:
+          iCloud.dev.bible-rs.ios:
+            NSUbiquitousContainerIsDocumentScopePublic: true
+            NSUbiquitousContainerName: Bible
+            NSUbiquitousContainerSupportedFolderLevels: Any
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(BIBLE_BUNDLE_ID)
@@ -71,6 +76,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Bible/Bible.entitlements
         # The framework's simulator slice is Apple Silicon only (see scripts/build-ios.sh).
         EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
   BibleUITests:

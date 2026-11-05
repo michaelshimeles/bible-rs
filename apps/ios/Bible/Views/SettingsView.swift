@@ -55,6 +55,34 @@ struct SettingsView: View {
                     Toggle("Search whole words only", isOn: $store.settings.wholeWords)
                 }
 
+                Section {
+                    Toggle("Sync with iCloud", isOn: $store.settings.studyLibrary)
+                        .accessibilityIdentifier("study-library-icloud")
+                    if store.settings.studyLibrary {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(store.studyLibraryLabel)
+                            if let detail = store.studyLibraryDetail {
+                                Text(detail)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("study-library-status")
+                        Button(store.studyLibrarySyncing ? "Syncing…" : "Sync Now") {
+                            store.syncStudyLibraryNow()
+                        }
+                        .disabled(store.studyLibrarySyncing)
+                        .accessibilityIdentifier("study-library-sync-now")
+                    }
+                } header: {
+                    Text("Study Library (beta)")
+                } footer: {
+                    Text(
+                        "Keep your notes, highlights, bookmarks and plans in iCloud Drive to use them on a Mac that opens the same library. Off by default. Your study stays on this iPhone until you turn this on."
+                    )
+                }
+
                 Section("Notes and highlights") {
                     ExportButton(title: "Export as Markdown", format: .markdown, file: "Bible notes.md")
                     ExportButton(title: "Export as JSON", format: .json, file: "Bible notes.json")
