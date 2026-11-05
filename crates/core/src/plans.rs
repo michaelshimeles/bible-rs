@@ -488,8 +488,17 @@ fn parse_one(token: &str) -> Result<Vec<Passage>, String> {
         }
         return Ok(out);
     }
+    // `reference::parse` keeps only three numbers, so a second chapter:verse after the dash
+    // must be handled here (or refused) rather than becoming a verse-end on the first chapter.
     if let Some(cross) = cross_chapter_verses(token) {
         return cross;
+    }
+    if token.chars().filter(|c| *c == ':' || *c == '.').count() >= 2
+        && token.chars().any(|c| matches!(c, '-' | '–' | '—'))
+    {
+        return Err(format!(
+            "“{token}” crosses chapters; write each chapter as its own passage (e.g. John 3:16–36, John 4:1–2)"
+        ));
     }
     let r = reference::parse(token).ok_or_else(|| format!("Couldn't read “{token}” as a passage"))?;
     let verses = match (r.verse, r.verse_end) {
