@@ -569,16 +569,17 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
             let p = placed.first(where: { $0.layout.index == chapter })
         else { return }
         if let request = recallRequest {
-            recallRequest = nil
-            recall =
-                request.whole
-                ? RecallSession(passage: request.passage, layout: p.layout, letters: request.letters) : nil
-            if recall == nil {
+            if !request.whole {
+                // Stay bound to this id so setRecall does not restart an unavailable passage.
                 let status = RecallStatus(unavailable: true)
-                recallStatus = status
-                readerDelegate?.reader(self, recallChanged: status)
+                if recallStatus != status {
+                    recallStatus = status
+                    readerDelegate?.reader(self, recallChanged: status)
+                }
                 return
             }
+            recallRequest = nil
+            recall = RecallSession(passage: request.passage, layout: p.layout, letters: request.letters)
             #if DEBUG
                 // Screenshots and checks without touch (see Store.recallDemo).
                 let args = ProcessInfo.processInfo.arguments
