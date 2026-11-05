@@ -7,6 +7,8 @@ struct NoteEditor: View {
     let ref: VerseRef
     let theme: Theme
     @State private var text = ""
+    /// The note as it was when the editor opened (or last reloaded from a sync).
+    @State private var base = ""
     @State private var existed = false
     @State private var failed = false
     @FocusState private var focused: Bool
@@ -53,14 +55,27 @@ struct NoteEditor: View {
             }
         }
         .onAppear {
-            text = store.note(ref)
-            existed = !text.isEmpty
+            let stored = store.note(ref)
+            text = stored
+            base = stored
+            existed = !stored.isEmpty
             focused = true
+        }
+        .onChange(of: store.marksVersion) {
+            // A sync changed the note under a clean editor: show it. A draft is kept and
+            // saved over the text this editor started from, so the other version becomes a
+            // conflict copy instead of being overwritten.
+            let stored = store.note(ref)
+            if text == base, stored != base {
+                text = stored
+                base = stored
+                existed = !stored.isEmpty
+            }
         }
     }
 
     private func save(_ body: String) {
-        if store.setNote(ref, body) { dismiss() } else { failed = true }
+        if store.setNote(ref, body, over: base) { dismiss() } else { failed = true }
     }
 
     /// The verse as it would be copied: text and reference.

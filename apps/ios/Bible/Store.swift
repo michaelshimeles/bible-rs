@@ -121,10 +121,11 @@ final class Store {
     @ObservationIgnored private var iCloudQuery: NSMetadataQuery?
     @ObservationIgnored private var iCloudQueryObservers: [NSObjectProtocol] = []
     @ObservationIgnored private var identityObserver: NSObjectProtocol?
-    @ObservationIgnored private var emptyFolderSince: Date?
     @ObservationIgnored private var queryDidGather = false
     @ObservationIgnored private var lastSyncedAt: Date?
     @ObservationIgnored private var studyLibraryQueued = false
+    /// Incremented when sync is turned off so an older background pass cannot clear a newer one.
+    @ObservationIgnored private var studyLibraryGeneration: UInt64 = 0
 
     init() {
         let bible = Self.openBible()
@@ -313,8 +314,15 @@ final class Store {
     func note(_ ref: VerseRef) -> String { (try? bible.note(verse: ref)) ?? "" }
 
     @discardableResult
-    func setNote(_ ref: VerseRef, _ body: String) -> Bool {
-        study { try bible.setNote(verse: ref, body: body) }
+    func setNote(_ ref: VerseRef, _ body: String, over base: String) -> Bool {
+        var conflict = false
+        let ok = study { conflict = try bible.setNoteOver(verse: ref, body: body, base: base) }
+        if ok, conflict {
+            show(
+                "A note was edited on two devices. Both versions are kept; you can choose on a Mac in Settings › Data."
+            )
+        }
+        return ok
     }
 
     func setHighlight(_ ref: VerseRef, _ color: HighlightColor?) {
@@ -425,22 +433,24 @@ final class Store {
     }
 
     private func startStudyLibrary() {
+        guard !ProcessInfo.processInfo.arguments.contains("--uitest") else { return }
         startIdentityObserver()
         startICloudQuery()
         startStudyLibraryPoll()
     }
 
     private func stopStudyLibrary() {
+        studyLibraryGeneration += 1
         studyLibraryDebounce?.cancel()
         studyLibraryDebounce = nil
         studyLibraryRetry?.cancel()
         studyLibraryRetry = nil
         studyLibraryPoll?.cancel()
         studyLibraryPoll = nil
-        studyLibraryTask?.cancel()
-        studyLibraryTask = nil
+        // Leave `studyLibraryTask` until that pass finishes and reports in; cancel() does not
+        // stop the folder work already running, and clearing the handle here would let a new
+        // pass start while the old one can still clear it.
         studyLibraryQueued = false
-        emptyFolderSince = nil
         queryDidGather = false
         stopICloudQuery()
         stopIdentityObserver()
@@ -464,7 +474,6 @@ final class Store {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.queryDidGather = false
-                self?.emptyFolderSince = nil
                 self?.syncStudyLibraryNow()
             }
         }
@@ -545,39 +554,40 @@ final class Store {
         }
         let bible = bible
         let queryDidGather = queryDidGather
-        let emptyFolderSince = emptyFolderSince
+        let generation = studyLibraryGeneration
         studyLibraryTask = Task.detached(priority: .utility) { [weak self] in
-            let outcome = StudyLibrary.run(
-                bible: bible, queryDidGather: queryDidGather, emptySince: emptyFolderSince)
-            await self?.applyStudyLibrary(outcome)
+            let outcome = StudyLibrary.run(bible: bible, queryDidGather: queryDidGather)
+            await self?.applyStudyLibrary(outcome, generation: generation)
         }
     }
 
-    private func applyStudyLibrary(_ outcome: StudyLibrary.Outcome) {
+    private func applyStudyLibrary(_ outcome: StudyLibrary.Outcome, generation: UInt64) {
         studyLibraryTask = nil
+        if generation != studyLibraryGeneration {
+            if settings.studyLibrary, studyLibraryQueued {
+                studyLibraryQueued = false
+                runStudyLibrarySync()
+            }
+            return
+        }
         studyLibrarySyncing = false
         switch outcome {
         case .signedOut:
             studyLibraryLabel = "iCloud is signed out"
             studyLibraryDetail = "Sign in to iCloud in the Settings app to sync this library."
-            emptyFolderSince = nil
         case .unavailable:
             studyLibraryLabel = "iCloud isn’t available"
             studyLibraryDetail = "This iPhone couldn’t reach the Study Library folder."
-            emptyFolderSince = nil
         case .waiting(let count):
             studyLibraryLabel = "Waiting for iCloud…"
             studyLibraryDetail =
                 count == 1 ? "1 file is still downloading." : "\(count) files are still downloading."
-            emptyFolderSince = nil
             retryStudyLibrary(after: 3)
         case .waitingToAppear:
             studyLibraryLabel = "Waiting for iCloud…"
             studyLibraryDetail = "Checking for a library already in iCloud Drive."
-            if emptyFolderSince == nil { emptyFolderSince = Date() }
             retryStudyLibrary(after: 3)
         case .synced(let changed, let conflicts, let label, let offline, let devices):
-            emptyFolderSince = nil
             let now = Date()
             lastSyncedAt = now
             studyLibraryLabel = label

@@ -348,3 +348,13 @@ fn a_study_library_folder_carries_notes_between_devices() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+#[test]
+fn saving_a_note_over_a_changed_base_keeps_a_conflict_copy() {
+    let (bible, dir) = open("note-over");
+    bible.set_note(JOHN_3_16, "first".into()).unwrap();
+    bible.set_note(JOHN_3_16, "remote".into()).unwrap();
+    assert!(bible.set_note_over(JOHN_3_16, "typed here".into(), "first".into()).unwrap());
+    assert_eq!(bible.note(JOHN_3_16).unwrap().as_deref(), Some("typed here"));
+    let _ = std::fs::remove_dir_all(dir);
+}

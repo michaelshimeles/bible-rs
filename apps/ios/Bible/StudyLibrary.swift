@@ -6,10 +6,6 @@ import Foundation
 enum StudyLibrary {
     static let containerId = "iCloud.dev.bible-rs.ios"
     static let folderName = "Bible Study Library"
-    /// How long an empty folder is treated as "iCloud hasn't listed files yet" when the
-    /// metadata query has not finished gathering, so a new `library.json` is not written
-    /// over a library that is still downloading.
-    static let emptyGrace: TimeInterval = 20
 
     enum Availability: Equatable {
         /// No iCloud account on this device.
@@ -28,6 +24,9 @@ enum StudyLibrary {
 
     /// Looks up the container. Must not run on the main thread: the call can wait on iCloud.
     static func availability() -> Availability {
+        // UI tests isolate the local study database, not iCloud. Never open the reader's
+        // real ubiquity container from `--uitest`.
+        if ProcessInfo.processInfo.arguments.contains("--uitest") { return .signedOut }
         let fm = FileManager.default
         guard fm.ubiquityIdentityToken != nil else { return .signedOut }
         guard let root = fm.url(forUbiquityContainerIdentifier: containerId) else {
@@ -62,7 +61,9 @@ enum StudyLibrary {
     }
 
     /// Whether Rust may open the folder (and create `library.json` if the folder is empty).
-    static func mayOpen(_ folder: URL, queryDidGather: Bool, emptySince: Date?) -> Bool {
+    /// An empty look is not enough: wait until the metadata query has finished gathering so a
+    /// library that is still downloading is never replaced with a new `library.json`.
+    static func mayOpen(_ folder: URL, queryDidGather: Bool) -> Bool {
         switch markerState(in: folder) {
         case .downloaded:
             return downloadPending(in: folder) == 0
@@ -71,9 +72,7 @@ enum StudyLibrary {
         case .missing:
             if folderHasChildren(folder) { return false }
             if downloadPending(in: folder) > 0 { return false }
-            if queryDidGather { return true }
-            if let emptySince, Date().timeIntervalSince(emptySince) >= emptyGrace { return true }
-            return false
+            return queryDidGather
         }
     }
 
@@ -201,7 +200,7 @@ enum StudyLibrary {
     }
 
     /// Resolves the container, waits for downloads, then syncs. Call off the main thread.
-    static func run(bible: Bible, queryDidGather: Bool, emptySince: Date?) -> Outcome {
+    static func run(bible: Bible, queryDidGather: Bool) -> Outcome {
         switch availability() {
         case .signedOut:
             return .signedOut
@@ -213,7 +212,7 @@ enum StudyLibrary {
                 case .waiting(let count):
                     return .waiting(count)
                 case .ready:
-                    if !mayOpen(folder, queryDidGather: queryDidGather, emptySince: emptySince) {
+                    if !mayOpen(folder, queryDidGather: queryDidGather) {
                         return .waitingToAppear
                     }
                     let sync = try self.sync(bible: bible, folder: folder)
