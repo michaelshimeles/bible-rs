@@ -28,7 +28,7 @@ mod sparkle;
 mod windows;
 
 /// The project's releases on GitHub (Settings › About › Release Notes).
-pub const RELEASES: &str = "https://github.com/michaelshimeles/bible-rs/releases";
+pub const RELEASES: &str = "https://github.com/michaelshimeles/bible/releases";
 /// The running version.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 

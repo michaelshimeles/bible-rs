@@ -2,7 +2,7 @@
 
 If a number, a part or a note in one of these specs looks wrong, say so with the verse.
 
-1. **Open an issue** on [GitHub](https://github.com/michaelshimeles/bible-rs/issues) with the
+1. **Open an issue** on [GitHub](https://github.com/michaelshimeles/bible/issues) with the
    object, the part and the reference, or **open a pull request** that edits the JSON file.
 2. **Give the basis.** A number stated in the text needs its verse (`ref`) and the exact words
    that give it in the KJV and the BSB (`quote`). A number the text doesn't give needs

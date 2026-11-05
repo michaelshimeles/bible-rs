@@ -101,9 +101,9 @@ Cargo package, the command-line binary and the release file names keep the name 
    checksum list (WINDOWS.md, "Updates").
 
 The website's Download button (`simplymybible.com/download`) redirects to
-`https://github.com/michaelshimeles/bible-rs/releases/latest/download/bible-rs-universal.dmg`, and
+`https://github.com/michaelshimeles/bible/releases/latest/download/bible-rs-universal.dmg`, and
 installed copies read
-`https://github.com/michaelshimeles/bible-rs/releases/latest/download/appcast.xml`. GitHub serves
+`https://github.com/michaelshimeles/bible/releases/latest/download/appcast.xml`. GitHub serves
 both from the newest published release, so every release must include `bible-rs-universal.dmg`
 and `appcast.xml`. Publishing a release switches the site and every installed copy to it at once;
 a draft or a pre-release reaches neither. The feed's enclosure points at
