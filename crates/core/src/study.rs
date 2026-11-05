@@ -1625,10 +1625,15 @@ impl StudyStore {
         Ok(())
     }
 
-    fn forget_mismatched_reviews(&mut self, first: VerseRef, m: &Memorised) -> Result<()> {
+    fn forget_reviews_matching(&mut self, first: VerseRef, last_verse: u8, translation: &str) -> Result<()> {
         let reviews = self.reviews.get(&first.key()).cloned().unwrap_or_default();
         for logged in reviews {
-            if review_mismatches(logged.last_verse, &logged.translation, m) {
+            let matches_version = if logged.last_verse == 0 && logged.translation.is_empty() {
+                true
+            } else {
+                logged.last_verse == last_verse && logged.translation == translation
+            };
+            if matches_version {
                 let rev = self.next_rev();
                 self.store_review(first, logged, false, rev)?;
             }
@@ -1763,7 +1768,14 @@ impl StudyStore {
     /// agree after they have both logs.
     fn rebuild_memory_from_reviews(&mut self, first: VerseRef) -> Result<()> {
         let Some(mut m) = self.memory.get(&first.key()).cloned() else { return Ok(()) };
-        let reviews = self.reviews(first);
+        let reviews = self
+            .reviews
+            .get(&first.key())
+            .into_iter()
+            .flatten()
+            .filter(|r| !review_mismatches(r.last_verse, &r.translation, &m))
+            .map(|r| r.review)
+            .collect::<Vec<_>>();
         if reviews.is_empty() {
             return Ok(());
         }
@@ -2787,10 +2799,13 @@ impl StudyStore {
                 if mode == MergeMode::Import {
                     self.retire_overlapping(m.first, m.last, m.first)?;
                 }
-                if let Some(old) = self.memory.get(&k)
-                    && (old.last != m.last || old.translation != m.translation)
+                if let Some((old_last, old_tr)) =
+                    self.memory.get(&k).map(|old| (old.last.verse, old.translation.clone()))
+                    && (old_last != m.last.verse || old_tr != m.translation)
                 {
-                    self.forget_reviews(first)?;
+                    // Only grades of the outgoing range: a newer recall of the incoming one may
+                    // already be waiting, and must not be deleted before its passage arrives.
+                    self.forget_reviews_matching(first, old_last, &old_tr)?;
                 }
             } else {
                 self.forget_reviews(first)?;
@@ -2813,20 +2828,6 @@ impl StudyStore {
             };
             let last_verse = c.last_verse;
             let translation = c.translation.clone();
-            if !c.deleted
-                && let Some(m) = self.memory.get(&first.key())
-                && review_mismatches(last_verse, &translation, m)
-            {
-                let drop = self.next_rev();
-                self.store_review(
-                    first,
-                    LoggedReview { id, review: Review { at: c.at, grade }, last_verse, translation },
-                    false,
-                    drop,
-                )?;
-                report.memory_reviews += 1;
-                continue;
-            }
             self.store_review(
                 first,
                 LoggedReview { id, review: Review { at: c.at, grade }, last_verse, translation },
@@ -2843,8 +2844,7 @@ impl StudyStore {
         rebuild.sort();
         rebuild.dedup();
         for first in rebuild {
-            if let Some(m) = self.memory.get(&first.key()).cloned() {
-                self.forget_mismatched_reviews(first, &m)?;
+            if self.memory.contains_key(&first.key()) {
                 self.rebuild_memory_from_reviews(first)?;
             } else if self.memory_revs.contains_key(&first.key()) {
                 // A newer forget beat a concurrent review: drop the review so it cannot linger.
@@ -4498,7 +4498,11 @@ mod sync_tests {
         for s in [&a, &b] {
             let m = s.memorised_at(v(16)).cloned().unwrap();
             assert_eq!((m.first, m.last), (v(16), v(17)));
-            assert!(s.reviews(v(16)).is_empty(), "grades of the old range must not rebuild the new one");
+            assert_eq!(
+                m.schedule,
+                Schedule::new(m.created),
+                "grades of the old range must not rebuild the new one"
+            );
         }
     }
 
@@ -4517,8 +4521,36 @@ mod sync_tests {
         for s in [&a, &b] {
             let m = s.memorised_at(v(16)).cloned().unwrap();
             assert_eq!((m.first, m.last), (v(16), v(18)));
-            assert!(s.reviews(v(16)).is_empty(), "a grade of the old range must not schedule the new one");
+            assert_eq!(
+                m.schedule,
+                Schedule::new(m.created),
+                "a grade of the old range must not schedule the new one"
+            );
         }
+    }
+
+    #[test]
+    fn a_review_of_a_new_range_waits_for_the_passage() {
+        let (mut a, _) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.memorise(v(16), v(17), "kjv").unwrap();
+        sync(&a, &mut b);
+        later(&clock_b, 10);
+        b.memorise(v(16), v(18), "kjv").unwrap();
+        later(&clock_b, 10);
+        b.review(v(16), Grade::Good, b.now_s()).unwrap();
+        let mut only_review = b.changes_since(0, false);
+        only_review.memory.clear();
+        a.merge(&only_review, MergeMode::Sync).unwrap();
+        assert_eq!(a.memorised_at(v(16)).unwrap().last, v(17));
+        assert_eq!(a.reviews(v(16)).len(), 1, "kept until its passage arrives");
+        assert!(a.changes_since(0, false).memory_reviews.iter().any(|c| !c.deleted && c.last_verse == 18));
+        let mut only_passage = b.changes_since(0, false);
+        only_passage.memory_reviews.clear();
+        a.merge(&only_passage, MergeMode::Sync).unwrap();
+        assert_eq!(a.memorised_at(v(16)).unwrap().last, v(18));
+        assert_eq!(a.reviews(v(16)).len(), 1);
+        assert_eq!(a.memorised_at(v(16)).unwrap().schedule, b.memorised_at(v(16)).unwrap().schedule);
     }
 
     #[test]
