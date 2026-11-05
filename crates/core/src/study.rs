@@ -1,4 +1,5 @@
-//! Local study data: highlights, notes, bookmarks, reading history, plans and settings.
+//! Local study data: highlights, notes, bookmarks, reading history, plans (progress and
+//! plans the reader wrote) and settings.
 //!
 //! Everything is keyed by canonical verse reference (not by translation), so a highlight made
 //! while reading the KJV shows up in the WEB too. A verse can hold several highlights, each over
@@ -9,7 +10,7 @@
 //! one SQLite file and write straight through (WAL mode, a few hundred microseconds each); the web
 //! app has no SQLite and saves the store's JSON export instead.
 //!
-//! Every highlighted verse, note, bookmark, plan and ticked passage also carries what sync needs
+//! Every highlighted verse, note, bookmark, plan, custom plan and ticked passage also carries what sync needs
 //! ([`crate::sync`]): when it last changed and on which device, and a local sequence number, so
 //! [`StudyStore::changes_since`] can say what changed after a point. Deleting leaves a tombstone.
 //! Importing a JSON export and taking in another copy's changes go through one merge,
@@ -26,9 +27,10 @@ use serde::{Deserialize, Serialize};
 use crate::books::{BookId, ChapterIdx, VerseRef};
 use crate::highlight;
 pub use crate::highlight::{Highlight, TextSpan};
+use crate::plans::{self, CustomPlan, PassageRef};
 use crate::sync::{
-    self, BookmarkChange, HighlightPart, HighlightsChange, Hlc, NoteChange, NotePick, NoteVersion, Pick,
-    PlanChange, PlanReadChange, VerseKey, lww,
+    self, BookmarkChange, CustomPlanChange, HighlightPart, HighlightsChange, Hlc, NoteChange, NotePick,
+    NoteVersion, Pick, PlanChange, PlanReadChange, VerseKey, lww,
 };
 pub use crate::sync::{Changes, MergeMode, MergeReport, NoteConflict, Stamp};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -131,6 +133,7 @@ pub struct StudyStore {
     reading: BTreeMap<i64, ReadingSession>,
     plans: HashMap<String, PlanProgress>,
     plan_reads: HashMap<String, HashSet<(u16, u8)>>,
+    custom_plans: HashMap<String, CustomPlan>,
     settings: HashMap<String, String>,
     generation: u64,
     // Sync state of every record, tombstones (records not in the maps above) included.
@@ -139,6 +142,7 @@ pub struct StudyStore {
     bookmark_revs: HashMap<u32, Rev>,
     plan_revs: HashMap<String, PlanRev>,
     read_revs: HashMap<(String, u16, u8), ReadRev>,
+    custom_plan_revs: HashMap<String, Rev>,
     conflicts: BTreeMap<(u32, Stamp), NoteConflict>,
     device: String,
     hlc: Hlc,
@@ -195,6 +199,11 @@ CREATE TABLE IF NOT EXISTS plan_reads(
     updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
     deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(plan, day, passage));
+CREATE TABLE IF NOT EXISTS custom_plans(
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+    days TEXT NOT NULL, created INTEGER NOT NULL,
+    updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
+    deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS conflicts(
     book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
     body TEXT NOT NULL, updated_ms INTEGER NOT NULL, device TEXT NOT NULL, found INTEGER NOT NULL,
@@ -339,7 +348,7 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
 
 /// The version `migrate` brings a file to.
 #[cfg(feature = "native")]
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 
 /// Brings a file made by an older version up to date, recording its version in `user_version`.
 ///
@@ -352,6 +361,8 @@ const VERSION: i64 = 2;
 /// they last changed (`updated_ms`, Unix ms: their newest time before), the device that changed
 /// them (this one), a tombstone flag and a local sequence number; notes the version they were
 /// edited from, plans when they were last restarted. Nothing was deleted before, so nothing is.
+///
+/// Version 3 (2026-11): plans the reader wrote (`custom_plans`), stamped like the other records.
 #[cfg(feature = "native")]
 fn migrate(conn: &Connection, device: &str) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
@@ -401,6 +412,16 @@ fn migrate(conn: &Connection, device: &str) -> Result<()> {
         )
         .with_context(|| format!("stamping {table}"))?;
     }
+    if version < 3 {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS custom_plans(
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+                days TEXT NOT NULL, created INTEGER NOT NULL,
+                updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
+                deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0);",
+        )
+        .context("adding custom_plans")?;
+    }
     tx.pragma_update(None, "user_version", VERSION)?;
     tx.commit()?;
     Ok(())
@@ -424,6 +445,7 @@ impl StudyStore {
             reading: BTreeMap::new(),
             plans: HashMap::new(),
             plan_reads: HashMap::new(),
+            custom_plans: HashMap::new(),
             settings: HashMap::new(),
             meta: HashMap::new(),
             generation: 1,
@@ -432,6 +454,7 @@ impl StudyStore {
             bookmark_revs: HashMap::new(),
             plan_revs: HashMap::new(),
             read_revs: HashMap::new(),
+            custom_plan_revs: HashMap::new(),
             conflicts: BTreeMap::new(),
             device: sync::new_device_id(),
             hlc: Hlc::default(),
@@ -656,6 +679,33 @@ impl StudyStore {
                     self.plan_reads.entry(plan.clone()).or_default().insert((day, passage));
                 }
                 self.read_revs.insert((plan, day, passage), ReadRev { rev, at });
+            }
+        }
+        let custom = query(
+            conn,
+            &format!("SELECT id, title, description, days, created, {META} FROM custom_plans"),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                    meta(r, 5)?,
+                ))
+            },
+        )?;
+        self.custom_plans.clear();
+        self.custom_plan_revs.clear();
+        for (id, title, description, days, created, (rev, deleted)) in custom {
+            saw(&rev);
+            self.custom_plan_revs.insert(id.clone(), rev);
+            if deleted {
+                continue;
+            }
+            let Ok(refs) = serde_json::from_str::<Vec<Vec<PassageRef>>>(&days) else { continue };
+            if let Some(plan) = CustomPlan::from_refs(id.clone(), title, description, &refs, created) {
+                self.custom_plans.insert(id, plan);
             }
         }
         let conflicts = query(
@@ -1261,7 +1311,162 @@ impl StudyStore {
                 self.plan_reads.remove(id);
             }
         }
+
         self.read_revs.insert((id.to_string(), day, passage), rev);
+        Ok(())
+    }
+
+    /// Plans the reader wrote, newest first.
+    pub fn custom_plans(&self) -> Vec<CustomPlan> {
+        let mut v: Vec<_> = self.custom_plans.values().cloned().collect();
+        v.sort_by(|a, b| {
+            b.created.cmp(&a.created).then_with(|| a.title.cmp(&b.title)).then_with(|| a.id.cmp(&b.id))
+        });
+        v
+    }
+
+    pub fn custom_plan(&self, id: &str) -> Option<CustomPlan> {
+        self.custom_plans.get(id).cloned()
+    }
+
+    /// A built-in catalogue plan or one the reader wrote.
+    pub fn resolve_plan(&self, id: &str) -> Option<plans::ResolvedPlan> {
+        if let Some(p) = self.custom_plan(id) {
+            return Some(p.resolved());
+        }
+        plans::get(id).map(plans::ResolvedPlan::from_builtin)
+    }
+
+    /// Creates or updates a plan the reader wrote. An empty `id` mints one. Does not change
+    /// progress on a plan already under way (ticks stay by day and passage index).
+    pub fn save_custom_plan(&mut self, mut plan: CustomPlan) -> Result<()> {
+        let existing = self.custom_plans.get(&plan.id).map(|p| p.created);
+        if plan.created == 0 && existing.is_none() {
+            plan.created = self.now_s();
+        }
+        let plan = Self::validated_custom_plan(&mut plan, existing)?;
+        self.transaction(|s| {
+            let rev = s.next_rev();
+            s.store_custom_plan(&plan.id.clone(), Some(plan), rev)
+        })?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    fn validated_custom_plan(plan: &mut CustomPlan, existing_created: Option<i64>) -> Result<CustomPlan> {
+        plan.title = plan.title.trim().to_string();
+        plan.description = plan.description.trim().to_string();
+        if plan.title.is_empty() {
+            bail!("Give the plan a title");
+        }
+        if plan.title.chars().count() > plans::MAX_TITLE {
+            bail!("That title is too long");
+        }
+        if plan.description.chars().count() > plans::MAX_DESCRIPTION {
+            bail!("That description is too long");
+        }
+        plan.days.retain(|d| !d.is_empty());
+        if plan.days.is_empty() {
+            bail!("Add at least one day with a passage");
+        }
+        if plan.days.len() > plans::MAX_DAYS {
+            bail!("A plan can have at most {} days", plans::MAX_DAYS);
+        }
+        if plan.days.iter().any(|d| d.len() > plans::MAX_PASSAGES_PER_DAY) {
+            bail!("A day can hold at most {} passages", plans::MAX_PASSAGES_PER_DAY);
+        }
+        if plan.id.is_empty() {
+            plan.id = plans::new_custom_id();
+        }
+        if plans::get(&plan.id).is_some() {
+            bail!("That id belongs to a built-in plan");
+        }
+        if !plans::is_custom_id(&plan.id) {
+            bail!("A plan you create needs its own id");
+        }
+        if let Some(created) = existing_created.filter(|&c| c > 0) {
+            plan.created = created;
+        } else if plan.created == 0 {
+            // Filled by the caller that has the clock; 0 is replaced in store when needed.
+        }
+        Ok(plan.clone())
+    }
+
+    /// Deletes a plan the reader wrote. If they had started it, its progress is removed too
+    /// (the same as leaving it), so nothing points at a definition that is gone.
+    pub fn delete_custom_plan(&mut self, id: &str) -> Result<()> {
+        if !self.custom_plans.contains_key(id) {
+            return Ok(());
+        }
+        self.transaction(|s| {
+            if s.plans.contains_key(id) {
+                s.drop_plan(id)?;
+            }
+            let rev = s.next_rev();
+            s.store_custom_plan(id, None, rev)
+        })?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// A new plan with the same days and a fresh id, titled with " (copy)".
+    pub fn duplicate_custom_plan(&mut self, id: &str) -> Result<CustomPlan> {
+        let Some(src) = self.custom_plan(id) else {
+            bail!("No plan {id}");
+        };
+        let mut title = format!("{} (copy)", src.title);
+        if title.chars().count() > plans::MAX_TITLE {
+            title = src.title.chars().take(plans::MAX_TITLE).collect();
+        }
+        let copy = CustomPlan {
+            id: plans::new_custom_id(),
+            title,
+            description: src.description,
+            days: src.days,
+            created: self.now_s(),
+        };
+        self.save_custom_plan(copy.clone())?;
+        Ok(copy)
+    }
+
+    /// Writes a custom plan (`None`: a tombstone) with its stamp.
+    fn store_custom_plan(&mut self, id: &str, plan: Option<CustomPlan>, rev: Rev) -> Result<()> {
+        #[cfg(feature = "native")]
+        {
+            let (title, description, days, created) = match &plan {
+                Some(p) => (
+                    p.title.clone(),
+                    p.description.clone(),
+                    serde_json::to_string(&p.days_as_refs())?,
+                    p.created,
+                ),
+                None => (String::new(), String::new(), "[]".into(), 0),
+            };
+            self.exec(
+                "INSERT OR REPLACE INTO custom_plans(id, title, description, days, created, updated_ms, device, deleted, seq)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    title,
+                    description,
+                    days,
+                    created,
+                    rev.stamp.at,
+                    rev.stamp.device,
+                    plan.is_none(),
+                    rev.seq
+                ],
+            )?;
+        }
+        match plan {
+            Some(p) => {
+                self.custom_plans.insert(id.to_string(), p);
+            }
+            None => {
+                self.custom_plans.remove(id);
+            }
+        }
+        self.custom_plan_revs.insert(id.to_string(), rev);
         Ok(())
     }
 
@@ -1310,6 +1515,7 @@ impl StudyStore {
             translation: translation.to_string(),
             history: Vec::new(),
             plans: Vec::new(),
+            custom_plans: Vec::new(),
             highlights: self
                 .highlights()
                 .into_iter()
@@ -1369,7 +1575,24 @@ impl StudyStore {
         deleted.bookmarks.retain(|c| c.deleted && include.bookmarks);
         deleted.plans.retain(|c| c.deleted && include.history);
         deleted.plan_reads.retain(|c| c.deleted && include.history);
+        deleted.custom_plans.retain(|c| c.deleted);
         doc.deleted = deleted;
+        doc.custom_plans = self
+            .custom_plans()
+            .into_iter()
+            .map(|p| {
+                let stamp = stamp_of(self.custom_plan_revs.get(&p.id));
+                ExportCustomPlan {
+                    days: p.days_as_refs(),
+                    created: rfc3339(p.created),
+                    updated_ms: Some(stamp.at),
+                    device: Some(stamp.device),
+                    id: p.id,
+                    title: p.title,
+                    description: p.description,
+                }
+            })
+            .collect();
         if !include.highlights {
             doc.highlights.clear();
         }
@@ -1459,6 +1682,25 @@ impl StudyStore {
                 }
             }
             md.push('\n');
+        }
+        let custom = self.custom_plans();
+        if !custom.is_empty() {
+            let _ = writeln!(md, "## Reading plans\n");
+            for p in custom {
+                let _ = writeln!(md, "### {}\n", p.title);
+                if !p.description.is_empty() {
+                    let _ = writeln!(md, "{}\n", p.description);
+                }
+                for (i, day) in p.days.iter().enumerate() {
+                    let _ = writeln!(
+                        md,
+                        "- Day {}: {}",
+                        i + 1,
+                        crate::plans::label(day, |b| b.name().to_string())
+                    );
+                }
+                md.push('\n');
+            }
         }
         let highlights = if include.highlights { self.highlights() } else { Vec::new() };
         if !highlights.is_empty() {
@@ -1652,12 +1894,25 @@ impl StudyStore {
                 });
             }
         }
+        for p in &doc.custom_plans {
+            let created = date(&p.created);
+            changes.custom_plans.push(CustomPlanChange {
+                id: p.id.clone(),
+                stamp: stamp(p.updated_ms, &p.device, created),
+                deleted: false,
+                title: p.title.clone(),
+                description: p.description.clone(),
+                days: p.days.clone(),
+                created,
+            });
+        }
         let d = &doc.deleted;
         changes.highlights.extend(d.highlights.iter().filter(|c| c.deleted).cloned());
         changes.notes.extend(d.notes.iter().filter(|c| c.deleted).cloned());
         changes.bookmarks.extend(d.bookmarks.iter().filter(|c| c.deleted).cloned());
         changes.plans.extend(d.plans.iter().filter(|c| c.deleted).cloned());
         changes.plan_reads.extend(d.plan_reads.iter().filter(|c| c.deleted).cloned());
+        changes.custom_plans.extend(d.custom_plans.iter().filter(|c| c.deleted).cloned());
         Ok(changes)
     }
 
@@ -1678,6 +1933,12 @@ impl StudyStore {
             plans.sort_unstable();
             for id in plans {
                 s.drop_plan(&id)?;
+            }
+            let mut custom: Vec<String> = s.custom_plans.keys().cloned().collect();
+            custom.sort_unstable();
+            for id in custom {
+                let rev = s.next_rev();
+                s.store_custom_plan(&id, None, rev)?;
             }
             let mut with_copies: Vec<u32> = s.conflicts.keys().map(|(k, _)| *k).collect();
             with_copies.dedup();
@@ -1858,6 +2119,21 @@ impl StudyStore {
                 at: rev.at,
             });
         }
+        for (id, rev) in &self.custom_plan_revs {
+            if !want(rev) {
+                continue;
+            }
+            let p = self.custom_plans.get(id);
+            c.custom_plans.push(CustomPlanChange {
+                id: id.clone(),
+                stamp: rev.stamp.clone(),
+                deleted: p.is_none(),
+                title: p.map(|p| p.title.clone()).unwrap_or_default(),
+                description: p.map(|p| p.description.clone()).unwrap_or_default(),
+                days: p.map(|p| p.days_as_refs()).unwrap_or_default(),
+                created: p.map_or(0, |p| p.created),
+            });
+        }
         // In the order they were made, so a reader of them sees the same thing every time.
         let verse = |v: &VerseKey| (v.book.clone(), v.chapter, v.verse);
         c.highlights.sort_by_key(|h| (h.stamp.clone(), verse(&h.verse)));
@@ -1867,6 +2143,7 @@ impl StudyStore {
         c.plan_reads.sort_by(|a, b| {
             (&a.stamp, &a.plan, a.day, a.passage).cmp(&(&b.stamp, &b.plan, b.day, b.passage))
         });
+        c.custom_plans.sort_by(|a, b| (&a.stamp, &a.id).cmp(&(&b.stamp, &b.id)));
         c
     }
 
@@ -2089,6 +2366,30 @@ impl StudyStore {
             self.store_read(&c.plan, c.day, c.passage, !c.deleted, ReadRev { rev, at: c.at })?;
             report.plan_reads += 1;
         }
+        for c in &changes.custom_plans {
+            let local = self.custom_plan_revs.get(&c.id).cloned();
+            let live_here = self.custom_plans.contains_key(&c.id);
+            let rev = match lww(local.as_ref().map(|r| (&r.stamp, live_here)), (&c.stamp, !c.deleted), mode) {
+                Pick::Local => continue,
+                Pick::Remote => Rev { stamp: c.stamp.clone(), seq: self.next_seq() },
+                Pick::Revive => self.next_rev(),
+            };
+            let plan = if c.deleted {
+                None
+            } else {
+                let created = match self.custom_plans.get(&c.id).map(|p| p.created) {
+                    Some(l) if l > 0 && (c.created == 0 || l < c.created) => l,
+                    _ => c.created,
+                };
+                CustomPlan::from_refs(c.id.clone(), c.title.clone(), c.description.clone(), &c.days, created)
+            };
+            // A remote edit whose days name no book this build knows is skipped, not applied as empty.
+            if !c.deleted && plan.is_none() {
+                continue;
+            }
+            self.store_custom_plan(&c.id, plan, rev)?;
+            report.custom_plans += 1;
+        }
         Ok(report)
     }
 
@@ -2114,7 +2415,7 @@ impl StudyStore {
     pub fn prune_tombstones(&mut self, before_ms: i64) -> Result<usize> {
         let mut n = 0;
         #[cfg(feature = "native")]
-        for table in ["highlights", "bookmarks", "plans", "plan_reads"] {
+        for table in ["highlights", "bookmarks", "plans", "plan_reads", "custom_plans"] {
             self.exec(&format!("DELETE FROM {table} WHERE deleted = 1 AND updated_ms < ?1"), [before_ms])?;
         }
         // A deleted note's conflict copies keep it.
@@ -2146,6 +2447,10 @@ impl StudyStore {
         self.read_revs
             .retain(|(p, d, i), r| live.get(p).is_some_and(|s| s.contains(&(*d, *i))) || !old(&r.rev));
         n += before - self.read_revs.len();
+        let before = self.custom_plan_revs.len();
+        let live = &self.custom_plans;
+        self.custom_plan_revs.retain(|k, r| live.contains_key(k) || !old(r));
+        n += before - self.custom_plan_revs.len();
         if n > 0 {
             let seq = self.seq.to_string();
             self.set_sync_value("seq", &seq)?;
@@ -2171,6 +2476,9 @@ struct ExportDoc {
     history: Vec<ExportReading>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     plans: Vec<ExportPlan>,
+    /// Plans the reader wrote (definitions, not progress).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    custom_plans: Vec<ExportCustomPlan>,
     /// Tombstones: what was deleted, so another copy of the study deletes it too (an import
     /// ignores them).
     #[serde(default, skip_serializing_if = "Changes::is_empty")]
@@ -2191,6 +2499,20 @@ struct ExportReading {
     seconds: u32,
     furthest: u8,
     verses: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ExportCustomPlan {
+    id: String,
+    title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    description: String,
+    created: String,
+    days: Vec<Vec<PassageRef>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    updated_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2384,6 +2706,124 @@ mod plan_tests {
         assert_eq!(s.plans()[0].finished, Some(3_000));
         s.stop_plan("john-21").unwrap();
         assert!(s.plans().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod custom_plan_tests {
+    use super::*;
+    use crate::plans::{self, CustomPlan, Pace};
+
+    fn wisdom() -> CustomPlan {
+        let days =
+            plans::schedule(&plans::parse_passages("Proverbs").unwrap(), Pace::ChaptersPerDay(1)).unwrap();
+        CustomPlan {
+            id: String::new(),
+            title: "Wisdom".into(),
+            description: "A chapter of Proverbs a day".into(),
+            days,
+            created: 0,
+        }
+    }
+
+    #[test]
+    fn create_edit_duplicate_and_delete() {
+        let mut s = StudyStore::open_in_memory().unwrap();
+        s.save_custom_plan(wisdom()).unwrap();
+        let list = s.custom_plans();
+        assert_eq!(list.len(), 1);
+        assert!(plans::is_custom_id(&list[0].id));
+        assert_eq!(list[0].title, "Wisdom");
+        assert_eq!(list[0].days.len(), 31);
+        assert_eq!(list[0].days[0][0].chapter.book().name(), "Proverbs");
+        let id = list[0].id.clone();
+        assert!(s.resolve_plan(&id).unwrap().custom);
+
+        let mut edited = s.custom_plan(&id).unwrap();
+        edited.title = "Wisdom and patience".into();
+        edited.description = "Proverbs, more slowly".into();
+        s.save_custom_plan(edited).unwrap();
+        assert_eq!(s.custom_plan(&id).unwrap().title, "Wisdom and patience");
+
+        let copy = s.duplicate_custom_plan(&id).unwrap();
+        assert_ne!(copy.id, id);
+        assert_eq!(copy.title, "Wisdom and patience (copy)");
+        assert_eq!(s.custom_plans().len(), 2);
+
+        s.start_plan(&id, 1_000).unwrap();
+        s.set_plan_read(&id, 1, 0, true).unwrap();
+        assert_eq!(s.plans()[0].id, id);
+        assert!(s.plan_reads(&id).contains(&(1, 0)));
+
+        s.delete_custom_plan(&id).unwrap();
+        assert!(s.custom_plan(&id).is_none());
+        assert!(s.plans().iter().all(|p| p.id != id));
+        assert!(s.plan_reads(&id).is_empty());
+        assert_eq!(s.custom_plans().len(), 1);
+
+        // The definition's tombstone travels: a copy that already has the plan deletes it.
+        let mut p = wisdom();
+        p.id = id.clone();
+        s.save_custom_plan(p).unwrap();
+        let mut other = StudyStore::open_in_memory().unwrap();
+        other.merge(&s.changes_since(0, false), MergeMode::Sync).unwrap();
+        assert_eq!(other.custom_plan(&id).unwrap().title, "Wisdom");
+        s.delete_custom_plan(&id).unwrap();
+        other.merge(&s.changes_since(0, false), MergeMode::Sync).unwrap();
+        assert!(other.custom_plan(&id).is_none());
+    }
+
+    #[test]
+    fn rejects_empty_title_and_catalogue_ids() {
+        let mut s = StudyStore::open_in_memory().unwrap();
+        let mut p = wisdom();
+        p.title.clear();
+        assert!(s.save_custom_plan(p).is_err());
+        let mut p = wisdom();
+        p.id = "john-21".into();
+        assert!(s.save_custom_plan(p).is_err());
+    }
+
+    #[test]
+    fn export_import_and_sync_keep_custom_plans() {
+        let mut a = StudyStore::open_in_memory().unwrap();
+        a.save_custom_plan(wisdom()).unwrap();
+        let id = a.custom_plans()[0].id.clone();
+        a.start_plan(&id, 1_700_000_000).unwrap();
+        let json = a.export_json_with("KJV", |_| None, Include::EVERYTHING).unwrap();
+        assert!(json.contains("Wisdom"));
+        assert!(json.contains("PRO"));
+
+        let mut b = StudyStore::open_in_memory().unwrap();
+        b.import_json(&json).unwrap();
+        let got = b.custom_plan(&id).unwrap();
+        assert_eq!(got.title, "Wisdom");
+        assert_eq!(got.days.len(), 31);
+        assert_eq!(b.plans()[0].id, id);
+
+        // Last write wins for the title.
+        let mut edited = a.custom_plan(&id).unwrap();
+        edited.title = "Patience".into();
+        a.save_custom_plan(edited).unwrap();
+        b.merge(&a.changes_since(0, false), MergeMode::Sync).unwrap();
+        assert_eq!(b.custom_plan(&id).unwrap().title, "Patience");
+    }
+
+    #[test]
+    fn verse_ranges_stay_references_not_text() {
+        let days = vec![plans::parse_passages("Matthew 5:1–16").unwrap()];
+        let mut s = StudyStore::open_in_memory().unwrap();
+        s.save_custom_plan(CustomPlan {
+            id: String::new(),
+            title: "Sermon".into(),
+            description: String::new(),
+            days,
+            created: 0,
+        })
+        .unwrap();
+        let p = s.custom_plans()[0].days[0][0];
+        assert_eq!(p.verses, Some((1, 16)));
+        assert_eq!(crate::plans::label(&[p], |b| b.name().to_string()), "Matthew 5:1–16");
     }
 }
 
@@ -2619,7 +3059,7 @@ mod tests {
         let rows: i64 = conn.query_row("SELECT COUNT(*) FROM highlights", [], |r| r.get(0)).unwrap();
         assert_eq!(rows, 4);
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         drop(conn);
         // Parts of verses save in the new table, and opening again changes nothing.
         s.highlight_span(
