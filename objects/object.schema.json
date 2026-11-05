@@ -1,6 +1,6 @@
 {
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
-	"$id": "https://github.com/michaelshimeles/bible-rs/objects/object.schema.json",
+	"$id": "https://github.com/michaelshimeles/bible/objects/object.schema.json",
 	"$comment": "SPDX-License-Identifier: CC-BY-4.0 (objects/LICENSE)",
 	"title": "A Bible object built from the text",
 	"description": "One object (objects/<id>.json): its parts, every number in cubits with the verse it comes from, and whether each is stated in the text or an interpretive choice. objects/README.md explains each field.",

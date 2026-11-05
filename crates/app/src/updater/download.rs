@@ -129,8 +129,8 @@ mod tests {
     use std::collections::HashMap;
 
     const EXE: &str = "bible-rs-0.3.0-windows-x64-setup.exe";
-    const EXE_URL: &str = "https://github.com/michaelshimeles/bible-rs/releases/download/v0.3.0/bible-rs-0.3.0-windows-x64-setup.exe";
-    const SUMS_URL: &str = "https://github.com/michaelshimeles/bible-rs/releases/download/v0.3.0/bible-rs-0.3.0-windows-x64-SHA256SUMS.txt";
+    const EXE_URL: &str = "https://github.com/michaelshimeles/bible/releases/download/v0.3.0/bible-rs-0.3.0-windows-x64-setup.exe";
+    const SUMS_URL: &str = "https://github.com/michaelshimeles/bible/releases/download/v0.3.0/bible-rs-0.3.0-windows-x64-SHA256SUMS.txt";
 
     /// Answers from memory, `chunk` bytes per read, and can break the connection after `fail_at`
     /// bytes of a body.
