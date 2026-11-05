@@ -77,7 +77,7 @@ pub fn toolbar_button(
     on: bool,
     paint: fn(&Painter, Rect, Color32),
 ) -> Response {
-    let id = ui.id().with(("toolbar-button", tooltip));
+    let id = ui.scope_id().with(("toolbar-button", tooltip));
     let resp = ui.interact(rect, id, if enabled { Sense::click() } else { Sense::hover() });
     if on || enabled {
         segment_fill(ui, &resp, rect, p, on, flat);
@@ -187,7 +187,7 @@ impl Picker {
 
     /// Paints the picker at `rect` (its full height in the capsule) and makes it clickable.
     pub fn show(self, ui: &mut Ui, rect: Rect, p: &Palette, id: &str, tooltip: &str) -> Response {
-        let resp = ui.interact(rect, ui.id().with(("picker", id)), Sense::click());
+        let resp = ui.interact(rect, ui.scope_id().with(("picker", id)), Sense::click());
         segment_fill(ui, &resp, rect, p, false, self.flat);
         let size = self.galley.size();
         let text_pos = pos2(rect.left() + self.pad_left, (rect.center().y - size.y / 2.0).round());
@@ -238,7 +238,7 @@ pub fn search_field(
             .text_color(p.ink)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
-            .vertical_align(egui::Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .desired_width(edit_rect.width()),
     );
     if !focused {
@@ -275,7 +275,7 @@ pub fn segmented(ui: &mut Ui, p: &Palette, labels: &[&str], selected: usize) -> 
             pos2(inner.left() + seg_w * i as f32, inner.top()),
             vec2(seg_w, inner.height()),
         );
-        let resp = ui.interact(r, ui.id().with(("seg", label)), Sense::click());
+        let resp = ui.interact(r, ui.scope_id().with(("seg", label)), Sense::click());
         let radius = r.height() / 2.0;
         if i == selected {
             p.shadows.knob.paint(ui.painter(), r, radius);
@@ -513,7 +513,7 @@ pub fn segmented_fit(
 pub fn checkbox(ui: &mut Ui, p: &Palette, b: Rect, on: bool, label: &str) -> Response {
     let g = ui.painter().layout_no_wrap(label.to_string(), text::UI.font(), p.ink);
     let hit = Rect::from_min_size(b.min, vec2(16.0 + 8.0 + g.size().x, 16.0)).expand(4.0);
-    let resp = ui.interact(hit, ui.id().with(("check", label)), Sense::click());
+    let resp = ui.interact(hit, ui.scope_id().with(("check", label)), Sense::click());
     let painter = ui.painter();
     if on {
         painter.rect_filled(b, 4.0, p.accent);
@@ -1089,7 +1089,7 @@ pub fn text_field(
             .text_color(p.ink)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
-            .vertical_align(egui::Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .desired_width(edit.width()),
     )
 }
@@ -1122,7 +1122,7 @@ pub fn segmented_tight(
         let r = Rect::from_min_size(pos2(x, track.top() + 2.0), vec2(w, 28.0));
         let resp = ui.interact(r, id.with(i), Sense::click());
         resp.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::RadioButton, ui.is_enabled(), i == selected, *label)
+            egui::WidgetInfo::selected(egui::Role::RadioButton, ui.is_enabled(), i == selected, *label)
         });
         if i == selected {
             p.shadows.knob.paint(ui.painter(), r, 14.0);

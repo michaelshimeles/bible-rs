@@ -250,7 +250,7 @@ impl State {
         );
         widgets::paint_on_baseline(&painter, x, css_baseline(top, 36.0, 28.0, true), g, p.ink);
         let plus = Rect::from_min_size(pos2(x + w - 28.0, top + 4.0), vec2(28.0, 28.0));
-        let resp = widgets::round_button(ui, p, plus, icons::plus, ui.id().with("new-note"));
+        let resp = widgets::round_button(ui, p, plus, icons::plus, ui.scope_id().with("new-note"));
         egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.set_min_width(220.0);
             ui.label(egui::RichText::new("New note on…").color(p.ink_2));
@@ -282,7 +282,7 @@ impl State {
             ui,
             p,
             pos2(x + w, top + 40.0 + 16.0),
-            ui.id().with("notes-order"),
+            ui.scope_id().with("notes-order"),
             &["Recent", "Canonical"],
             usize::from(!self.recent),
         );
@@ -409,7 +409,7 @@ impl State {
             for (i, (icon, id)) in buttons.into_iter().enumerate() {
                 let b =
                     Rect::from_min_size(pos2(inner.right() - 140.0 + 36.0 * i as f32, top), vec2(32.0, 32.0));
-                let resp = widgets::round_button(ui, p, b, icon, ui.id().with(("note-head", id)));
+                let resp = widgets::round_button(ui, p, b, icon, ui.scope_id().with(("note-head", id)));
                 match id {
                     "bookmark" if resp.clicked() => actions.push(Action::ToggleBookmarkAt(v)),
                     "share" if resp.clicked() => {
@@ -471,7 +471,7 @@ impl State {
 
             // Tools: the format bar and the word count.
             let y = y + h + 20.0;
-            let id = egui::Id::new(("note-text", v.key()));
+            let id = egui::Id::unique(("note-text", v.key()));
             let state = egui::TextEdit::load_state(ui.ctx(), id);
             let caret = state.as_ref().and_then(|s| s.cursor.char_range()).map(|r| r.primary.index.0);
             let active = caret.map(|c| styles_at(&e.text, c)).unwrap_or_default();
@@ -490,7 +490,7 @@ impl State {
             let n = tools.len();
             for (i, (tool, on)) in tools.into_iter().enumerate() {
                 let b = Rect::from_min_size(pos2(bx, y), vec2(32.0, 32.0));
-                let resp = ui.interact(b, ui.id().with(("tool", i)), Sense::click());
+                let resp = ui.interact(b, ui.scope_id().with(("tool", i)), Sense::click());
                 widgets::segment_fill(ui, &resp, b, p, on, (i > 0, i + 1 < n));
                 let ink = if on { p.accent } else { p.ink };
                 let icon = Rect::from_center_size(b.center(), vec2(16.0, 16.0));
@@ -602,7 +602,7 @@ impl State {
                 if chip.right() > inner.right() {
                     break;
                 }
-                let resp = ui.interact(chip, ui.id().with(("linked", r.key())), Sense::click());
+                let resp = ui.interact(chip, ui.scope_id().with(("linked", r.key())), Sense::click());
                 painter.rect_filled(chip, 12.0, if resp.hovered() { p.selection } else { p.accent_soft });
                 let icon = Rect::from_min_size(pos2(chip.left() + 10.0, y + 6.0), vec2(12.0, 12.0));
                 icons::heavy(|| icons::link(&painter, icon, p.accent));
@@ -629,7 +629,7 @@ impl State {
             let tw =
                 painter.layout_no_wrap(label.into(), theme::ui_medium(12.0), Color32::PLACEHOLDER).size().x;
             let chip = Rect::from_min_size(pos2(cx, y), vec2(10.0 + 12.0 + 4.0 + tw + 10.0, 24.0));
-            let resp = ui.interact(chip, ui.id().with("link-verse"), Sense::click());
+            let resp = ui.interact(chip, ui.scope_id().with("link-verse"), Sense::click());
             if resp.hovered() {
                 painter.rect_filled(chip, 12.0, p.fill);
             }

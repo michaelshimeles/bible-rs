@@ -50,7 +50,7 @@ fn escape_closes_the_filter_without_clearing_the_selected_verse() {
 
     h.state_mut().sidebar.open_study("filter");
     h.run_steps(2);
-    let filter = egui::Id::new("filter-books");
+    let filter = egui::Id::unique("filter-books");
     assert!(h.ctx.memory(|m| m.has_focus(filter)));
     h.event(egui::Event::Text("phil".into()));
     h.run_steps(2);

@@ -216,8 +216,17 @@ impl State {
         for ((t, l, n), w) in tabs.into_iter().zip(widths) {
             let r = Rect::from_min_size(pos2(x, top + 30.0), vec2(w, 28.0));
             let n = n.to_string();
-            if widgets::pill_tab(ui, p, r, l, Some(&n), None, self.tab == t, ui.id().with(("plans-tab", l)))
-                .clicked()
+            if widgets::pill_tab(
+                ui,
+                p,
+                r,
+                l,
+                Some(&n),
+                None,
+                self.tab == t,
+                ui.scope_id().with(("plans-tab", l)),
+            )
+            .clicked()
             {
                 self.tab = t;
             }
@@ -318,7 +327,7 @@ impl State {
         actions: &mut Vec<Action>,
     ) -> f32 {
         let painter = ui.painter().clone();
-        let resp = ui.interact(card, ui.id().with(("hero", u.plan.id)), Sense::click());
+        let resp = ui.interact(card, ui.scope_id().with(("hero", u.plan.id)), Sense::click());
         painter.rect_filled(card, 20.0, p.sidebar);
         let x = card.left() + 28.0;
         let y = card.top() + 28.0;
@@ -369,7 +378,7 @@ impl State {
             p,
             x,
             cy,
-            ui.id().with(("continue", u.plan.id)),
+            ui.scope_id().with(("continue", u.plan.id)),
         );
         if resp_c.clicked() {
             let next = (0..u.plan.day(current).len()).find(|i| !u.passage_done(current, *i)).unwrap_or(0);
@@ -515,7 +524,7 @@ impl State {
                     p,
                     card.right() - 16.0,
                     card.top() + 36.0,
-                    ui.id().with(("start-plan", plan.id)),
+                    ui.scope_id().with(("start-plan", plan.id)),
                 );
                 if resp.clicked() {
                     actions.push(Action::StartPlan(plan.id.to_string()));
@@ -569,7 +578,7 @@ impl State {
         // Breadcrumb.
         let w = text(&painter, left, top, 16.0, "Reading Plans", theme::ui_medium(13.0), p.accent, false);
         let crumb = Rect::from_min_size(pos2(left, top), vec2(w, 16.0));
-        if ui.interact(crumb, ui.id().with("crumb"), Sense::click()).clicked() {
+        if ui.interact(crumb, ui.scope_id().with("crumb"), Sense::click()).clicked() {
             self.open = None;
         }
         let chev = Rect::from_min_size(pos2(left + w + 6.0, top + 2.0), vec2(12.0, 12.0));
@@ -601,13 +610,15 @@ impl State {
         text(&painter, left, y + 38.0, 20.0, &sub, theme::ui_font(13.0), p.ink_2, false);
         let prev = Rect::from_min_size(pos2(right - 72.0, y + 26.0), vec2(32.0, 32.0));
         if day > 1
-            && widgets::round_button(ui, p, prev, icons::chevron_left, ui.id().with("prev-day")).clicked()
+            && widgets::round_button(ui, p, prev, icons::chevron_left, ui.scope_id().with("prev-day"))
+                .clicked()
         {
             self.open = Some((u.plan.id.to_string(), day - 1));
         }
         let next = prev.translate(vec2(40.0, 0.0));
         if day < len
-            && widgets::round_button(ui, p, next, icons::chevron_right, ui.id().with("next-day")).clicked()
+            && widgets::round_button(ui, p, next, icons::chevron_right, ui.scope_id().with("next-day"))
+                .clicked()
         {
             self.open = Some((u.plan.id.to_string(), day + 1));
         }
@@ -617,7 +628,7 @@ impl State {
         let start = day.saturating_sub(4).max(1).min(len.saturating_sub(8).max(1));
         for (k, d) in (start..=(start + 8).min(len)).enumerate() {
             let cell = Rect::from_min_size(pos2(left + 60.0 * k as f32, y), vec2(56.0, 68.0));
-            let resp = ui.interact(cell, ui.id().with(("strip", d)), Sense::click());
+            let resp = ui.interact(cell, ui.scope_id().with(("strip", d)), Sense::click());
             let selected = d == day;
             if selected {
                 painter.rect_filled(cell, 12.0, p.accent_soft);
@@ -679,7 +690,7 @@ impl State {
             pp.rect_filled(row, 14.0, p.surface);
             pp.rect_stroke(row, 14.0, Stroke::new(0.5, p.border), StrokeKind::Outside);
             let check = Rect::from_min_size(pos2(row.left() + 16.0, row.center().y - 8.0), vec2(16.0, 16.0));
-            let cr = ui.interact(check.expand(6.0), ui.id().with(("tick", day, i)), Sense::click());
+            let cr = ui.interact(check.expand(6.0), ui.scope_id().with(("tick", day, i)), Sense::click());
             if done {
                 pp.rect_filled(check, 4.0, p.accent);
                 icons::check(&pp, Rect::from_center_size(check.center(), vec2(12.0, 12.0)), p.on_accent);
@@ -710,7 +721,7 @@ impl State {
                 p,
                 row.right() - 16.0,
                 row.center().y,
-                ui.id().with(("read", day, i)),
+                ui.scope_id().with(("read", day, i)),
             );
             if done {
                 // Dim the button with the row.
@@ -850,7 +861,7 @@ impl State {
             ui,
             p,
             pos2(reminder.right() - 16.0, reminder.center().y),
-            ui.id().with("reminder"),
+            ui.scope_id().with("reminder"),
             &mut on,
         )
         .clicked()
@@ -902,7 +913,7 @@ impl State {
         );
         job.sections[0].format.line_height = Some(20.0);
         let quote = painter.layout_job(job);
-        let id = egui::Id::new(("reflection", v.key()));
+        let id = egui::Id::unique(("reflection", v.key()));
         let focused = ui.memory(|m| m.has_focus(id));
         let editor_h = 20.0f32.max(ui.ctx().data(|d| d.get_temp::<f32>(id.with("h"))).unwrap_or(20.0));
         let h = 16.0 + 16.0 + 10.0 + quote.size().y + 10.0 + editor_h + 10.0 + 24.0 + 16.0;
@@ -953,14 +964,14 @@ impl State {
             p,
             card.right() - 16.0,
             fy + 12.0,
-            ui.id().with("save-reflection"),
+            ui.scope_id().with("save-reflection"),
         );
         let (_, cr) = Button::new(Kind::Plain, "Cancel").small().enabled(changed).show_right(
             ui,
             p,
             save.left() - 8.0,
             fy + 12.0,
-            ui.id().with("cancel-reflection"),
+            ui.scope_id().with("cancel-reflection"),
         );
         if sr.clicked() {
             let sent = std::mem::replace(base, draft.clone());

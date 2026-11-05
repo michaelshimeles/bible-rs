@@ -207,6 +207,7 @@ fn the_empty_notes_page_scrolls_to_its_last_row_in_a_short_window() {
                 delta: vec2(0.0, dy),
                 modifiers: egui::Modifiers::NONE,
                 phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
             },
         ]
     };

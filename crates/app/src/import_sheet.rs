@@ -179,7 +179,7 @@ impl ImportSheet {
         let screen = ctx.content_rect();
         let converting = matches!(self.stage, Stage::Converting { .. });
         let mut outcome = Outcome::Open;
-        egui::Area::new(egui::Id::new("import-scrim")).order(Order::Middle).fixed_pos(screen.min).show(
+        egui::Area::new(egui::Id::unique("import-scrim")).order(Order::Middle).fixed_pos(screen.min).show(
             ctx,
             |ui| {
                 let (r, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
@@ -192,7 +192,7 @@ impl ImportSheet {
         );
         let top = if matches!(self.stage, Stage::Review { .. }) { 56.0 } else { 72.0 };
         let left = (screen.center().x - WIDTH / 2.0).round();
-        egui::Area::new(egui::Id::new("import-sheet"))
+        egui::Area::new(egui::Id::unique("import-sheet"))
             .order(Order::Foreground)
             .fixed_pos(pos2(left, top))
             .show(ctx, |ui| {
@@ -304,7 +304,7 @@ impl ImportSheet {
         let b = Button::new(Kind::Secondary, label).small();
         let w = b.width(&painter);
         let r = Rect::from_min_size(pos2(cx - w / 2.0, y), vec2(w, 24.0));
-        if b.show(ui, p, r, ui.id().with("choose")).clicked()
+        if b.show(ui, p, r, ui.scope_id().with("choose")).clicked()
             && let Some(path) = rfd::FileDialog::new()
                 .set_title("Import a translation (USFM, OSIS, Zefania, SWORD)")
                 .add_filter("Bible files", &["xml", "osis", "usfm", "sfm", "zip", "conf", "txt"])
@@ -328,7 +328,7 @@ impl ImportSheet {
             None,
             false,
             false,
-            egui::Id::new("import-abbrev"),
+            egui::Id::unique("import-abbrev"),
         );
         let name = Rect::from_min_max(
             pos2(abbrev.right() + 12.0, abbrev.top()),
@@ -343,7 +343,7 @@ impl ImportSheet {
             None,
             false,
             false,
-            egui::Id::new("import-name"),
+            egui::Id::unique("import-name"),
         );
 
         // The unlock key.
@@ -384,7 +384,7 @@ impl ImportSheet {
             Some(icons::lock),
             true,
             false,
-            egui::Id::new("import-key"),
+            egui::Id::unique("import-key"),
         );
 
         // Privacy note.
@@ -411,7 +411,7 @@ impl ImportSheet {
             p,
             footer.right() - PAD,
             cy,
-            ui.id().with("import"),
+            ui.scope_id().with("import"),
         );
         let go = resp.clicked() || (ready && ui.input(|i| i.key_pressed(egui::Key::Enter)));
         let (_, cancel) = Button::new(Kind::Plain, "Cancel").show_right(
@@ -419,7 +419,7 @@ impl ImportSheet {
             p,
             import.left() - 8.0,
             cy,
-            ui.id().with("cancel"),
+            ui.scope_id().with("cancel"),
         );
         if go {
             self.start(ui.ctx());
@@ -571,7 +571,7 @@ impl ImportSheet {
             p,
             footer.right() - PAD,
             cy,
-            ui.id().with("cancel-import"),
+            ui.scope_id().with("cancel-import"),
         );
         if resp.clicked() {
             progress.cancel.store(true, Ordering::Relaxed);
@@ -662,7 +662,7 @@ impl ImportSheet {
             p,
             footer.left() + PAD,
             cy,
-            ui.id().with("copy-report"),
+            ui.scope_id().with("copy-report"),
         );
         if copy.clicked() {
             let report = cards.iter().map(|c| c.report()).collect::<Vec<_>>().join("\n");
@@ -676,7 +676,7 @@ impl ImportSheet {
                     p,
                     footer.right() - PAD,
                     cy,
-                    ui.id().with("add"),
+                    ui.scope_id().with("add"),
                 );
                 let add_clicked = resp.clicked();
                 let (_, discard) = Button::new(Kind::Secondary, "Discard").show_right(
@@ -684,7 +684,7 @@ impl ImportSheet {
                     p,
                     add.left() - 8.0,
                     cy,
-                    ui.id().with("discard"),
+                    ui.scope_id().with("discard"),
                 );
                 if discard.clicked() {
                     outcome = Outcome::Close;
@@ -702,7 +702,7 @@ impl ImportSheet {
                 let (again, resp) = Button::new(Kind::Primary, "Try Again")
                     .icon(icons::retry)
                     .enabled(ready)
-                    .show_right(ui, p, footer.right() - PAD, cy, ui.id().with("again"));
+                    .show_right(ui, p, footer.right() - PAD, cy, ui.scope_id().with("again"));
                 let again_clicked = resp.clicked();
                 let other = if locked { "Cancel" } else { "Choose Another File" };
                 let (_, resp) = Button::new(Kind::Secondary, other).show_right(
@@ -710,7 +710,7 @@ impl ImportSheet {
                     p,
                     again.left() - 8.0,
                     cy,
-                    ui.id().with("other"),
+                    ui.scope_id().with("other"),
                 );
                 if resp.clicked() {
                     if locked {
@@ -911,7 +911,7 @@ impl Issue {
                 Some(icons::lock),
                 true,
                 error,
-                egui::Id::new("import-key"),
+                egui::Id::unique("import-key"),
             );
             if error {
                 let y = field.bottom() + 6.0;

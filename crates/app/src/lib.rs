@@ -262,3 +262,20 @@ pub fn run() -> eframe::Result {
         }),
     )
 }
+
+#[cfg(test)]
+mod renderer_tests {
+    /// Linux stays on glow (OpenGL). eframe 0.37 keeps that path answering compositor
+    /// pings when Hyprland hides the window (emilk/egui#8631, issue #83). macOS and
+    /// Windows stay on wgpu (Metal / Direct3D 12).
+    #[test]
+    fn default_renderer_keeps_the_platform_backend() {
+        if std::env::var_os("BIBLE_RS_RENDERER").is_some() {
+            return;
+        }
+        #[cfg(any(target_os = "macos", windows))]
+        assert!(matches!(super::renderer(), eframe::Renderer::Wgpu));
+        #[cfg(not(any(target_os = "macos", windows)))]
+        assert!(matches!(super::renderer(), eframe::Renderer::Glow));
+    }
+}

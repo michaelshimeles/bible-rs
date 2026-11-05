@@ -132,7 +132,7 @@ impl NotePopover {
         let height = PAD + 16.0 + 12.0 + quote.size().y + 12.0 + editor_h + 12.0 + 28.0 + PAD;
         let rect = Rect::from_min_size(pos2(left, top), vec2(WIDTH, height));
         let mut close = false;
-        let area = egui::Area::new(egui::Id::new("note-popover"))
+        let area = egui::Area::new(egui::Id::unique("note-popover"))
             .order(Order::Foreground)
             .fixed_pos(rect.min)
             .show(ctx, |ui| {
@@ -178,7 +178,7 @@ impl NotePopover {
                     let center = pos2(sx + 7.0, cy);
                     let resp = ui.interact(
                         Rect::from_center_size(center, vec2(18.0, 18.0)),
-                        ui.id().with(("note-swatch", c.name())),
+                        ui.scope_id().with(("note-swatch", c.name())),
                         Sense::click(),
                     );
                     let on = colour == Some(c);
@@ -219,7 +219,7 @@ impl NotePopover {
 
                 // The editor.
                 let editor = Rect::from_min_size(pos2(x, y), vec2(inner_w, editor_h));
-                let id = egui::Id::new(("note-editor", self.verse.key()));
+                let id = egui::Id::unique(("note-editor", self.verse.key()));
                 if ui.memory(|m| m.has_focus(id)) {
                     ui.painter().rect_filled(editor.expand(3.0), 13.0, p.focus);
                 }
@@ -281,7 +281,7 @@ impl NotePopover {
                 // Footer: delete, saved state, Done.
                 let cy = y + 14.0;
                 let trash = Rect::from_center_size(pos2(x + 14.0, cy), vec2(28.0, 28.0));
-                let tr = ui.interact(trash, ui.id().with("note-delete"), Sense::click());
+                let tr = ui.interact(trash, ui.scope_id().with("note-delete"), Sense::click());
                 if let Some(fill) = crate::widgets::hover_fill(ui, &tr, p, false) {
                     ui.painter().circle_filled(trash.center(), 14.0, fill);
                 }
@@ -318,7 +318,7 @@ impl NotePopover {
                 let font = theme::ui_semibold(text::SMALL.size);
                 let w = ui.painter().layout_no_wrap("Done".into(), font.clone(), p.on_accent).size().x + 20.0;
                 let done = Rect::from_min_size(pos2(rect.right() - PAD - w, cy - 12.0), vec2(w, 24.0));
-                let dr = ui.interact(done, ui.id().with("note-done"), Sense::click());
+                let dr = ui.interact(done, ui.scope_id().with("note-done"), Sense::click());
                 ui.painter().rect_filled(done, 12.0, p.accent);
                 if dr.hovered() {
                     ui.painter().rect_filled(

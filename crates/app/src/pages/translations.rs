@@ -176,7 +176,7 @@ impl State {
             p,
             right,
             cy,
-            ui.id().with("import"),
+            ui.scope_id().with("import"),
         );
         if resp.clicked() {
             actions.push(Action::ImportTranslation);
@@ -186,7 +186,7 @@ impl State {
             p,
             import.left() - 8.0,
             cy,
-            ui.id().with("api-key"),
+            ui.scope_id().with("api-key"),
         );
         if resp.clicked() {
             actions.push(Action::OpenSettings(SettingsTab::Translations));
@@ -205,7 +205,8 @@ impl State {
             let on = self.filter == f;
             let w = widgets::pill_tab_width(&painter, label, Some(&n), on, false);
             let r = Rect::from_min_size(pos2(x, y), vec2(w, 28.0));
-            if widgets::pill_tab(ui, p, r, label, Some(&n), None, on, ui.id().with(("tab", label))).clicked()
+            if widgets::pill_tab(ui, p, r, label, Some(&n), None, on, ui.scope_id().with(("tab", label)))
+                .clicked()
             {
                 self.filter = f;
             }
@@ -221,7 +222,7 @@ impl State {
             .x;
         let sort =
             Rect::from_min_size(pos2(right - value_w - 2.0 - 12.0, y + 6.0), vec2(value_w + 14.0, 16.0));
-        let resp = ui.interact(sort, ui.id().with("sort"), Sense::click());
+        let resp = ui.interact(sort, ui.scope_id().with("sort"), Sense::click());
         text(&painter, sort.left(), sort.top(), 16.0, sort_label, theme::ui_semibold(12.0), p.ink_2, false);
         icons::chevron_down(
             &painter,
@@ -297,7 +298,7 @@ impl State {
         actions: &mut Vec<Action>,
     ) {
         let m = &e.meta;
-        let id = ui.id().with(("translation-row", &m.id));
+        let id = ui.scope_id().with(("translation-row", &m.id));
         let resp = ui.interact(row, id, Sense::click());
         let more = Rect::from_min_size(pos2(row.right() - 12.0 - 28.0, row.top() + 16.0), vec2(28.0, 28.0));
         let more_resp = ui.interact(more, id.with("more"), Sense::click());
@@ -503,7 +504,7 @@ impl State {
             p,
             x,
             y + 12.0,
-            ui.id().with("make-default"),
+            ui.scope_id().with("make-default"),
         );
         if resp.clicked() {
             actions.push(Action::SetTranslation(m.id.clone()));
@@ -512,7 +513,7 @@ impl State {
             .small()
             .icon(icons::compare)
             .enabled(!is_default)
-            .show_left(ui, p, r.right() + 8.0, y + 12.0, ui.id().with("compare"));
+            .show_left(ui, p, r.right() + 8.0, y + 12.0, ui.scope_id().with("compare"));
         if resp.clicked() {
             actions.push(Action::OpenInParallel(Box::new(Action::AddParallel(m.id.clone()))));
             actions.push(Action::OpenPage(Page::Reader));

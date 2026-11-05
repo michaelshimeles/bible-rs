@@ -154,7 +154,7 @@ impl Pages {
                 );
             },
         );
-        self.scrolled = out.state.offset.y > 0.5;
+        self.scrolled = out.state.clamped_offset().y > 0.5;
     }
 }
 
@@ -360,7 +360,7 @@ impl Empty<'_> {
             let trail = self.buttons.last().map_or(0.0, |b| b.rest_inset());
             let mut x = cx - (total - lead - trail) / 2.0 - lead;
             for (i, (b, w)) in self.buttons.iter().zip(widths).enumerate() {
-                responses.push(b.show_left(ui, p, x, y + 16.0, ui.id().with(("empty-button", i))).1);
+                responses.push(b.show_left(ui, p, x, y + 16.0, ui.scope_id().with(("empty-button", i))).1);
                 x += w + BUTTON_GAP;
             }
             y += 32.0;

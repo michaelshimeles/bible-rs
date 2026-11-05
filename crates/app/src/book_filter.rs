@@ -143,12 +143,7 @@ pub fn show(anchor: &Response, p: &Palette, books: Books<'_>) -> Option<Pick> {
                     ui.allocate_exact_size(vec2(ui.available_width(), ITEM_HEIGHT), Sense::click());
                 let resp = resp.on_hover_cursor(egui::CursorIcon::Default);
                 resp.widget_info(|| {
-                    egui::WidgetInfo::selected(
-                        egui::WidgetType::SelectableLabel,
-                        true,
-                        row.selected,
-                        &row.label,
-                    )
+                    egui::WidgetInfo::selected(egui::Role::Button, true, row.selected, &row.label)
                 });
                 if resp.hovered() && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
                     state.active = Some(i);

@@ -69,7 +69,7 @@ impl State {
             ui,
             p,
             pos2(right, cy),
-            ui.id().with("testament"),
+            ui.scope_id().with("testament"),
             &["All", "OT", "NT"],
             self.testament,
         );
@@ -79,7 +79,8 @@ impl State {
         }
         let select = Rect::from_min_size(pos2(seg.left() - 8.0 - 160.0, cy - 16.0), vec2(160.0, 32.0));
         let value = self.book.map(book_name).unwrap_or_else(|| "All books".into());
-        let resp = widgets::select_field(ui, p, select, &value, Some(icons::book), ui.id().with("book"));
+        let resp =
+            widgets::select_field(ui, p, select, &value, Some(icons::book), ui.scope_id().with("book"));
         let filter = book_filter::Books {
             current: self.book,
             here: None,
@@ -137,7 +138,7 @@ impl State {
             let w = widgets::pill_tab_width(&painter, &label, Some(&n), on, c.is_some());
             let r = Rect::from_min_size(pos2(x, y), vec2(w, 28.0));
             let dot = c.map(|c| p.swatch(c));
-            if widgets::pill_tab(ui, p, r, &label, Some(&n), dot, on, ui.id().with(("colour", &label)))
+            if widgets::pill_tab(ui, p, r, &label, Some(&n), dot, on, ui.scope_id().with(("colour", &label)))
                 .clicked()
             {
                 self.color = c;
@@ -163,7 +164,7 @@ impl State {
                 vec2(card_w, h),
             );
             bottoms[col] = card.bottom() + GAP_Y;
-            let resp = ui.interact(card, ui.id().with(("highlight", v.key(), *start)), Sense::click());
+            let resp = ui.interact(card, ui.scope_id().with(("highlight", v.key(), *start)), Sense::click());
             painter.add(
                 egui::epaint::RectShape::filled(
                     card.translate(vec2(0.0, 1.0)),
