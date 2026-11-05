@@ -1036,6 +1036,22 @@ impl BibleApp {
                     self.toast(ctx, format!("{e:#}"));
                 }
             }
+            Action::SaveCustomPlan(plan) => {
+                let title = plan.title.clone();
+                match self.study.save_custom_plan(plan) {
+                    Ok(()) => self.toast(ctx, format!("Saved {title}")),
+                    Err(e) => self.toast(ctx, format!("{e:#}")),
+                }
+            }
+            Action::DeleteCustomPlan(id) => {
+                if let Err(e) = self.study.delete_custom_plan(&id) {
+                    self.toast(ctx, format!("{e:#}"));
+                }
+            }
+            Action::DuplicateCustomPlan(id) => match self.study.duplicate_custom_plan(&id) {
+                Ok(copy) => self.toast(ctx, format!("Copied “{}”", copy.title)),
+                Err(e) => self.toast(ctx, format!("{e:#}")),
+            },
             Action::SetPlanRead { plan, day, passage, read } => {
                 if let Err(e) = self.study.set_plan_read(&plan, day, passage, read) {
                     self.toast(ctx, format!("{e:#}"));
@@ -1119,7 +1135,7 @@ impl BibleApp {
 
     /// One `BIBLE_RS_DEMO` step: `jump:<reference>`, `select:<reference>`, `palette:<query>`,
     /// `search:<query>`, `scope:<ot|nt>`, `step:<n>` (search results), `offline:<reference>`, `note:<reference>`, `compare:<reference>`, `study:<bookmarks|highlights|notes>`,
-    /// `settings:<reading|translations|data>`, `plans-tab:<active|browse|completed>`,
+    /// `settings:<reading|translations|data>`, `plans-tab:<active|browse|completed|mine>`,
     /// `size:<width>x<height>` (the window's inner size).
     fn demo_step(&mut self, ctx: &egui::Context, step: &str, actions: &mut Vec<Action>) {
         let (cmd, arg) = step.split_once(':').unwrap_or((step, ""));
@@ -1404,7 +1420,7 @@ impl BibleApp {
         }
         self.reminded = Some(today);
         let due = self.study.plans().into_iter().filter(|p| p.finished.is_none()).find_map(|p| {
-            let plan = bible_core::plans::get(&p.id)?;
+            let plan = self.study.resolve_plan(&p.id)?;
             let day = ((today - p.started) / 86_400 + 1) as usize;
             let reads = self.study.plan_reads(&p.id);
             let todo = (0..plan.day(day).len()).any(|i| !reads.contains(&(day as u16, i as u8)));

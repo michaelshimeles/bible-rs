@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use eframe::egui::{self, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
-use bible_core::plans::{self, Passage, Plan, PlanIcon};
+use bible_core::plans::{self, CustomPlan, Passage, PlanIcon, ResolvedPlan};
 use bible_core::study::PlanProgress;
 use bible_core::{ChapterIdx, Translation, VerseRef};
 
@@ -25,6 +25,7 @@ const WPM: usize = 230;
 enum Tab {
     #[default]
     Active,
+    Mine,
     Browse,
     Completed,
 }
@@ -34,6 +35,10 @@ pub struct State {
     tab: Tab,
     /// The plan and day open in the day view.
     pub open: Option<(String, usize)>,
+    /// A plan the reader is writing or editing.
+    editor: Option<Editor>,
+    /// A destructive action waiting for a second click.
+    confirm: Option<Confirm>,
     /// The reflection being written: its verse, the note's text it started from, and the draft.
     reflection: Option<(VerseRef, String, String)>,
     /// The text the last reflection save was sent over, until the next frame shows whether it
@@ -41,9 +46,61 @@ pub struct State {
     reflection_sent: Option<(String, String)>,
 }
 
+/// Create or edit a plan: title, optional description, a schedule to fill from, and the days.
+struct Editor {
+    /// `None` while creating.
+    id: Option<String>,
+    title: String,
+    description: String,
+    /// Books and passages to turn into days ("John, Matthew 5–7").
+    source: String,
+    /// 0–2: that many passages a day; 3: finish in `in_days` days.
+    pace_idx: usize,
+    in_days: String,
+    days: Vec<String>,
+    error: Option<String>,
+    confirm_delete: bool,
+}
+
+impl Editor {
+    fn blank() -> Self {
+        Self {
+            id: None,
+            title: String::new(),
+            description: String::new(),
+            source: String::new(),
+            pace_idx: 0,
+            in_days: "30".into(),
+            days: vec![String::new()],
+            error: None,
+            confirm_delete: false,
+        }
+    }
+
+    fn from_plan(plan: &CustomPlan) -> Self {
+        let name = |b: bible_core::BookId| b.ref_name().to_string();
+        Self {
+            id: Some(plan.id.clone()),
+            title: plan.title.clone(),
+            description: plan.description.clone(),
+            source: String::new(),
+            pace_idx: 0,
+            in_days: "30".into(),
+            days: plan.days.iter().map(|d| plans::label(d, name)).collect(),
+            error: None,
+            confirm_delete: false,
+        }
+    }
+}
+
+enum Confirm {
+    Delete { id: String, title: String, started: bool },
+    Reset { id: String, title: String },
+}
+
 /// A plan with its progress, as of today.
 struct Under<'a> {
-    plan: &'static Plan,
+    plan: ResolvedPlan,
     state: &'a PlanProgress,
     reads: HashSet<(u16, u8)>,
     /// Chapters read to the end since the plan began.
@@ -53,7 +110,7 @@ struct Under<'a> {
 }
 
 impl Under<'_> {
-    fn new<'a>(plan: &'static Plan, state: &'a PlanProgress, env: &PageEnv<'_>) -> Under<'a> {
+    fn new<'a>(plan: ResolvedPlan, state: &'a PlanProgress, env: &PageEnv<'_>) -> Under<'a> {
         let reads = env.study.plan_reads(&state.id);
         let finished = env
             .study
@@ -155,17 +212,24 @@ impl State {
     /// plan's day view, which hides the tabs.
     pub fn set_tab(&mut self, name: &str) {
         self.open = None;
+        self.editor = None;
+        self.confirm = None;
         self.tab = match name {
             "browse" => Tab::Browse,
             "completed" => Tab::Completed,
+            "mine" | "my" | "my-plans" => Tab::Mine,
             _ => Tab::Active,
         };
     }
 
     pub fn show(&mut self, ui: &mut Ui, content: Rect, env: &PageEnv<'_>, actions: &mut Vec<Action>) -> f32 {
         let started = env.study.plans();
+        if self.editor.is_some() {
+            return self.editor_view(ui, content, env, actions);
+        }
         if let Some((id, day)) = self.open.clone()
-            && let (Some(plan), Some(state)) = (plans::get(&id), started.iter().find(|s| s.id == id))
+            && let (Some(plan), Some(state)) =
+                (env.study.resolve_plan(&id), started.iter().find(|s| s.id == id))
         {
             let under = Under::new(plan, state, env);
             return self.day_view(ui, content, env, &under, day, actions);
@@ -189,20 +253,22 @@ impl State {
         let active: Vec<&PlanProgress> = started.iter().filter(|s| s.finished.is_none()).collect();
         let completed: Vec<&PlanProgress> = started.iter().filter(|s| s.finished.is_some()).collect();
         let q = env.query.trim().to_lowercase();
-        let matches = |plan: &Plan| {
-            q.is_empty()
-                || plan.title.to_lowercase().contains(&q)
-                || plan.description.to_lowercase().contains(&q)
+        let matches = |title: &str, description: &str| {
+            q.is_empty() || title.to_lowercase().contains(&q) || description.to_lowercase().contains(&q)
         };
-        let browse: Vec<&'static Plan> = plans::catalogue()
+        let mine: Vec<CustomPlan> =
+            env.study.custom_plans().into_iter().filter(|p| matches(&p.title, &p.description)).collect();
+        let browse: Vec<ResolvedPlan> = plans::catalogue()
             .iter()
+            .map(ResolvedPlan::from_builtin)
             .filter(|plan| !active.iter().any(|s| s.id == plan.id))
-            .filter(|plan| matches(plan))
+            .filter(|plan| matches(&plan.title, &plan.description))
             .collect();
 
         // Tabs, at the right of the header.
         let tabs = [
             (Tab::Active, "Active", active.len()),
+            (Tab::Mine, "My Plans", mine.len()),
             (Tab::Browse, "Browse", browse.len()),
             (Tab::Completed, "Completed", completed.len()),
         ];
@@ -229,8 +295,8 @@ impl State {
         match self.tab {
             Tab::Active => {
                 for s in &active {
-                    let Some(plan) = plans::get(&s.id) else { continue };
-                    if !matches(plan) {
+                    let Some(plan) = env.study.resolve_plan(&s.id) else { continue };
+                    if !matches(&plan.title, &plan.description) {
                         continue;
                     }
                     let under = Under::new(plan, s, env);
@@ -250,12 +316,23 @@ impl State {
                         left,
                         y,
                         20.0,
-                        "No plan under way — start one below.",
+                        "No plan under way — start one from Browse, or write your own.",
                         theme::ui_font(13.0),
                         p.ink_2,
                         false,
                     );
                     y += 40.0;
+                    let (_, resp) = Button::new(Kind::Secondary, "New plan").icon(icons::plus).show_left(
+                        ui,
+                        p,
+                        left,
+                        y + 20.0,
+                        ui.id().with("new-plan-active"),
+                    );
+                    if resp.clicked() {
+                        self.editor = Some(Editor::blank());
+                    }
+                    y += 52.0;
                 }
                 // Everything not under way, finished plans included (they can be read again).
                 let others = browse.clone();
@@ -268,12 +345,18 @@ impl State {
                     y = self.grid(ui, p, left, right, y + 40.0, &others, "Start", actions);
                 }
             }
+            Tab::Mine => {
+                y = self.mine_list(ui, p, left, right, y, &mine, &started, env, actions);
+            }
             Tab::Browse => {
                 y = self.grid(ui, p, left, right, y, &browse, "Start", actions);
             }
             Tab::Completed => {
-                let done: Vec<&'static Plan> =
-                    completed.iter().filter_map(|s| plans::get(&s.id)).filter(|plan| matches(plan)).collect();
+                let done: Vec<ResolvedPlan> = completed
+                    .iter()
+                    .filter_map(|s| env.study.resolve_plan(&s.id))
+                    .filter(|plan| matches(&plan.title, &plan.description))
+                    .collect();
                 if done.is_empty() {
                     // None finished, or none of them matching the toolbar's field.
                     let (title, body) = if completed.is_empty() {
@@ -302,6 +385,7 @@ impl State {
                 }
             }
         }
+        self.confirm_sheet(ui, p, content, actions);
         y
     }
 
@@ -318,7 +402,7 @@ impl State {
         actions: &mut Vec<Action>,
     ) -> f32 {
         let painter = ui.painter().clone();
-        let resp = ui.interact(card, ui.id().with(("hero", u.plan.id)), Sense::click());
+        let resp = ui.interact(card, ui.id().with(("hero", u.plan.id.as_str())), Sense::click());
         painter.rect_filled(card, 20.0, p.sidebar);
         let x = card.left() + 28.0;
         let y = card.top() + 28.0;
@@ -328,7 +412,7 @@ impl State {
         widgets::badge(&painter, p, x, y + 10.0, BadgeKind::Accent, &badge);
         let g = widgets::line(
             &painter,
-            u.plan.title,
+            &u.plan.title,
             FontId::new(28.0, theme::family(theme::SERIF_HEADING)),
             p.ink,
             -0.01,
@@ -369,7 +453,7 @@ impl State {
             p,
             x,
             cy,
-            ui.id().with(("continue", u.plan.id)),
+            ui.id().with(("continue", u.plan.id.as_str())),
         );
         if resp_c.clicked() {
             let next = (0..u.plan.day(current).len()).find(|i| !u.passage_done(current, *i)).unwrap_or(0);
@@ -464,7 +548,7 @@ impl State {
         left: f32,
         right: f32,
         top: f32,
-        list: &[&'static Plan],
+        list: &[ResolvedPlan],
         action: &str,
         actions: &mut Vec<Action>,
     ) -> f32 {
@@ -476,7 +560,7 @@ impl State {
                 .iter()
                 .map(|plan| {
                     let mut job = egui::text::LayoutJob::simple(
-                        plan.description.into(),
+                        plan.description.clone(),
                         theme::ui_font(13.0),
                         p.ink_2,
                         CARD_W - 32.0,
@@ -515,11 +599,16 @@ impl State {
                     p,
                     card.right() - 16.0,
                     card.top() + 36.0,
-                    ui.id().with(("start-plan", plan.id)),
+                    ui.id().with(("start-plan", plan.id.as_str())),
                 );
                 if resp.clicked() {
-                    actions.push(Action::StartPlan(plan.id.to_string()));
-                    self.tab = Tab::Active;
+                    if action == "Restart" {
+                        self.confirm =
+                            Some(Confirm::Reset { id: plan.id.clone(), title: plan.title.clone() });
+                    } else {
+                        actions.push(Action::StartPlan(plan.id.clone()));
+                        self.tab = Tab::Active;
+                    }
                 }
                 let x = card.left() + 16.0;
                 text(
@@ -527,14 +616,23 @@ impl State {
                     x,
                     card.top() + 60.0,
                     20.0,
-                    plan.title,
+                    &plan.title,
                     theme::ui_semibold(15.0),
                     p.ink,
                     false,
                 );
-                text(&painter, x, card.top() + 84.0, 16.0, plan.meta, theme::ui_medium(12.0), p.ink_3, false);
+                text(
+                    &painter,
+                    x,
+                    card.top() + 84.0,
+                    16.0,
+                    &plan.meta,
+                    theme::ui_medium(12.0),
+                    p.ink_3,
+                    false,
+                );
                 let mut job = egui::text::LayoutJob::simple(
-                    plan.description.into(),
+                    plan.description.clone(),
                     theme::ui_font(13.0),
                     p.ink_2,
                     CARD_W - 32.0,
@@ -574,7 +672,7 @@ impl State {
         }
         let chev = Rect::from_min_size(pos2(left + w + 6.0, top + 2.0), vec2(12.0, 12.0));
         icons::disclosure(&painter, chev, p.ink_3);
-        text(&painter, chev.right() + 6.0, top, 16.0, u.plan.title, theme::ui_medium(13.0), p.ink_2, false);
+        text(&painter, chev.right() + 6.0, top, 16.0, &u.plan.title, theme::ui_medium(13.0), p.ink_2, false);
 
         // Title, date and time; previous and next day.
         let y = top + 36.0;
@@ -973,6 +1071,530 @@ impl State {
             ui.memory_mut(|m| m.surrender_focus(id));
         }
         card.bottom()
+    }
+
+    fn mine_list(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        left: f32,
+        right: f32,
+        top: f32,
+        mine: &[CustomPlan],
+        started: &[PlanProgress],
+        env: &PageEnv<'_>,
+        actions: &mut Vec<Action>,
+    ) -> f32 {
+        let painter = ui.painter().clone();
+        let (_, new) = Button::new(Kind::Primary, "New plan").icon(icons::plus).show_left(
+            ui,
+            p,
+            left,
+            top + 20.0,
+            ui.id().with("new-plan"),
+        );
+        if new.clicked() {
+            self.confirm = None;
+            self.editor = Some(Editor::blank());
+        }
+        let mut y = top + 52.0;
+        if mine.is_empty() {
+            text(
+                &painter,
+                left,
+                y,
+                20.0,
+                "No plans of your own yet — write one from books you choose, or list each day's passages.",
+                theme::ui_font(13.0),
+                p.ink_2,
+                false,
+            );
+            return y + 40.0;
+        }
+        let w = right - left;
+        for plan in mine {
+            let progress = started.iter().find(|s| s.id == plan.id);
+            let card = Rect::from_min_size(pos2(left, y), vec2(w, 132.0));
+            painter.rect_filled(card, 14.0, p.surface);
+            painter.rect_stroke(card, 14.0, Stroke::new(0.5, p.border), StrokeKind::Outside);
+            let tile = Rect::from_min_size(card.min + vec2(16.0, 16.0), vec2(40.0, 40.0));
+            painter.rect_filled(tile, 10.0, p.accent_soft);
+            icons::note(&painter, Rect::from_center_size(tile.center(), vec2(20.0, 20.0)), p.accent);
+            let x = tile.right() + 14.0;
+            text(&painter, x, card.top() + 16.0, 20.0, &plan.title, theme::ui_semibold(15.0), p.ink, false);
+            text(&painter, x, card.top() + 38.0, 16.0, &plan.meta(), theme::ui_medium(12.0), p.ink_3, false);
+            if !plan.description.is_empty() {
+                let desc =
+                    super::elide(&painter, &plan.description, &theme::ui_font(13.0), (w - 220.0).max(120.0));
+                text(&painter, x, card.top() + 58.0, 20.0, &desc, theme::ui_font(13.0), p.ink_2, false);
+            }
+            let by = card.bottom() - 28.0;
+            let rx = card.right() - 16.0;
+            let (del_r, del) = Button::new(Kind::Ghost, "Delete").small().show_right(
+                ui,
+                p,
+                rx,
+                by,
+                ui.id().with(("mine-del", plan.id.as_str())),
+            );
+            if del.clicked() {
+                self.confirm = Some(Confirm::Delete {
+                    id: plan.id.clone(),
+                    title: plan.title.clone(),
+                    started: progress.is_some(),
+                });
+            }
+            let (dup_r, dup) = Button::new(Kind::Plain, "Duplicate").small().show_right(
+                ui,
+                p,
+                del_r.left() - 8.0,
+                by,
+                ui.id().with(("mine-dup", plan.id.as_str())),
+            );
+            if dup.clicked() {
+                actions.push(Action::DuplicateCustomPlan(plan.id.clone()));
+            }
+            let (edit_r, edit) = Button::new(Kind::Plain, "Edit").small().show_right(
+                ui,
+                p,
+                dup_r.left() - 8.0,
+                by,
+                ui.id().with(("mine-edit", plan.id.as_str())),
+            );
+            if edit.clicked() {
+                self.confirm = None;
+                self.editor = Some(Editor::from_plan(plan));
+            }
+            let (label, restart) = match progress {
+                Some(s) if s.finished.is_some() => ("Restart", true),
+                Some(_) => ("Continue", false),
+                None => ("Start", false),
+            };
+            let (_, go) = Button::new(Kind::Secondary, label).small().show_right(
+                ui,
+                p,
+                edit_r.left() - 8.0,
+                by,
+                ui.id().with(("mine-go", plan.id.as_str())),
+            );
+            if go.clicked() {
+                if restart {
+                    self.confirm = Some(Confirm::Reset { id: plan.id.clone(), title: plan.title.clone() });
+                } else if let Some(s) = progress {
+                    let under = Under::new(plan.resolved(), s, env);
+                    self.open = Some((plan.id.clone(), under.current_day()));
+                } else {
+                    actions.push(Action::StartPlan(plan.id.clone()));
+                    self.tab = Tab::Active;
+                }
+            }
+            y = card.bottom() + 12.0;
+        }
+        y
+    }
+
+    fn editor_view(
+        &mut self,
+        ui: &mut Ui,
+        content: Rect,
+        env: &PageEnv<'_>,
+        actions: &mut Vec<Action>,
+    ) -> f32 {
+        let p = env.settings.theme.palette();
+        let painter = ui.painter().clone();
+        let (left, right, top) = (content.left(), content.right(), content.top());
+        let w = (right - left).min(640.0);
+        let x = left;
+
+        let creating = self.editor.as_ref().is_some_and(|e| e.id.is_none());
+        let crumb = if creating { "New plan" } else { "Edit plan" };
+        let cw = text(&painter, left, top, 16.0, "Reading Plans", theme::ui_medium(13.0), p.accent, false);
+        let crumb_hit = ui.interact(
+            Rect::from_min_size(pos2(left, top), vec2(cw, 16.0)),
+            ui.id().with("editor-crumb"),
+            Sense::click(),
+        );
+        let chev = Rect::from_min_size(pos2(left + cw + 6.0, top + 2.0), vec2(12.0, 12.0));
+        icons::disclosure(&painter, chev, p.ink_3);
+        text(&painter, chev.right() + 6.0, top, 16.0, crumb, theme::ui_medium(13.0), p.ink_2, false);
+
+        let mut close = crumb_hit.clicked();
+        let mut y = top + 40.0;
+        let mut save_plan = None;
+        let mut delete_id = None;
+        if let Some(editor) = self.editor.as_mut() {
+            text(&painter, x, y, 16.0, "Title", theme::ui_medium(12.0), p.ink_2, false);
+            y += 22.0;
+            widgets::text_field(
+                ui,
+                p,
+                Rect::from_min_size(pos2(x, y), vec2(w, 36.0)),
+                &mut editor.title,
+                "Wisdom in a month",
+                None,
+                false,
+                false,
+                ui.id().with("plan-title"),
+            );
+            y += 48.0;
+            text(&painter, x, y, 16.0, "Description", theme::ui_medium(12.0), p.ink_2, false);
+            y += 22.0;
+            widgets::text_field(
+                ui,
+                p,
+                Rect::from_min_size(pos2(x, y), vec2(w, 36.0)),
+                &mut editor.description,
+                "Optional — what this plan is for",
+                None,
+                false,
+                false,
+                ui.id().with("plan-desc"),
+            );
+            y += 56.0;
+            text(&painter, x, y, 20.0, "Build a schedule", theme::ui_semibold(13.0), p.ink, false);
+            y += 24.0;
+            text(
+                &painter,
+                x,
+                y,
+                20.0,
+                "Books, chapters, or verse ranges — “John, Matthew 5–7, Proverbs 3:5–6”.",
+                theme::ui_font(13.0),
+                p.ink_2,
+                false,
+            );
+            y += 28.0;
+            widgets::text_field(
+                ui,
+                p,
+                Rect::from_min_size(pos2(x, y), vec2(w, 36.0)),
+                &mut editor.source,
+                "John, Matthew 5–7",
+                None,
+                false,
+                false,
+                ui.id().with("plan-source"),
+            );
+            y += 48.0;
+            text(&painter, x, y + 8.0, 16.0, "Pace", theme::ui_medium(12.0), p.ink_2, false);
+            let labels = ["1 a day", "2 a day", "3 a day", "In N days"];
+            let (track, picked) = widgets::segmented_tight(
+                ui,
+                p,
+                pos2(x + w, y + 16.0),
+                ui.id().with("plan-pace"),
+                &labels,
+                editor.pace_idx,
+            );
+            if let Some(i) = picked {
+                editor.pace_idx = i;
+            }
+            y = track.bottom() + 12.0;
+            if editor.pace_idx == 3 {
+                text(&painter, x, y + 8.0, 16.0, "Days", theme::ui_medium(12.0), p.ink_2, false);
+                widgets::text_field(
+                    ui,
+                    p,
+                    Rect::from_min_size(pos2(x + 48.0, y), vec2(80.0, 36.0)),
+                    &mut editor.in_days,
+                    "30",
+                    None,
+                    false,
+                    false,
+                    ui.id().with("plan-ndays"),
+                );
+                y += 48.0;
+            }
+            let (_, fill) = Button::new(Kind::Secondary, "Fill days").show_left(
+                ui,
+                p,
+                x,
+                y + 20.0,
+                ui.id().with("plan-fill"),
+            );
+            if fill.clicked() {
+                match plans::parse_passages(&editor.source) {
+                    Ok(passages) => {
+                        let pace = if editor.pace_idx < 3 {
+                            plans::Pace::ChaptersPerDay((editor.pace_idx as u16) + 1)
+                        } else {
+                            plans::Pace::InDays(editor.in_days.trim().parse().unwrap_or(0))
+                        };
+                        match plans::schedule(&passages, pace) {
+                            Ok(days) => {
+                                let name = |b: bible_core::BookId| b.ref_name().to_string();
+                                editor.days = days.iter().map(|d| plans::label(d, name)).collect();
+                                if editor.days.is_empty() {
+                                    editor.days.push(String::new());
+                                }
+                                editor.error = None;
+                            }
+                            Err(e) => editor.error = Some(e),
+                        }
+                    }
+                    Err(e) => editor.error = Some(e),
+                }
+            }
+            y += 52.0;
+            text(
+                &painter,
+                x,
+                y,
+                20.0,
+                &format!("Days ({})", editor.days.len()),
+                theme::ui_semibold(13.0),
+                p.ink,
+                false,
+            );
+            y += 28.0;
+            let mut remove = None;
+            let mut swap = None;
+            for i in 0..editor.days.len() {
+                text(
+                    &painter,
+                    x,
+                    y + 10.0,
+                    16.0,
+                    &format!("{}", i + 1),
+                    theme::ui_medium(12.0),
+                    p.ink_3,
+                    false,
+                );
+                widgets::text_field(
+                    ui,
+                    p,
+                    Rect::from_min_size(pos2(x + 28.0, y), vec2(w - 28.0 - 108.0, 36.0)),
+                    &mut editor.days[i],
+                    "John 1 · Proverbs 3",
+                    None,
+                    false,
+                    false,
+                    ui.id().with(("plan-day", i)),
+                );
+                let bx = x + w;
+                if i > 0 {
+                    let up = Rect::from_min_size(pos2(bx - 108.0, y + 4.0), vec2(28.0, 28.0));
+                    if widgets::round_button(ui, p, up, icons::chevron_up, ui.id().with(("day-up", i)))
+                        .clicked()
+                    {
+                        swap = Some((i - 1, i));
+                    }
+                }
+                if i + 1 < editor.days.len() {
+                    let down = Rect::from_min_size(pos2(bx - 76.0, y + 4.0), vec2(28.0, 28.0));
+                    if widgets::round_button(ui, p, down, icons::chevron_down, ui.id().with(("day-down", i)))
+                        .clicked()
+                    {
+                        swap = Some((i, i + 1));
+                    }
+                }
+                let trash = Rect::from_min_size(pos2(bx - 44.0, y + 4.0), vec2(28.0, 28.0));
+                if widgets::round_button(ui, p, trash, icons::trash, ui.id().with(("day-del", i))).clicked() {
+                    remove = Some(i);
+                }
+                y += 44.0;
+            }
+            if let Some((a, b)) = swap {
+                editor.days.swap(a, b);
+            }
+            if let Some(i) = remove {
+                editor.days.remove(i);
+                if editor.days.is_empty() {
+                    editor.days.push(String::new());
+                }
+            }
+            let (_, add) = Button::new(Kind::Plain, "Add day").icon(icons::plus).show_left(
+                ui,
+                p,
+                x,
+                y + 16.0,
+                ui.id().with("add-day"),
+            );
+            if add.clicked() {
+                editor.days.push(String::new());
+            }
+            y += 48.0;
+            if let Some(err) = &editor.error {
+                text(&painter, x, y, 20.0, err, theme::ui_medium(13.0), p.danger, false);
+                y += 28.0;
+            }
+            let (_, cancel) =
+                Button::new(Kind::Plain, "Cancel").show_left(ui, p, x, y + 20.0, ui.id().with("plan-cancel"));
+            if cancel.clicked() {
+                close = true;
+            }
+            let (_, save) = Button::new(Kind::Primary, "Save plan").show_left(
+                ui,
+                p,
+                x + 100.0,
+                y + 20.0,
+                ui.id().with("plan-save"),
+            );
+            if save.clicked() {
+                match Self::plan_from_editor(editor) {
+                    Ok(plan) => {
+                        save_plan = Some(plan);
+                        close = true;
+                    }
+                    Err(e) => editor.error = Some(e),
+                }
+            }
+            if editor.id.is_some() {
+                if editor.confirm_delete {
+                    text(
+                        &painter,
+                        x,
+                        y + 52.0,
+                        20.0,
+                        "This deletes the plan. If you have started it, its progress is removed too.",
+                        theme::ui_font(13.0),
+                        p.ink_2,
+                        false,
+                    );
+                    let (_, yes) = Button::new(Kind::Destructive, "Delete plan").show_left(
+                        ui,
+                        p,
+                        x,
+                        y + 96.0,
+                        ui.id().with("plan-del-yes"),
+                    );
+                    let (_, no) = Button::new(Kind::Plain, "Keep it").show_left(
+                        ui,
+                        p,
+                        x + 140.0,
+                        y + 96.0,
+                        ui.id().with("plan-del-no"),
+                    );
+                    if yes.clicked() {
+                        delete_id = editor.id.clone();
+                        close = true;
+                    }
+                    if no.clicked() {
+                        editor.confirm_delete = false;
+                    }
+                    y += 140.0;
+                } else {
+                    let (_, del) = Button::new(Kind::Ghost, "Delete this plan").show_left(
+                        ui,
+                        p,
+                        x + 220.0,
+                        y + 20.0,
+                        ui.id().with("plan-del"),
+                    );
+                    if del.clicked() {
+                        editor.confirm_delete = true;
+                    }
+                    y += 52.0;
+                }
+            } else {
+                y += 52.0;
+            }
+        }
+        if let Some(plan) = save_plan {
+            actions.push(Action::SaveCustomPlan(plan));
+        }
+        if let Some(id) = delete_id {
+            actions.push(Action::DeleteCustomPlan(id));
+        }
+        if close {
+            self.editor = None;
+            self.tab = Tab::Mine;
+        }
+        y
+    }
+
+    fn plan_from_editor(editor: &Editor) -> Result<CustomPlan, String> {
+        let title = editor.title.trim().to_string();
+        if title.is_empty() {
+            return Err("Give the plan a title".into());
+        }
+        let mut days = Vec::new();
+        for (i, input) in editor.days.iter().enumerate() {
+            if input.trim().is_empty() {
+                continue;
+            }
+            match plans::parse_passages(input) {
+                Ok(ps) if !ps.is_empty() => days.push(ps),
+                Ok(_) => return Err(format!("Day {} has no passages", i + 1)),
+                Err(e) => return Err(format!("Day {}: {e}", i + 1)),
+            }
+        }
+        if days.is_empty() {
+            return Err("Add at least one day with a passage".into());
+        }
+        Ok(CustomPlan {
+            id: editor.id.clone().unwrap_or_default(),
+            title,
+            description: editor.description.trim().to_string(),
+            days,
+            created: 0,
+        })
+    }
+
+    fn confirm_sheet(&mut self, ui: &mut Ui, p: &Palette, content: Rect, actions: &mut Vec<Action>) {
+        let Some(confirm) = &self.confirm else { return };
+        let painter = ui.painter().clone();
+        let (title, body, action) = match confirm {
+            Confirm::Delete { title, started, .. } => {
+                let body = if *started {
+                    "This deletes the plan from My Plans and removes its reading progress. Leaving a plan you started (without deleting it) is separate — that only takes it off Active."
+                } else {
+                    "This deletes the plan from My Plans. It was not started, so no reading progress is lost."
+                };
+                (format!("Delete “{title}”?"), body, "Delete plan")
+            }
+            Confirm::Reset { title, .. } => (
+                format!("Reset progress on “{title}”?"),
+                "This forgets which days you have marked read and starts the plan again today.",
+                "Reset progress",
+            ),
+        };
+        let card_w = 420.0;
+        let card =
+            Rect::from_center_size(pos2(content.center().x, content.bottom() - 140.0), vec2(card_w, 176.0));
+        p.shadows.modal.paint(&painter, card, 16.0);
+        painter.rect_filled(card, 16.0, p.surface);
+        text(
+            &painter,
+            card.left() + 20.0,
+            card.top() + 20.0,
+            22.0,
+            &title,
+            theme::ui_semibold(16.0),
+            p.ink,
+            false,
+        );
+        let mut job =
+            egui::text::LayoutJob::simple(body.to_string(), theme::ui_font(13.0), p.ink_2, card_w - 40.0);
+        job.sections[0].format.line_height = Some(20.0);
+        painter.galley(pos2(card.left() + 20.0, card.top() + 52.0), painter.layout_job(job), p.ink_2);
+        let (_, cancel) = Button::new(Kind::Plain, "Cancel").show_right(
+            ui,
+            p,
+            card.right() - 148.0,
+            card.bottom() - 20.0,
+            ui.id().with("confirm-cancel"),
+        );
+        let (_, go) = Button::new(Kind::Destructive, action).show_right(
+            ui,
+            p,
+            card.right() - 20.0,
+            card.bottom() - 20.0,
+            ui.id().with("confirm-go"),
+        );
+        if cancel.clicked() {
+            self.confirm = None;
+        }
+        if go.clicked() {
+            match self.confirm.take() {
+                Some(Confirm::Delete { id, .. }) => actions.push(Action::DeleteCustomPlan(id)),
+                Some(Confirm::Reset { id, .. }) => {
+                    actions.push(Action::StartPlan(id));
+                    self.tab = Tab::Active;
+                }
+                None => {}
+            }
+        }
     }
 }
 
