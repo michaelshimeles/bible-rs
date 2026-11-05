@@ -564,6 +564,11 @@ final class Store {
     private func applyStudyLibrary(_ outcome: StudyLibrary.Outcome, generation: UInt64) {
         studyLibraryTask = nil
         if generation != studyLibraryGeneration {
+            // The older pass may already have merged remote items into the local
+            // store before we rejected its status. Refresh study views for those.
+            if case .synced(let changed, _, _, _, _) = outcome, changed > 0 {
+                marksVersion += 1
+            }
             if settings.studyLibrary, studyLibraryQueued {
                 studyLibraryQueued = false
                 runStudyLibrarySync()
