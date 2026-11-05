@@ -15,6 +15,7 @@ use bible_core::books::{BIBLE_SECTIONS, BOOKS, CHAPTER_COUNT, FIRST_NT_BOOK, Tes
 use bible_core::folder::{FolderLibrary, SyncStatus};
 use bible_core::library::{Chapter, Library};
 use bible_core::model::{Origin, Translation};
+use bible_core::plans;
 use bible_core::search::{Query, Scope};
 use bible_core::study::{self, StudyStore};
 use bible_core::{BookId, ChapterIdx};
@@ -297,6 +298,54 @@ pub struct StudyLibrarySync {
     pub waiting: u32,
 }
 
+/// A built-in or custom reading plan.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PlanInfo {
+    pub id: String,
+    pub title: String,
+    pub meta: String,
+    pub description: String,
+    pub icon: String,
+    pub days: u32,
+    pub custom: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PlanPassage {
+    pub chapter_index: u16,
+    pub label: String,
+    pub verse_start: Option<u8>,
+    pub verse_end: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PlanDay {
+    pub label: String,
+    pub passages: Vec<PlanPassage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PlanProgress {
+    pub id: String,
+    pub started: i64,
+    pub finished: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PlanRead {
+    pub day: u16,
+    pub passage: u8,
+}
+
+/// Title, optional description, and one typed-reference string per day.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CustomPlanDraft {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub days: Vec<String>,
+}
+
 /// The translations and the study store (highlights, notes, bookmarks, settings) in one data
 /// folder, laid out as the Mac app's.
 #[derive(uniffi::Object)]
@@ -532,6 +581,78 @@ impl Bible {
         Ok(self.study().set_setting(&key, &value)?)
     }
 
+    /// Plans the reader wrote, newest first.
+    pub fn custom_plans(&self) -> Vec<PlanInfo> {
+        self.study().custom_plans().iter().map(info_from_custom).collect()
+    }
+
+    pub fn save_custom_plan(&self, draft: CustomPlanDraft) -> Result<PlanInfo, BibleError> {
+        let id = draft.id.clone();
+        let mut days = Vec::new();
+        for (i, input) in draft.days.iter().enumerate() {
+            if input.trim().is_empty() {
+                continue;
+            }
+            match plans::parse_passages(input) {
+                Ok(ps) if !ps.is_empty() => days.push(ps),
+                Ok(_) => return Err(fail(format!("Day {} has no passages", i + 1))),
+                Err(e) => return Err(fail(format!("Day {}: {e}", i + 1))),
+            }
+        }
+        let plan =
+            plans::CustomPlan { id, title: draft.title, description: draft.description, days, created: 0 };
+        let mut study = self.study();
+        study.save_custom_plan(plan)?;
+        let saved = if draft.id.is_empty() {
+            study.custom_plans().into_iter().next()
+        } else {
+            study.custom_plan(&draft.id)
+        };
+        saved.map(|p| info_from_custom(&p)).ok_or_else(|| fail("Couldn't save the plan"))
+    }
+
+    pub fn delete_custom_plan(&self, id: String) -> Result<(), BibleError> {
+        Ok(self.study().delete_custom_plan(&id)?)
+    }
+
+    pub fn duplicate_custom_plan(&self, id: String) -> Result<PlanInfo, BibleError> {
+        Ok(info_from_custom(&self.study().duplicate_custom_plan(&id)?))
+    }
+
+    pub fn lookup_plan(&self, id: String) -> Option<PlanInfo> {
+        self.study().resolve_plan(&id).as_ref().map(info_of)
+    }
+
+    pub fn lookup_plan_days(&self, id: String) -> Vec<PlanDay> {
+        self.study().resolve_plan(&id).map(|p| days_of(&p.days)).unwrap_or_default()
+    }
+
+    pub fn started_plans(&self) -> Vec<PlanProgress> {
+        self.study()
+            .plans()
+            .into_iter()
+            .map(|p| PlanProgress { id: p.id, started: p.started, finished: p.finished })
+            .collect()
+    }
+
+    pub fn start_plan(&self, id: String, started: i64) -> Result<(), BibleError> {
+        Ok(self.study().start_plan(&id, started)?)
+    }
+
+    pub fn finish_plan(&self, id: String, at: Option<i64>) -> Result<(), BibleError> {
+        Ok(self.study().finish_plan(&id, at)?)
+    }
+
+    pub fn plan_reads(&self, id: String) -> Vec<PlanRead> {
+        let mut reads: Vec<(u16, u8)> = self.study().plan_reads(&id).into_iter().collect();
+        reads.sort_unstable();
+        reads.into_iter().map(|(day, passage)| PlanRead { day, passage }).collect()
+    }
+
+    pub fn set_plan_read(&self, id: String, day: u16, passage: u8, read: bool) -> Result<(), BibleError> {
+        Ok(self.study().set_plan_read(&id, day, passage, read)?)
+    }
+
     /// Syncs the study with a study library folder (one the Mac app syncs with too, through
     /// iCloud Drive, say). Blocks while it reads the folder (a file iCloud hasn't downloaded
     /// yet holds the read), so call it off the main thread; the study stays usable meanwhile.
@@ -650,6 +771,87 @@ pub fn range_label(from: VerseRef, to: VerseRef) -> String {
         (Ok(a), Ok(b)) => bible_core::reference::format_range(a.min(b), a.max(b)),
         _ => String::new(),
     }
+}
+
+/// The built-in reading plans, in the order they're offered.
+#[uniffi::export]
+pub fn plan_catalogue() -> Vec<PlanInfo> {
+    plans::catalogue().iter().map(|p| info_of(&plans::ResolvedPlan::from_builtin(p))).collect()
+}
+
+/// A built-in plan's days.
+#[uniffi::export]
+pub fn plan_days(id: String) -> Vec<PlanDay> {
+    plans::get(&id).map(|p| days_of(&p.days)).unwrap_or_default()
+}
+
+/// Turn typed books and passages into day labels. `in_days` is used when `chapters_per_day` is 0.
+#[uniffi::export]
+pub fn fill_plan_days(
+    source: String,
+    chapters_per_day: u16,
+    in_days: u16,
+) -> Result<Vec<String>, BibleError> {
+    let passages = plans::parse_passages(&source).map_err(fail)?;
+    let pace = if chapters_per_day > 0 {
+        plans::Pace::ChaptersPerDay(chapters_per_day)
+    } else {
+        plans::Pace::InDays(in_days)
+    };
+    let days = plans::schedule(&passages, pace).map_err(fail)?;
+    let name = |b: BookId| b.ref_name().to_string();
+    Ok(days.iter().map(|d| plans::label(d, name)).collect())
+}
+
+fn icon_name(icon: plans::PlanIcon) -> &'static str {
+    match icon {
+        plans::PlanIcon::Calendar => "calendar",
+        plans::PlanIcon::Book => "book",
+        plans::PlanIcon::Quote => "quote",
+        plans::PlanIcon::History => "history",
+        plans::PlanIcon::Flame => "flame",
+        plans::PlanIcon::Note => "note",
+    }
+}
+
+fn info_from_custom(p: &plans::CustomPlan) -> PlanInfo {
+    info_of(&p.resolved())
+}
+
+fn info_of(p: &plans::ResolvedPlan) -> PlanInfo {
+    PlanInfo {
+        id: p.id.clone(),
+        title: p.title.clone(),
+        meta: p.meta.clone(),
+        description: p.description.clone(),
+        icon: icon_name(p.icon).into(),
+        days: p.len() as u32,
+        custom: p.custom,
+    }
+}
+
+fn days_of(days: &[Vec<plans::Passage>]) -> Vec<PlanDay> {
+    let name = |b: BookId| b.name().to_string();
+    days.iter()
+        .map(|day| PlanDay {
+            label: plans::label(day, name),
+            passages: day
+                .iter()
+                .map(|p| {
+                    let (verse_start, verse_end) = match p.verses {
+                        Some((a, b)) => (Some(a), Some(b)),
+                        None => (None, None),
+                    };
+                    PlanPassage {
+                        chapter_index: p.chapter.0,
+                        label: plans::label(std::slice::from_ref(p), name),
+                        verse_start,
+                        verse_end,
+                    }
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 fn utf16_ranges(text: &str, ranges: &[Range<usize>]) -> Vec<TextRange> {
