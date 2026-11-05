@@ -60,6 +60,10 @@ if [[ -n "${ASC_KEY_PATH:-}" ]]; then
     -authenticationKeyIssuerID "$ASC_ISSUER_ID")
 fi
 
+# App Store Connect rejects an app icon with an alpha channel.
+ICON="apps/ios/Bible/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+sips -g hasAlpha "$ICON" | grep -q 'hasAlpha: no' || die "$ICON has an alpha channel"
+
 step "Rust core and Xcode project"
 "$ROOT/scripts/build-ios.sh" --framework >/dev/null
 VERSION="$(sed -n 's/^MARKETING_VERSION = //p' apps/ios/Generated/Version.xcconfig)"
@@ -89,20 +93,8 @@ fi
 OPTIONS="target/ios/ExportOptions.plist"
 DESTINATION=export
 [[ "$UPLOAD" == 1 ]] && DESTINATION=upload
-cat > "$OPTIONS" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>method</key><string>app-store-connect</string>
-  <key>destination</key><string>$DESTINATION</string>
-  <key>teamID</key><string>$TEAM_ID</string>
-  <key>signingStyle</key><string>automatic</string>
-  <key>uploadSymbols</key><true/>
-  <key>manageAppVersionAndBuildNumber</key><false/>
-</dict>
-</plist>
-EOF
+cp apps/ios/ExportOptions.plist "$OPTIONS"
+/usr/libexec/PlistBuddy -c "Set :destination $DESTINATION" -c "Set :teamID $TEAM_ID" "$OPTIONS"
 
 if [[ "$UPLOAD" == 1 ]]; then
   step "Sign and upload $VERSION ($BUILD) to App Store Connect"

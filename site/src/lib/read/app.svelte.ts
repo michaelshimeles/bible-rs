@@ -10,6 +10,7 @@ import { Search } from './search.svelte';
 import { deleteImported, importedInfos, storeImported, type ImportResult } from './imports';
 import { importer } from './overlays/importer.svelte';
 import { LiveChapter, LiveError } from './live.svelte';
+import { takeMovedNotice } from './moved';
 import { NLT_ID, NLT_INFO } from './nlt';
 import {
 	core as startCore,
@@ -353,6 +354,7 @@ export class ReadApp {
 			}
 			this.core = core;
 			this.studyGen++;
+			for (const text of takeMovedNotice(localStorage)) this.toastNow(text);
 			await Promise.all(this.columns().map((id) => this.ensure(id)));
 		} catch (e) {
 			this.coreError = e instanceof Error ? e.message : String(e);
@@ -780,14 +782,14 @@ export class ReadApp {
 	}
 
 	/**
-	 * Another tab saved its study: take it, or with changes here still to save, add it to them
-	 * (what that tab deleted then comes back, rather than losing what this one added).
+	 * Another tab saved its study: take it, or with changes here still to save, merge it with
+	 * them (newer wins, deletes included; a note edited in both keeps a conflict copy).
 	 */
 	studySaved(json: string | null) {
 		const core = this.core;
 		if (!core || json === null) return;
 		try {
-			if (this.#studyDirty) core.bible.importStudy(json);
+			if (this.#studyDirty) core.bible.mergeSnapshot(json);
 			else core.bible.restore(json);
 			this.studyGen++;
 		} catch (e) {

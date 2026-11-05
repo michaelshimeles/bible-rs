@@ -32,6 +32,13 @@ targets:
       - path: ../../crates/app/assets/fonts/Inter.ttf
         buildPhase: resources
         group: Fonts
+      # The SIL Open Font License travels with the fonts; Settings shows it.
+      - path: ../../crates/app/assets/fonts/OFL-Literata.txt
+        buildPhase: resources
+        group: Fonts
+      - path: ../../crates/app/assets/fonts/OFL-Inter.txt
+        buildPhase: resources
+        group: Fonts
     dependencies:
       - framework: Frameworks/BibleFFI.xcframework
         embed: false

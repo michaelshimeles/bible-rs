@@ -18,6 +18,7 @@ export const bible_importStudy: (a: number, b: number, c: number, d: number) => 
 export const bible_load: (a: number, b: number, c: number, d: number) => void;
 export const bible_loadNlt: (a: number, b: number, c: number, d: number, e: number) => void;
 export const bible_marks: (a: number, b: number, c: number, d: number, e: number) => void;
+export const bible_mergeSnapshot: (a: number, b: number, c: number, d: number) => void;
 export const bible_new: () => number;
 export const bible_note: (a: number, b: number, c: number) => void;
 export const bible_planReads: (a: number, b: number, c: number, d: number) => void;

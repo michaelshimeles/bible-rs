@@ -711,8 +711,9 @@ impl Bible {
         }
     }
 
-    /// Merges a JSON export in (entries for the same verse are overwritten); returns how many
-    /// highlights, notes and bookmarks it held.
+    /// Merges a JSON export in, as an import (newer wins; a note edited on both sides keeps a
+    /// conflict copy; nothing here is deleted); returns how many highlights, notes and bookmarks
+    /// it held.
     #[wasm_bindgen(js_name = importStudy)]
     pub fn import_study(&mut self, json: &str) -> Result<JsValue, JsError> {
         let (highlights, notes, bookmarks) = self.study.import_json(json).map_err(err)?;
@@ -727,8 +728,16 @@ impl Bible {
     /// Replaces the study store with a `snapshot`.
     pub fn restore(&mut self, json: &str) -> Result<(), JsError> {
         let mut study = StudyStore::new();
-        study.import_json(json).map_err(err)?;
+        study.restore_json(json).map_err(err)?;
         self.study = study;
+        Ok(())
+    }
+
+    /// Takes in another copy's `snapshot` (another tab's), keeping what changed here since:
+    /// newer wins, deletes included; a note edited in both keeps a conflict copy.
+    #[wasm_bindgen(js_name = mergeSnapshot)]
+    pub fn merge_snapshot(&mut self, json: &str) -> Result<(), JsError> {
+        self.study.restore_json(json).map_err(err)?;
         Ok(())
     }
 

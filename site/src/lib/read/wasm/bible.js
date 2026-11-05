@@ -259,8 +259,9 @@ export class Bible {
         }
     }
     /**
-     * Merges a JSON export in (entries for the same verse are overwritten); returns how many
-     * highlights, notes and bookmarks it held.
+     * Merges a JSON export in, as an import (newer wins; a note edited on both sides keeps a
+     * conflict copy; nothing here is deleted); returns how many highlights, notes and bookmarks
+     * it held.
      * @param {string} json
      * @returns {any}
      */
@@ -349,6 +350,26 @@ export class Bible {
                 throw takeObject(r1);
             }
             return takeObject(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Takes in another copy's `snapshot` (another tab's), keeping what changed here since:
+     * newer wins, deletes included; a note edited in both keeps a conflict copy.
+     * @param {string} json
+     */
+    mergeSnapshot(json) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.bible_mergeSnapshot(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
         }
@@ -1281,6 +1302,10 @@ function __wbg_get_imports() {
         },
         __wbg_prototypesetcall_bc27214492979395: function(arg0, arg1, arg2) {
             Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), getObject(arg2));
+        },
+        __wbg_random_5a4cafd2f02395ff: function() {
+            const ret = Math.random();
+            return ret;
         },
         __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
             getObject(arg0)[takeObject(arg1)] = takeObject(arg2);
