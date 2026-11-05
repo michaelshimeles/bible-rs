@@ -587,7 +587,7 @@ impl Bible {
     }
 
     pub fn save_custom_plan(&self, draft: CustomPlanDraft) -> Result<PlanInfo, BibleError> {
-        let id = draft.id.clone();
+        let id = if draft.id.is_empty() { plans::new_custom_id() } else { draft.id.clone() };
         let mut days = Vec::new();
         for (i, input) in draft.days.iter().enumerate() {
             if input.trim().is_empty() {
@@ -599,16 +599,16 @@ impl Bible {
                 Err(e) => return Err(fail(format!("Day {}: {e}", i + 1))),
             }
         }
-        let plan =
-            plans::CustomPlan { id, title: draft.title, description: draft.description, days, created: 0 };
+        let plan = plans::CustomPlan {
+            id: id.clone(),
+            title: draft.title,
+            description: draft.description,
+            days,
+            created: 0,
+        };
         let mut study = self.study();
         study.save_custom_plan(plan)?;
-        let saved = if draft.id.is_empty() {
-            study.custom_plans().into_iter().next()
-        } else {
-            study.custom_plan(&draft.id)
-        };
-        saved.map(|p| info_from_custom(&p)).ok_or_else(|| fail("Couldn't save the plan"))
+        study.custom_plan(&id).map(|p| info_from_custom(&p)).ok_or_else(|| fail("Couldn't save the plan"))
     }
 
     pub fn delete_custom_plan(&self, id: String) -> Result<(), BibleError> {

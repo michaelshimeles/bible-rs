@@ -227,6 +227,12 @@ pub fn label(passages: &[Passage], name: impl Fn(BookId) -> String) -> String {
     parts.join(" · ")
 }
 
+/// A day's passages as typed references that parse back: each passage keeps its book name
+/// ("Psalms 1 · Psalms 3"), so an editor can save the label `label` would show as "Psalms 1, 3".
+pub fn edit_label(passages: &[Passage], name: impl Fn(BookId) -> String + Copy) -> String {
+    passages.iter().map(|p| label(std::slice::from_ref(p), name)).collect::<Vec<_>>().join(" · ")
+}
+
 /// How many days a plan you create may run (about five and a half years).
 pub const MAX_DAYS: usize = 2000;
 /// How many passages one day may hold.
@@ -434,8 +440,24 @@ pub fn parse_passages(input: &str) -> Result<Vec<Passage>, String> {
         return Err("Add a book, chapter, or verse range".into());
     }
     let mut out = Vec::new();
+    let mut last_book: Option<BookId> = None;
     for part in parts {
-        out.extend(parse_one(part)?);
+        let carried;
+        let token = if !part.chars().any(|c| c.is_ascii_alphabetic()) {
+            if let Some(book) = last_book {
+                carried = format!("{} {part}", book.name());
+                carried.as_str()
+            } else {
+                part
+            }
+        } else {
+            part
+        };
+        let added = parse_one(token)?;
+        if let Some(p) = added.last() {
+            last_book = Some(p.chapter.book());
+        }
+        out.extend(added);
     }
     Ok(out)
 }
@@ -445,9 +467,8 @@ fn parse_one(token: &str) -> Result<Vec<Passage>, String> {
     if token.is_empty() {
         return Err("Empty passage".into());
     }
-    if !token.chars().any(|c| c.is_ascii_digit()) {
-        let r = reference::parse(token).ok_or_else(|| format!("Couldn't read “{token}” as a book"))?;
-        let chapters = book_chapters([r.book.0]);
+    if let Some(book) = reference::parse_book(token) {
+        let chapters = book_chapters([book.0]);
         if chapters.is_empty() {
             return Err(format!("Couldn't read “{token}” as a book"));
         }
@@ -547,6 +568,34 @@ mod tests {
         let stretched = schedule(&john, Pace::InDays(40)).unwrap();
         assert_eq!(stretched.len(), 21);
         assert!(pace_label(&one).starts_with("21 days"));
+    }
+
+    #[test]
+    fn compact_labels_parse_back() {
+        let a = parse_passages("Psalms 1, 3").unwrap();
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0].chapter.book().name(), "Psalms");
+        assert_eq!(a[0].chapter.chapter(), 1);
+        assert_eq!(a[1].chapter.chapter(), 3);
+        let label = label(&a, |b| b.ref_name().to_string());
+        assert!(label.contains('1') && label.contains('3'), "{label}");
+        let again = parse_passages(&label).unwrap();
+        assert_eq!(again.len(), 2);
+        let edit = edit_label(&a, |b| b.ref_name().to_string());
+        assert!(edit.contains("Psalm"), "{edit}");
+        assert_eq!(parse_passages(&edit).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn numbered_books_cover_every_chapter() {
+        let john = parse_passages("John").unwrap();
+        assert_eq!(john.len(), 21);
+        let first = parse_passages("1 John").unwrap();
+        assert_eq!(first.len(), 5, "1 John has five chapters, not only chapter 1");
+        assert!(first.iter().all(|p| p.chapter.book().name() == "1 John"));
+        let only = parse_passages("1 John 1").unwrap();
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].chapter.chapter(), 1);
     }
 
     #[test]

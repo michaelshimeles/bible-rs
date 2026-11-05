@@ -55,6 +55,15 @@ pub fn parse(input: &str) -> Option<Reference> {
     suggest(input, 1).into_iter().next()
 }
 
+/// The book `input` names, when no chapter or verse is typed ("John", "1 John", "1co").
+pub fn parse_book(input: &str) -> Option<BookId> {
+    let parts = split(input)?;
+    if !parts.nums.is_empty() {
+        return None;
+    }
+    book_candidates(&parts.book_key, parts.ordinal).into_iter().next().map(|(b, _)| b)
+}
+
 /// Ranked interpretations of `input` (book candidates combined with the typed numbers).
 pub fn suggest(input: &str, limit: usize) -> Vec<Reference> {
     let Some(parts) = split(input) else { return Vec::new() };

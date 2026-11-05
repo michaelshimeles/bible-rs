@@ -842,7 +842,7 @@ impl Bible {
     #[wasm_bindgen(js_name = saveCustomPlan)]
     pub fn save_custom_plan(&mut self, draft: JsValue) -> Result<JsValue, JsError> {
         let draft: CustomPlanDraft = serde_wasm_bindgen::from_value(draft).map_err(jserr)?;
-        let id = draft.id.clone();
+        let id = if draft.id.is_empty() { plans::new_custom_id() } else { draft.id.clone() };
         let mut days = Vec::new();
         for (i, input) in draft.days.iter().enumerate() {
             if input.trim().is_empty() {
@@ -854,15 +854,15 @@ impl Bible {
                 Err(e) => return Err(JsError::new(&format!("Day {}: {e}", i + 1))),
             }
         }
-        let plan =
-            plans::CustomPlan { id, title: draft.title, description: draft.description, days, created: 0 };
-        self.study.save_custom_plan(plan).map_err(err)?;
-        let saved = if draft.id.is_empty() {
-            self.study.custom_plans().into_iter().next()
-        } else {
-            self.study.custom_plan(&draft.id)
+        let plan = plans::CustomPlan {
+            id: id.clone(),
+            title: draft.title,
+            description: draft.description,
+            days,
+            created: 0,
         };
-        let saved = saved.ok_or_else(|| JsError::new("Couldn't save the plan"))?;
+        self.study.save_custom_plan(plan).map_err(err)?;
+        let saved = self.study.custom_plan(&id).ok_or_else(|| JsError::new("Couldn't save the plan"))?;
         to_js(&info_from_custom(&saved))
     }
 

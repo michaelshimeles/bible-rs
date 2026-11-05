@@ -1038,9 +1038,12 @@ impl BibleApp {
             }
             Action::SaveCustomPlan(plan) => {
                 let title = plan.title.clone();
-                match self.study.save_custom_plan(plan) {
+                match self.study.save_custom_plan(plan.clone()) {
                     Ok(()) => self.toast(ctx, format!("Saved {title}")),
-                    Err(e) => self.toast(ctx, format!("{e:#}")),
+                    Err(e) => {
+                        self.pages.plans.restore_editor(plan);
+                        self.toast(ctx, format!("{e:#}"));
+                    }
                 }
             }
             Action::DeleteCustomPlan(id) => {

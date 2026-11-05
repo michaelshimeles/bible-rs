@@ -46,6 +46,10 @@
 			editor.error = 'Give the plan a title';
 			return;
 		}
+		if ([...title].length > 120) {
+			editor.error = 'That title is too long';
+			return;
+		}
 		if (!editor.days.some((d) => d.trim())) {
 			editor.error = 'Add at least one day with a passage';
 			return;

@@ -704,7 +704,10 @@ impl StudyStore {
                 continue;
             }
             let Ok(refs) = serde_json::from_str::<Vec<Vec<PassageRef>>>(&days) else { continue };
-            if let Some(plan) = CustomPlan::from_refs(id.clone(), title, description, &refs, created) {
+            if let Some(plan) = CustomPlan::from_refs(id.clone(), title, description, &refs, created)
+                && plans::is_custom_id(&id)
+                && plans::get(&id).is_none()
+            {
                 self.custom_plans.insert(id, plan);
             }
         }
@@ -2375,22 +2378,54 @@ impl StudyStore {
                 Pick::Revive => self.next_rev(),
             };
             let plan = if c.deleted {
-                None
+                Some(None)
             } else {
                 let created = match self.custom_plans.get(&c.id).map(|p| p.created) {
                     Some(l) if l > 0 && (c.created == 0 || l < c.created) => l,
                     _ => c.created,
                 };
-                CustomPlan::from_refs(c.id.clone(), c.title.clone(), c.description.clone(), &c.days, created)
+                match CustomPlan::from_refs(
+                    c.id.clone(),
+                    c.title.clone(),
+                    c.description.clone(),
+                    &c.days,
+                    created,
+                ) {
+                    // Unknown books, a catalogue id, or a schedule the store would refuse: skip.
+                    None => None,
+                    Some(mut p) => match Self::validated_custom_plan(
+                        &mut p,
+                        self.custom_plans.get(&c.id).map(|x| x.created),
+                    ) {
+                        Ok(p) => Some(Some(p)),
+                        Err(_) => None,
+                    },
+                }
             };
-            // A remote edit whose days name no book this build knows is skipped, not applied as empty.
-            if !c.deleted && plan.is_none() {
-                continue;
-            }
+            let Some(plan) = plan else { continue };
             self.store_custom_plan(&c.id, plan, rev)?;
             report.custom_plans += 1;
         }
+        self.forget_progress_for_deleted_custom_plans()?;
         Ok(report)
+    }
+
+    /// Progress for a custom plan whose definition was tombstoned (here or elsewhere).
+    fn forget_progress_for_deleted_custom_plans(&mut self) -> Result<()> {
+        let orphaned: Vec<String> = self
+            .plans
+            .keys()
+            .filter(|id| {
+                plans::is_custom_id(id)
+                    && !self.custom_plans.contains_key(*id)
+                    && self.custom_plan_revs.contains_key(*id)
+            })
+            .cloned()
+            .collect();
+        for id in orphaned {
+            self.drop_plan(&id)?;
+        }
+        Ok(())
     }
 
     /// Unticks a plan's passages ticked before it was (re)started at `reset` (ms).
@@ -2824,6 +2859,45 @@ mod custom_plan_tests {
         let p = s.custom_plans()[0].days[0][0];
         assert_eq!(p.verses, Some((1, 16)));
         assert_eq!(crate::plans::label(&[p], |b| b.name().to_string()), "Matthew 5:1–16");
+    }
+
+    #[test]
+    fn import_cannot_replace_a_builtin_plan() {
+        let mut a = StudyStore::open_in_memory().unwrap();
+        a.save_custom_plan(wisdom()).unwrap();
+        let id = a.custom_plans()[0].id.clone();
+        let json = a.export_json_with("KJV", |_| None, Include::EVERYTHING).unwrap();
+        let hijack = json.replace(&id, "john-21");
+        let mut b = StudyStore::open_in_memory().unwrap();
+        b.import_json(&hijack).unwrap();
+        assert!(b.custom_plan("john-21").is_none());
+        let resolved = b.resolve_plan("john-21").unwrap();
+        assert!(!resolved.custom);
+        assert_eq!(resolved.id, "john-21");
+    }
+
+    #[test]
+    fn syncing_a_deletion_drops_progress_here_and_there() {
+        let mut a = StudyStore::open_in_memory().unwrap();
+        let mut b = StudyStore::open_in_memory().unwrap();
+        a.save_custom_plan(wisdom()).unwrap();
+        let id = a.custom_plans()[0].id.clone();
+        b.merge(&a.changes_since(0, false), MergeMode::Sync).unwrap();
+        a.start_plan(&id, 1_000).unwrap();
+        a.set_plan_read(&id, 1, 0, true).unwrap();
+        b.delete_custom_plan(&id).unwrap();
+
+        // A's start arrives on B, which already deleted the definition.
+        b.merge(&a.changes_since(0, false), MergeMode::Sync).unwrap();
+        assert!(b.custom_plan(&id).is_none());
+        assert!(b.plans().iter().all(|p| p.id != id));
+        assert!(b.plan_reads(&id).is_empty());
+
+        // B's deletion arrives on A, which had started the plan.
+        a.merge(&b.changes_since(0, false), MergeMode::Sync).unwrap();
+        assert!(a.custom_plan(&id).is_none());
+        assert!(a.plans().iter().all(|p| p.id != id));
+        assert!(a.plan_reads(&id).is_empty());
     }
 }
 

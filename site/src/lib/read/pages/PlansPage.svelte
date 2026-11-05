@@ -77,7 +77,8 @@
 	}
 
 	function startOrRestart(p: { id: string; title: string }, action: string) {
-		if (action === 'Restart') {
+		const progress = started.find((s) => s.id === p.id);
+		if (action === 'Restart' || progress) {
 			plansPage.confirm = { kind: 'reset', id: p.id, title: p.title };
 			return;
 		}
@@ -88,7 +89,9 @@
 		plansPage.confirm = null;
 		plansPage.editor = editorFrom(
 			p,
-			daysOf(p.id, (id) => app.lookupPlanDays(id)).map((d) => d.label)
+			daysOf(p.id, (id) => app.lookupPlanDays(id)).map((d) =>
+				d.passages.map((passage) => passage.label).join(' · ')
+			)
 		);
 	}
 

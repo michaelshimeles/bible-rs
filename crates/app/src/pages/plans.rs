@@ -86,7 +86,7 @@ impl Editor {
             source: String::new(),
             pace_idx: 0,
             in_days: "30".into(),
-            days: plan.days.iter().map(|d| plans::label(d, name)).collect(),
+            days: plan.days.iter().map(|d| plans::edit_label(d, name)).collect(),
             error: None,
             confirm_delete: false,
         }
@@ -213,6 +213,12 @@ impl State {
     pub fn open_new_plan(&mut self) {
         self.confirm = None;
         self.editor = Some(Editor::blank());
+    }
+
+    /// Reopens the editor after a save the store refused, so the draft is not lost.
+    pub fn restore_editor(&mut self, plan: CustomPlan) {
+        self.editor = Some(Editor::from_plan(&plan));
+        self.tab = Tab::Mine;
     }
 
     pub fn set_tab(&mut self, name: &str) {
@@ -347,14 +353,14 @@ impl State {
                     let count =
                         format!("{} {}", others.len(), if others.len() == 1 { "plan" } else { "plans" });
                     text(&painter, right, y + 2.0, 16.0, &count, theme::ui_font(12.0), p.ink_3, true);
-                    y = self.grid(ui, p, left, right, y + 40.0, &others, "Start", actions);
+                    y = self.grid(ui, p, left, right, y + 40.0, &others, "Start", started, actions);
                 }
             }
             Tab::Mine => {
                 y = self.mine_list(ui, p, left, right, y, &mine, started, env, actions);
             }
             Tab::Browse => {
-                y = self.grid(ui, p, left, right, y, &browse, "Start", actions);
+                y = self.grid(ui, p, left, right, y, &browse, "Start", started, actions);
             }
             Tab::Completed => {
                 let done: Vec<ResolvedPlan> = completed
@@ -386,7 +392,7 @@ impl State {
                     }
                     y = at + h;
                 } else {
-                    y = self.grid(ui, p, left, right, y, &done, "Restart", actions);
+                    y = self.grid(ui, p, left, right, y, &done, "Restart", started, actions);
                 }
             }
         }
@@ -555,6 +561,7 @@ impl State {
         top: f32,
         list: &[ResolvedPlan],
         action: &str,
+        started: &[PlanProgress],
         actions: &mut Vec<Action>,
     ) -> f32 {
         let painter = ui.painter().clone();
@@ -607,7 +614,7 @@ impl State {
                     ui.id().with(("start-plan", plan.id.as_str())),
                 );
                 if resp.clicked() {
-                    if action == "Restart" {
+                    if action == "Restart" || started.iter().any(|s| s.id == plan.id) {
                         self.confirm =
                             Some(Confirm::Reset { id: plan.id.clone(), title: plan.title.clone() });
                     } else {
@@ -1514,6 +1521,13 @@ impl State {
         if title.is_empty() {
             return Err("Give the plan a title".into());
         }
+        if title.chars().count() > plans::MAX_TITLE {
+            return Err("That title is too long".into());
+        }
+        let description = editor.description.trim().to_string();
+        if description.chars().count() > plans::MAX_DESCRIPTION {
+            return Err("That description is too long".into());
+        }
         let mut days = Vec::new();
         for (i, input) in editor.days.iter().enumerate() {
             if input.trim().is_empty() {
@@ -1528,13 +1542,13 @@ impl State {
         if days.is_empty() {
             return Err("Add at least one day with a passage".into());
         }
-        Ok(CustomPlan {
-            id: editor.id.clone().unwrap_or_default(),
-            title,
-            description: editor.description.trim().to_string(),
-            days,
-            created: 0,
-        })
+        if days.len() > plans::MAX_DAYS {
+            return Err(format!("A plan can have at most {} days", plans::MAX_DAYS));
+        }
+        if days.iter().any(|d| d.len() > plans::MAX_PASSAGES_PER_DAY) {
+            return Err(format!("A day can hold at most {} passages", plans::MAX_PASSAGES_PER_DAY));
+        }
+        Ok(CustomPlan { id: editor.id.clone().unwrap_or_default(), title, description, days, created: 0 })
     }
 
     fn confirm_sheet(&mut self, ui: &mut Ui, p: &Palette, content: Rect, actions: &mut Vec<Action>) {
