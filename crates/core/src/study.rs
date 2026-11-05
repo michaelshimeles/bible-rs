@@ -20,9 +20,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 #[cfg(feature = "native")]
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::books::{BookId, ChapterIdx, VerseRef};
@@ -30,8 +30,8 @@ use crate::highlight;
 pub use crate::highlight::{Highlight, TextSpan};
 use crate::memory::{Grade, Memorised, Review, Schedule};
 use crate::sync::{
-    self, lww, BookmarkChange, HighlightPart, HighlightsChange, Hlc, MemoryChange, MemoryReviewChange,
-    NoteChange, NotePick, NoteVersion, Pick, PlanChange, PlanReadChange, VerseKey,
+    self, BookmarkChange, HighlightPart, HighlightsChange, Hlc, MemoryChange, MemoryReviewChange, NoteChange,
+    NotePick, NoteVersion, Pick, PlanChange, PlanReadChange, VerseKey, lww,
 };
 pub use crate::sync::{Changes, MergeMode, MergeReport, NoteConflict, Stamp};
 
@@ -252,11 +252,7 @@ impl ReadingSession {
 
     /// How much of the chapter was read, 0–1.
     pub fn progress(&self) -> f32 {
-        if self.verses == 0 {
-            0.0
-        } else {
-            (self.furthest as f32 / self.verses as f32).min(1.0)
-        }
+        if self.verses == 0 { 0.0 } else { (self.furthest as f32 / self.verses as f32).min(1.0) }
     }
 }
 
@@ -335,11 +331,7 @@ fn highlight_of(p: &HighlightPart) -> Highlight {
 
 #[cfg(feature = "native")]
 fn join_seen(seen: &[Stamp]) -> String {
-    if seen.is_empty() {
-        String::new()
-    } else {
-        serde_json::to_string(seen).unwrap_or_default()
-    }
+    if seen.is_empty() { String::new() } else { serde_json::to_string(seen).unwrap_or_default() }
 }
 
 /// A note's superseded versions: JSON stamps (or, as first written, times alone).
@@ -2691,7 +2683,12 @@ impl StudyStore {
         rebuild.sort();
         rebuild.dedup();
         for first in rebuild {
-            self.rebuild_memory_from_reviews(first)?;
+            if self.memory.contains_key(&first.key()) {
+                self.rebuild_memory_from_reviews(first)?;
+            } else {
+                // A newer forget beat a concurrent review: drop the review so it cannot linger.
+                self.forget_reviews(first)?;
+            }
         }
         Ok(report)
     }
@@ -4279,6 +4276,24 @@ mod sync_tests {
         sync(&a, &mut b);
         assert!(b.memorised_at(v(16)).is_none());
         assert!(b.reviews(v(16)).is_empty());
+    }
+
+    #[test]
+    fn a_newer_forget_drops_a_concurrent_review() {
+        let (mut a, clock_a) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.memorise(v(16), v(16), "kjv").unwrap();
+        sync(&a, &mut b);
+        later(&clock_b, 10);
+        b.review(v(16), Grade::Good, b.now_s()).unwrap();
+        later(&clock_a, 20);
+        a.forget(v(16)).unwrap();
+        sync(&b, &mut a);
+        sync(&a, &mut b);
+        for s in [&a, &b] {
+            assert!(s.memorised_at(v(16)).is_none());
+            assert!(s.reviews(v(16)).is_empty(), "a review must not outlive its forgotten passage");
+        }
     }
 
     #[test]

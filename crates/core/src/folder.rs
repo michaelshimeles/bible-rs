@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::study::StudyStore;
@@ -138,11 +138,7 @@ impl SyncStatus {
         if self.conflicts > 0 {
             parts.push(plural(self.conflicts, "conflict", "conflicts"));
         }
-        if parts.is_empty() {
-            "Synced".into()
-        } else {
-            parts.join(" · ")
-        }
+        if parts.is_empty() { "Synced".into() } else { parts.join(" · ") }
     }
 }
 
@@ -271,11 +267,7 @@ impl FolderLibrary {
     fn pushed(&self, store: &StudyStore) -> i64 {
         let n = store.sync_value(&self.key("pushed")).and_then(|v| v.parse().ok()).unwrap_or(0);
         // A store that went back (restored from an older copy) writes all its records again.
-        if n > store.seq() {
-            0
-        } else {
-            n
-        }
+        if n > store.seq() { 0 } else { n }
     }
 
     /// What this device writes: what changed here since `since`, but for the records the other
@@ -606,8 +598,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicI64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
 
     use super::*;
     use crate::study::HighlightColor;
