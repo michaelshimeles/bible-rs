@@ -4,9 +4,9 @@
 use std::fmt;
 
 /// Every file of a release is downloaded from here: `<DOWNLOADS>/<tag>/<file name>`.
-pub const DOWNLOADS: &str = "https://github.com/michaelshimeles/bible-rs/releases/download";
+pub const DOWNLOADS: &str = "https://github.com/michaelshimeles/bible/releases/download";
 /// The latest published release (drafts and pre-releases never are).
-pub const LATEST: &str = "https://api.github.com/repos/michaelshimeles/bible-rs/releases/latest";
+pub const LATEST: &str = "https://api.github.com/repos/michaelshimeles/bible/releases/latest";
 
 /// Larger than any installer or checksum list should be; a bigger one isn't downloaded.
 const MAX_INSTALLER: u64 = 512 * 1024 * 1024;
@@ -262,7 +262,7 @@ mod tests {
     fn an_installer_from_anywhere_else_is_refused() {
         let name = "bible-rs-0.3.0-windows-x64-setup.exe";
         for url in [
-            format!("http://github.com/michaelshimeles/bible-rs/releases/download/v0.3.0/{name}"),
+            format!("http://github.com/michaelshimeles/bible/releases/download/v0.3.0/{name}"),
             format!("https://github.com/someone-else/bible-rs/releases/download/v0.3.0/{name}"),
             format!("https://example.com/michaelshimeles/bible-rs/releases/download/v0.3.0/{name}"),
             format!("{DOWNLOADS}/v0.2.0/{name}"),

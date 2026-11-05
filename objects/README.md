@@ -23,7 +23,7 @@ The specs here and the images rendered from their 3D models
 that reads them and generates the models' geometry is MIT, like the rest of the repository. Credit
 them as:
 
-> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible-rs
+> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible
 
 ## The rules
 

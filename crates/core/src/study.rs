@@ -2899,6 +2899,23 @@ mod custom_plan_tests {
         assert!(a.plans().iter().all(|p| p.id != id));
         assert!(a.plan_reads(&id).is_empty());
     }
+
+    /// Leaving (`stop_plan`, issue #57/#90) drops progress only — not the definition (#82).
+    #[test]
+    fn leaving_a_custom_plan_drops_progress_and_keeps_the_definition() {
+        let mut s = StudyStore::open_in_memory().unwrap();
+        s.save_custom_plan(wisdom()).unwrap();
+        let id = s.custom_plans()[0].id.clone();
+        s.start_plan(&id, 1_000).unwrap();
+        s.set_plan_read(&id, 1, 0, true).unwrap();
+        s.stop_plan(&id).unwrap();
+        assert!(s.custom_plan(&id).is_some(), "leave must not delete a custom plan");
+        assert!(s.plans().iter().all(|p| p.id != id), "the plan leaves Active");
+        assert!(s.plan_reads(&id).is_empty(), "leaving clears reading ticks");
+        s.start_plan(&id, 2_000).unwrap();
+        assert_eq!(s.plans()[0].id, id);
+        assert!(s.plan_reads(&id).is_empty(), "starting again begins with no ticks");
+    }
 }
 
 #[cfg(test)]

@@ -8,7 +8,21 @@
 	import { weekday, weekdayShort, ago } from '../time';
 	import { Button, CapsText, Icon, RoundButton, Toggle } from '../ui';
 	import { sameVerse } from './notes.svelte';
-	import { DAY, MONTHS, Under, minutes, openPassage, passageSize, plansPage } from './plans.svelte';
+	import {
+		DAY,
+		LEAVE_BODY,
+		LEAVE_HINT,
+		LEAVE_TITLE,
+		MONTHS,
+		Under,
+		cancelLeave,
+		confirmLeave,
+		minutes,
+		openPassage,
+		passageSize,
+		plansPage,
+		requestLeave
+	} from './plans.svelte';
 
 	let { under: u, day: asked }: { under: Under; day: number } = $props();
 
@@ -217,6 +231,24 @@
 				label="Daily reminder"
 				onchange={(on) => app.dispatch({ type: 'setPlanReminder', on })}
 			/>
+		</div>
+		<div class={['leave', { confirming: plansPage.leaving === u.info.id }]}>
+			{#if plansPage.leaving === u.info.id}
+				<div class="leave-copy">
+					<div class="leave-title">{LEAVE_TITLE}</div>
+					<div class="leave-sub">{LEAVE_BODY}</div>
+				</div>
+				<div class="leave-actions">
+					<Button kind="plain" size="sm" label="Cancel" onclick={cancelLeave} />
+					<Button kind="destructive" size="sm" label="Leave plan" onclick={() => confirmLeave(app, u.info.id)} />
+				</div>
+			{:else}
+				<div class="leave-copy">
+					<div class="leave-title">Leave plan</div>
+					<div class="leave-sub">{LEAVE_HINT}</div>
+				</div>
+				<Button size="sm" label="Leave…" onclick={() => requestLeave(u.info.id)} />
+			{/if}
 		</div>
 	</aside>
 </div>
@@ -582,5 +614,43 @@
 	.reminder-sub {
 		color: var(--ink-3);
 		font: var(--type-small);
+	}
+
+	.leave {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		min-height: 60px;
+		margin-top: 16px;
+		padding: 12px 16px;
+		border-radius: 12px;
+		background: var(--surface);
+		box-shadow: 0 0 0 0.5px var(--border);
+	}
+
+	.leave.confirming {
+		display: block;
+	}
+
+	.leave-copy {
+		min-width: 0;
+	}
+
+	.leave-title {
+		color: var(--ink);
+		font: 500 13px/20px var(--font-ui);
+	}
+
+	.leave-sub {
+		color: var(--ink-3);
+		font: var(--type-small);
+	}
+
+	.leave-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		margin-top: 12px;
 	}
 </style>

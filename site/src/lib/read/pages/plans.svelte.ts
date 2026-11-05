@@ -47,11 +47,14 @@ export const plansPage = $state<{
 	open: { id: string; day: number } | null;
 	editor: PlanEditor | null;
 	confirm: PlanConfirm | null;
+	/** Plan waiting for leave confirmation (`null`: none). */
+	leaving: string | null;
 }>({
 	tab: 'active',
 	open: null,
 	editor: null,
-	confirm: null
+	confirm: null,
+	leaving: null
 });
 
 export const blankEditor = (): PlanEditor => ({
@@ -77,6 +80,27 @@ export const editorFrom = (p: PlanInfo, labels: string[]): PlanEditor => ({
 	error: null,
 	confirmDelete: false
 });
+
+/** What leaving does: `stopPlan` drops the plan and its ticks; starting again begins from day 1. */
+export const LEAVE_TITLE = 'Leave this plan?';
+export const LEAVE_BODY =
+	'Leaving removes this plan from Active and clears its reading ticks. You can start it again from the beginning.';
+export const LEAVE_BODY_SHORT = 'This clears your reading ticks.';
+export const LEAVE_HINT = 'Clears its reading ticks.';
+
+export function requestLeave(id: string) {
+	plansPage.leaving = id;
+}
+
+export function cancelLeave() {
+	plansPage.leaving = null;
+}
+
+export function confirmLeave(app: ReadApp, id: string) {
+	app.dispatch({ type: 'stopPlan', id });
+	if (plansPage.open?.id === id) plansPage.open = null;
+	plansPage.leaving = null;
+}
 
 let catalogue: PlanInfo[] | null = null;
 const days = new Map<string, PlanDay[]>();

@@ -8,6 +8,6 @@
   CC BY 4.0 ([objects/LICENSE](objects/LICENSE), full text in
   [LICENSES/CC-BY-4.0.txt](LICENSES/CC-BY-4.0.txt)). So is anything new in `objects/`, glTF models
   included. A spec's `license` field is `"CC-BY-4.0"`, which the schema requires.
-- Credit them as: "Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible-rs".
+- Credit them as: "Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible".
 - Bundled Bible translations are public domain. Never add copyrighted translation text, even in
   tests ([LICENSES/README.md](LICENSES/README.md)).

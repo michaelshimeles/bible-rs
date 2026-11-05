@@ -27,7 +27,7 @@ RequestExecutionLevel user
 !define EXE "bible-rs.exe"
 !define UNINSTALLER "Uninstall Bible.exe"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\bible-rs"
-!define URL "https://github.com/michaelshimeles/bible-rs"
+!define URL "https://github.com/michaelshimeles/bible"
 
 Name "${NAME}"
 OutFile "${OUT}"

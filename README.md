@@ -325,7 +325,7 @@ bible-rs search "love one another" # prints the query time
 
 ## Building
 
-Requires Rust 1.95+, the minimum egui 0.36 supports.
+Requires Rust 1.95+, the minimum egui 0.37 supports.
 
 ```sh
 # Linux needs: libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev
@@ -447,4 +447,4 @@ Code: MIT ([LICENSE](LICENSE)). Bundled translations: public domain ([LICENSES/]
 Fonts: Literata and Inter, SIL Open Font License 1.1. The object specs in `objects/` and the images
 rendered from their 3D models are CC BY 4.0 ([objects/LICENSE](objects/LICENSE)). Credit them as:
 
-> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible-rs
+> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible

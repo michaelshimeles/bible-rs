@@ -92,7 +92,10 @@ fn book_label(h: &Harness<'_, BibleApp>, book: BookId) -> String {
 
 /// Whether each disclosure row is expanded, as assistive tech sees it.
 fn expanded(h: &Harness<'_, BibleApp>, label: &str) -> Option<bool> {
-    h.get_by_role_and_label(egui::accesskit::Role::Button, label).accesskit_node().data().is_expanded()
+    h.get_by_role_and_label(egui::accesskit::Role::DisclosureTriangle, label)
+        .accesskit_node()
+        .data()
+        .is_expanded()
 }
 
 fn has_focus_outline(h: &Harness<'_, BibleApp>, label: &str) -> bool {
@@ -153,7 +156,7 @@ fn books_are_grouped_by_section_and_follow_the_reader() {
         assert_eq!(at.y < new.y, i < 5, "{label} belongs under its testament");
         let count = (last - first + 1).to_string();
         assert!(books(&h, &count).iter().any(|p| (p.y - at.y).abs() < 2.0), "{label}'s book count");
-        let node = h.get_by_role_and_label(egui::accesskit::Role::Button, label).accesskit_node();
+        let node = h.get_by_role_and_label(egui::accesskit::Role::DisclosureTriangle, label).accesskit_node();
         assert_eq!(node.label().as_deref(), Some(*label));
         assert_eq!(node.data().is_expanded(), Some(i == 5), "only the reader's section starts expanded");
         previous = at.y;

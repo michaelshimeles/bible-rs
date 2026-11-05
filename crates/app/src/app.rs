@@ -276,7 +276,7 @@ struct Toast {
 
 impl Toast {
     fn area(&self) -> Id {
-        Id::new(("toast", self.id))
+        Id::unique(("toast", self.id))
     }
 }
 
@@ -1091,7 +1091,7 @@ impl BibleApp {
                     self.toast(ctx, format!("Couldn't dismiss it: {e:#}"));
                 }
             }
-            Action::TextFormat => egui::Popup::open_id(ctx, Id::new(TEXT_POPUP)),
+            Action::TextFormat => egui::Popup::open_id(ctx, Id::unique(TEXT_POPUP)),
             Action::ToggleFocus => {
                 self.focus = !self.focus;
                 if self.focus {
@@ -1599,7 +1599,7 @@ impl BibleApp {
                 p,
                 &mut self.pages.query,
                 placeholder,
-                Id::new("page-search"),
+                Id::unique("page-search"),
             );
             if cleared || (field.has_focus() && ui.input(|i| i.key_pressed(Key::Escape))) {
                 self.pages.query.clear();
@@ -1654,7 +1654,7 @@ impl BibleApp {
                 items.push(tools_rect);
                 tools_rect.left()
             };
-            let field_id = Id::new("toolbar-search");
+            let field_id = Id::unique("toolbar-search");
             let (field, cleared) =
                 widgets::search_field(ui, search, p, &mut self.sidebar.query, "Search", field_id);
             if focus_field {
@@ -1684,7 +1684,7 @@ impl BibleApp {
             if resp[0].clicked() {
                 actions.push(Action::OpenSearch(None));
             }
-            if egui::Popup::is_id_open(ui.ctx(), Id::new(MORE_POPUP)) {
+            if egui::Popup::is_id_open(ui.ctx(), Id::unique(MORE_POPUP)) {
                 // Pressed while its menu is open.
                 let b = resp[1].rect;
                 ui.painter().rect_filled(b, CAPSULE_HEIGHT / 2.0, p.fill);
@@ -1699,7 +1699,7 @@ impl BibleApp {
         if let Some((anchor, toggles)) = text_anchor {
             let open = (toggles && anchor.clicked()).then_some(egui::SetOpenCommand::Toggle);
             egui::Popup::menu(&anchor)
-                .id(Id::new(TEXT_POPUP))
+                .id(Id::unique(TEXT_POPUP))
                 .open_memory(open)
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                 .show(|ui| {
@@ -1786,7 +1786,7 @@ impl BibleApp {
         let ctx = ui.ctx().clone();
         let near = self.focus_reveal
             || ctx.input(|i| i.pointer.hover_pos().is_some_and(|q| q.y < full.top() + 64.0));
-        let t = ctx.animate_bool_with_time(Id::new("focus-reveal"), near, theme::motion::BASE_MS / 1000.0);
+        let t = ctx.animate_bool_with_time(Id::unique("focus-reveal"), near, theme::motion::BASE_MS / 1000.0);
         if t > 0.0 {
             let chord = crate::keymap::ALL
                 .iter()
@@ -1902,7 +1902,7 @@ impl BibleApp {
             let font = theme::text::UI_STRONG.font();
             let g = ui.painter().layout_no_wrap(meta.abbrev.clone(), font, p.ink);
             let pick = egui::Rect::from_min_size(egui::pos2(x, top), vec2(g.size().x + 4.0 + 12.0, 16.0));
-            let resp = ui.interact(pick.expand(4.0), Id::new(("column-head", i)), Sense::click());
+            let resp = ui.interact(pick.expand(4.0), Id::unique(("column-head", i)), Sense::click());
             ui.painter().galley(egui::pos2(x, top + 8.0 - g.size().y / 2.0), g, p.ink);
             crate::icons::chevron_down(
                 ui.painter(),
@@ -1963,7 +1963,7 @@ impl BibleApp {
         x += lw + 8.0;
         // The stepper: the upper half goes back, the lower half on.
         let b = egui::Rect::from_min_size(egui::pos2(x, cy - 12.0), vec2(24.0, 24.0));
-        let resp = ui.interact(b, Id::new("result-step"), Sense::click());
+        let resp = ui.interact(b, Id::unique("result-step"), Sense::click());
         if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
             ui.painter().circle_filled(b.center(), 12.0, fill);
         }
@@ -2007,7 +2007,7 @@ impl BibleApp {
             Some((crate::icons::sidebar, sidebar, chord("sidebar"), Action::ToggleSidebar)),
             Some((crate::icons::expand, "Focus Mode", chord("focus"), Action::ToggleFocus)),
         ];
-        let id = Id::new(MORE_POPUP);
+        let id = Id::unique(MORE_POPUP);
         if std::mem::take(&mut self.open_more) {
             egui::Popup::open_id(ui.ctx(), id);
         }
@@ -2179,7 +2179,7 @@ impl BibleApp {
         // (area id, text, is the retryable error, opacity)
         let mut msgs: Vec<(Id, String, bool, f32)> = Vec::new();
         if let Some(o) = self.offline.as_ref().filter(|o| !o.dismissed) {
-            msgs.push((Id::new("toast-offline"), o.toast(&self.library), true, 1.0));
+            msgs.push((Id::unique("toast-offline"), o.toast(&self.library), true, 1.0));
         }
         msgs.extend(self.toasts.iter().map(|t| {
             let left = TOAST_SECS - (now - t.at);
@@ -2187,11 +2187,11 @@ impl BibleApp {
             (t.area(), t.msg.clone(), false, opacity)
         }));
         if let Some(b) = &self.busy {
-            msgs.push((Id::new("toast-busy"), b.clone(), false, 1.0));
+            msgs.push((Id::unique("toast-busy"), b.clone(), false, 1.0));
         }
         let measure = egui::Painter::new(
             ctx.clone(),
-            egui::LayerId::new(egui::Order::Tooltip, Id::new("toast-measure")),
+            egui::LayerId::new(egui::Order::Tooltip, Id::unique("toast-measure")),
             area,
         );
         let (mut retry, mut dismiss) = (false, false);
@@ -2353,7 +2353,7 @@ fn sidebar_toggle(
     let rect = egui::Rect::from_center_size(egui::pos2(centre_x, centre_y), vec2(width, CAPSULE_HEIGHT));
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
     ui.set_clip_rect(ui.ctx().content_rect());
-    let resp = ui.interact(rect, Id::new("sidebar-toggle"), Sense::click());
+    let resp = ui.interact(rect, Id::unique("sidebar-toggle"), Sense::click());
     widgets::pointer_on_hover(&ui, &resp);
     let radius = rect.height() / 2.0;
     if capsule > 0.0 {
@@ -2719,7 +2719,7 @@ impl eframe::App for BibleApp {
                     ));
                 }
                 let material = ctx.animate_bool_with_time(
-                    Id::new("toolbar-material"),
+                    Id::unique("toolbar-material"),
                     self.pages.scrolled,
                     theme::motion::FAST_MS / 1000.0,
                 );
@@ -2820,7 +2820,7 @@ impl eframe::App for BibleApp {
                 }
             }
             let material = ctx.animate_bool_with_time(
-                Id::new("toolbar-material"),
+                Id::unique("toolbar-material"),
                 self.reader.under_toolbar && band == 0.0,
                 theme::motion::FAST_MS / 1000.0,
             );

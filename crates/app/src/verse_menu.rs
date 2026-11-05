@@ -134,9 +134,10 @@ impl VerseMenu {
             self.pos.y.min(screen.bottom() - height - 8.0).max(screen.top() + 8.0),
         );
         let mut close = false;
-        let area = egui::Area::new(egui::Id::new("verse-menu")).order(Order::Foreground).fixed_pos(pos).show(
-            ctx,
-            |ui| {
+        let area = egui::Area::new(egui::Id::unique("verse-menu"))
+            .order(Order::Foreground)
+            .fixed_pos(pos)
+            .show(ctx, |ui| {
                 let rect = Rect::from_min_size(pos, vec2(WIDTH, height));
                 p.shadows.popover.paint(ui.painter(), rect, tokens::RADIUS);
                 ui.painter().rect_filled(rect, tokens::RADIUS, p.surface);
@@ -153,7 +154,7 @@ impl VerseMenu {
                     let center = pos2(x + 10.0, cy);
                     let resp = ui.interact(
                         Rect::from_center_size(center, vec2(24.0, 24.0)),
-                        ui.id().with(("swatch", k)),
+                        ui.scope_id().with(("swatch", k)),
                         Sense::click(),
                     );
                     if current == Some(c) {
@@ -175,7 +176,7 @@ impl VerseMenu {
                     x += 20.0 + 10.0;
                 }
                 let clear = Rect::from_min_size(pos2(x, cy - 10.0), vec2(20.0, 20.0));
-                let resp = ui.interact(clear.expand(2.0), ui.id().with("swatch-clear"), Sense::click());
+                let resp = ui.interact(clear.expand(2.0), ui.scope_id().with("swatch-clear"), Sense::click());
                 if resp.hovered() {
                     ui.painter().circle_filled(clear.center(), 13.0, p.fill_strong);
                 }
@@ -196,7 +197,7 @@ impl VerseMenu {
                         }
                         Line::Item { icon, label, shortcut, action } => {
                             let r = Rect::from_x_y_ranges(left..=right, y..=y + ITEM_HEIGHT);
-                            let resp = ui.interact(r, ui.id().with(("menu-item", i)), Sense::click());
+                            let resp = ui.interact(r, ui.scope_id().with(("menu-item", i)), Sense::click());
                             if action.is_some()
                                 && resp.hovered()
                                 && ui.input(|inp| inp.pointer.delta() != egui::Vec2::ZERO)
@@ -222,8 +223,7 @@ impl VerseMenu {
                         }
                     }
                 }
-            },
-        );
+            });
         if !self.opened {
             self.opened = true;
         } else if area.response.clicked_elsewhere() {

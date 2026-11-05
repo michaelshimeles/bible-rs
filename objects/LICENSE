@@ -11,7 +11,7 @@ The full legal code is in ../LICENSES/CC-BY-4.0.txt.
 
 Credit them as:
 
-    Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible-rs
+    Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible
 
 The code that reads the specs and generates the models' geometry (site/, crates/) is MIT, like
 the rest of the repository (../LICENSE). The Bible words the specs quote come from the KJV and the

@@ -1,6 +1,6 @@
 {
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
-	"$id": "https://github.com/michaelshimeles/bible-rs/objects/cubits.schema.json",
+	"$id": "https://github.com/michaelshimeles/bible/objects/cubits.schema.json",
 	"$comment": "SPDX-License-Identifier: CC-BY-4.0 (objects/LICENSE)",
 	"title": "Cubit conversions",
 	"description": "The cubits every object can be shown in (objects/cubits.json).",

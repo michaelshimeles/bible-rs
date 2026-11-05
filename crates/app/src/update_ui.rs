@@ -180,7 +180,7 @@ pub fn sheet(ctx: &egui::Context, p: &Palette) {
     let status = updater::status();
     let Some(w) = words(&status) else { return };
     let screen = ctx.content_rect();
-    egui::Area::new(egui::Id::new("update-scrim")).order(Order::Middle).fixed_pos(screen.min).show(
+    egui::Area::new(egui::Id::unique("update-scrim")).order(Order::Middle).fixed_pos(screen.min).show(
         ctx,
         |ui| {
             let (r, _) = ui.allocate_exact_size(screen.size(), Sense::click());
@@ -189,27 +189,37 @@ pub fn sheet(ctx: &egui::Context, p: &Palette) {
     );
     let at = pos2((screen.center().x - WIDTH / 2.0).round(), 72.0);
     let mut choice = None;
-    egui::Area::new(egui::Id::new("update-sheet")).order(Order::Foreground).fixed_pos(at).show(ctx, |ui| {
-        let painter = ui.painter().clone();
-        let text_x = PAD + ICON + 16.0;
-        let text_w = WIDTH - text_x - PAD;
-        let text_h = text_height(&painter, p, &w, &status, text_w);
-        let body = text_h.max(ICON);
-        let footer = if w.buttons.is_empty() { 0.0 } else { FOOTER };
-        let sheet = Rect::from_min_size(at, vec2(WIDTH, PAD + body + PAD + footer));
-        ui.allocate_rect(sheet, Sense::hover());
-        p.shadows.modal.paint(&painter, sheet, 16.0);
-        painter.rect_filled(sheet, 16.0, p.surface);
-        crate::onboarding::app_icon(&painter, Rect::from_min_size(at + vec2(PAD, PAD), vec2(ICON, ICON)));
-        let text_at = at + vec2(text_x, PAD + ((body - text_h) / 2.0).round());
-        draw_text(&painter, p, text_at, text_w, &w, &status);
-        if footer > 0.0 {
-            let f = Rect::from_min_max(pos2(sheet.left(), sheet.bottom() - FOOTER), sheet.max);
-            painter.rect_filled(f, egui::CornerRadius { nw: 0, ne: 0, sw: 16, se: 16 }, p.fill);
-            painter.hline(f.x_range(), f.top() + 0.5, Stroke::new(1.0, p.separator));
-            choice = draw_buttons(ui, p, f.right() - PAD, f.center().y, w.buttons, ui.id().with("update"));
-        }
-    });
+    egui::Area::new(egui::Id::unique("update-sheet")).order(Order::Foreground).fixed_pos(at).show(
+        ctx,
+        |ui| {
+            let painter = ui.painter().clone();
+            let text_x = PAD + ICON + 16.0;
+            let text_w = WIDTH - text_x - PAD;
+            let text_h = text_height(&painter, p, &w, &status, text_w);
+            let body = text_h.max(ICON);
+            let footer = if w.buttons.is_empty() { 0.0 } else { FOOTER };
+            let sheet = Rect::from_min_size(at, vec2(WIDTH, PAD + body + PAD + footer));
+            ui.allocate_rect(sheet, Sense::hover());
+            p.shadows.modal.paint(&painter, sheet, 16.0);
+            painter.rect_filled(sheet, 16.0, p.surface);
+            crate::onboarding::app_icon(&painter, Rect::from_min_size(at + vec2(PAD, PAD), vec2(ICON, ICON)));
+            let text_at = at + vec2(text_x, PAD + ((body - text_h) / 2.0).round());
+            draw_text(&painter, p, text_at, text_w, &w, &status);
+            if footer > 0.0 {
+                let f = Rect::from_min_max(pos2(sheet.left(), sheet.bottom() - FOOTER), sheet.max);
+                painter.rect_filled(f, egui::CornerRadius { nw: 0, ne: 0, sw: 16, se: 16 }, p.fill);
+                painter.hline(f.x_range(), f.top() + 0.5, Stroke::new(1.0, p.separator));
+                choice = draw_buttons(
+                    ui,
+                    p,
+                    f.right() - PAD,
+                    f.center().y,
+                    w.buttons,
+                    ui.scope_id().with("update"),
+                );
+            }
+        },
+    );
     let (enter, escape) = ctx.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
     if enter {
         choice = choice.or(w.buttons.iter().find(|b| b.2).map(|b| b.0));
@@ -241,7 +251,7 @@ pub fn about(ui: &mut Ui, p: &Palette) {
     painter.rect_stroke(card, 12.0, Stroke::new(0.5, p.border), StrokeKind::Outside);
     draw_text(&painter, p, card.min + vec2(CARD_PAD, CARD_PAD), inner, &w, &status);
     let cy = card.bottom() - CARD_PAD - BUTTON_H / 2.0;
-    let choice = draw_buttons(ui, p, card.right() - CARD_PAD, cy, w.buttons, ui.id().with("update"));
+    let choice = draw_buttons(ui, p, card.right() - CARD_PAD, cy, w.buttons, ui.scope_id().with("update"));
     animate(ui.ctx(), &status);
     act(choice);
 }

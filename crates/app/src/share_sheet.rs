@@ -7,10 +7,10 @@
 
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use eframe::egui::text::{LayoutJob, TextFormat};
-use eframe::egui::{self, Color32, FontId, Order, Rect, Sense, Stroke, StrokeKind, Ui, UserData, pos2, vec2};
+use eframe::egui::{self, Color32, FontId, Order, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 use bible_core::model::Style;
@@ -143,6 +143,8 @@ pub struct ShareSheet {
     #[cfg(target_os = "macos")]
     share_button: Rect,
     pending: Option<Purpose>,
+    /// Image delivered by `Context::request_screenshot` (eframe 0.37 dropped `Event::Screenshot`).
+    incoming: Arc<Mutex<Option<Arc<egui::ColorImage>>>>,
 }
 
 impl ShareSheet {
@@ -155,6 +157,7 @@ impl ShareSheet {
             #[cfg(target_os = "macos")]
             share_button: Rect::NOTHING,
             pending: None,
+            incoming: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -187,17 +190,9 @@ impl ShareSheet {
         options: &mut ShareOptions,
     ) -> Outcome {
         // A requested screenshot: crop the card and save or share it.
-        let shot = ctx.input(|i| {
-            i.raw.events.iter().find_map(|e| match e {
-                egui::Event::Screenshot { image, user_data, .. } => {
-                    let purpose = user_data.data.as_ref().and_then(|d| d.downcast_ref::<Purpose>()).copied();
-                    Some((image.clone(), purpose))
-                }
-                _ => None,
-            })
-        });
-        if let Some((image, Some(purpose))) = shot
-            && self.pending == Some(purpose)
+        let shot = self.incoming.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(image) = shot
+            && let Some(purpose) = self.pending
         {
             self.pending = None;
             let ppp = ctx.pixels_per_point();
@@ -240,7 +235,7 @@ impl ShareSheet {
 
         let screen = ctx.content_rect();
         let mut close = false;
-        egui::Area::new(egui::Id::new("share-scrim")).order(Order::Middle).fixed_pos(screen.min).show(
+        egui::Area::new(egui::Id::unique("share-scrim")).order(Order::Middle).fixed_pos(screen.min).show(
             ctx,
             |ui| {
                 let (r, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
@@ -250,7 +245,7 @@ impl ShareSheet {
         );
         let at = pos2((screen.center().x - WIDTH / 2.0).round(), 72.0);
         let mut outcome = Outcome::Open;
-        egui::Area::new(egui::Id::new("share-sheet")).order(Order::Foreground).fixed_pos(at).show(
+        egui::Area::new(egui::Id::unique("share-sheet")).order(Order::Foreground).fixed_pos(at).show(
             ctx,
             |ui| {
                 outcome = self.sheet(ui, p, at, t, options);
@@ -315,7 +310,7 @@ impl ShareSheet {
             let tile = Rect::from_min_size(pos2(ox + 86.0 * i as f32, y), vec2(72.0, 56.0));
             let resp = ui.interact(
                 tile.union(tile.translate(vec2(0.0, 22.0))),
-                ui.id().with(("style", i)),
+                ui.scope_id().with(("style", i)),
                 Sense::click(),
             );
             let on = o.style == style;
@@ -373,7 +368,7 @@ impl ShareSheet {
             ("Red letters", &mut o.red_letters, "red"),
         ] {
             text(&painter, ox, y + 2.0, 20.0, label, theme::ui_font(13.0), p.ink, false);
-            widgets::toggle(ui, p, pos2(ox + ow, y + 12.0), ui.id().with(("share-opt", id)), value);
+            widgets::toggle(ui, p, pos2(ox + ow, y + 12.0), ui.scope_id().with(("share-opt", id)), value);
             y += 34.0;
         }
         y += 8.0;
@@ -410,14 +405,14 @@ impl ShareSheet {
             p,
             x,
             cy,
-            ui.id().with("copy-text"),
+            ui.scope_id().with("copy-text"),
         );
         #[cfg(target_os = "macos")]
         let share_label = Button::new(Kind::Primary, "Share…").icon(icons::share);
         #[cfg(not(target_os = "macos"))]
         let share_label = Button::new(Kind::Primary, "Copy Image").icon(icons::copy);
         let (share, share_resp) =
-            share_label.show_right(ui, p, sheet.right() - 24.0, cy, ui.id().with("share"));
+            share_label.show_right(ui, p, sheet.right() - 24.0, cy, ui.scope_id().with("share"));
         #[cfg(target_os = "macos")]
         {
             self.share_button = share;
@@ -427,7 +422,7 @@ impl ShareSheet {
             p,
             share.left() - 8.0,
             cy,
-            ui.id().with("save-image"),
+            ui.scope_id().with("save-image"),
         );
         if copy_resp.clicked() {
             ui.ctx().copy_text(copy);
@@ -436,7 +431,12 @@ impl ShareSheet {
         for (resp, purpose) in [(save_resp, Purpose::Save), (share_resp, Purpose::Share)] {
             if resp.clicked() {
                 self.pending = Some(purpose);
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(UserData::new(purpose)));
+                let incoming = self.incoming.clone();
+                let ctx = ui.ctx().clone();
+                ui.ctx().request_screenshot(move |image| {
+                    *incoming.lock().unwrap_or_else(|e| e.into_inner()) = Some(image);
+                    ctx.request_repaint();
+                });
             }
         }
         Outcome::Open
@@ -488,7 +488,7 @@ fn full_segmented(
         let font = if on { theme::ui_semibold(13.0) } else { theme::ui_medium(13.0) };
         let w = painter.layout_no_wrap((*label).into(), font.clone(), Color32::PLACEHOLDER).size().x + 20.0;
         let seg = Rect::from_min_size(pos2(x, r.top() + 2.0), vec2(w, 28.0));
-        let resp = ui.interact(seg, ui.id().with((id, i)), Sense::click());
+        let resp = ui.interact(seg, ui.scope_id().with((id, i)), Sense::click());
         if on {
             p.shadows.knob.paint(&painter, seg, 14.0);
             painter.rect_filled(seg, 14.0, p.raised);

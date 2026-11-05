@@ -12,9 +12,12 @@
 	import {
 		DAY,
 		ICONS,
+		LEAVE_BODY_SHORT,
 		MONTHS,
 		Under,
 		blankEditor,
+		cancelLeave,
+		confirmLeave,
 		daysOf,
 		editorFrom,
 		minutes,
@@ -22,7 +25,8 @@
 		passageSize,
 		plan,
 		plans,
-		plansPage
+		plansPage,
+		requestLeave
 	} from './plans.svelte';
 
 	const app = getApp();
@@ -203,6 +207,9 @@
 						{u.info.description} Started {s.getDate()}
 						{MONTHS[s.getMonth()]}.
 					</p>
+					{#if plansPage.leaving === u.info.id}
+						<p class="leave-note">{LEAVE_BODY_SHORT}</p>
+					{/if}
 					<div class="hero-progress">
 						<span class="track"><span class="fill" style:width="{(320 * doneDays) / len}px"></span></span>
 						<span>{doneDays} of {len} days</span>
@@ -223,6 +230,20 @@
 							<span class="streak"><Icon name="flame" size={16} heavy />{streak}-day streak</span>
 						{/if}
 						{#if words > 0}<span class="today">~{minutes(words)} min today</span>{/if}
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div class="leave-hero" onclick={(e) => e.stopPropagation()}>
+							{#if plansPage.leaving === u.info.id}
+								<Button kind="plain" size="sm" label="Cancel" onclick={cancelLeave} />
+								<Button
+									kind="destructive"
+									size="sm"
+									label="Leave plan"
+									onclick={() => confirmLeave(app, u.info.id)}
+								/>
+							{:else}
+								<Button size="sm" label="Leave plan" onclick={() => requestLeave(u.info.id)} />
+							{/if}
+						</div>
 					</div>
 				</div>
 				<div class="calendar">
@@ -370,7 +391,8 @@
 		display: flex;
 		align-items: center;
 		gap: 32px;
-		height: 232px;
+		min-height: 232px;
+		height: auto;
 		margin-bottom: 20px;
 		padding: 28px;
 		border-radius: 20px;
@@ -382,6 +404,19 @@
 		flex: 1;
 		align-self: flex-start;
 		min-width: 0;
+	}
+
+	.leave-hero {
+		display: flex;
+		flex: none;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.leave-note {
+		margin-top: 6px;
+		color: var(--ink-2);
+		font: 400 12px/16px var(--font-ui);
 	}
 
 	.hero-title {
@@ -429,6 +464,7 @@
 
 	.hero-actions {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 16px;
 		margin-top: 18px;
