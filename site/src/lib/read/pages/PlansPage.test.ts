@@ -163,4 +163,22 @@ describe('leaving a reading plan', () => {
 		expect([...app.planReads(id)]).toHaveLength(0);
 		expect(app.customPlans().some((p) => p.id === id && p.title === 'Wisdom')).toBe(true);
 	});
+
+	it('keeps an open custom plan when search does not match its title', () => {
+		reader();
+		app.dispatch({
+			type: 'saveCustomPlan',
+			id: '',
+			title: 'Wisdom',
+			description: 'A chapter a day',
+			days: ['John 1']
+		});
+		const id = app.customPlans()[0].id;
+		app.dispatch({ type: 'startPlan', id });
+		plansPage.open = { id, day: 1 };
+		app.pageQuery = 'zzzz';
+		showList();
+		expect(shown('Day 1')).toBe(true);
+		expect(plansPage.open?.id).toBe(id);
+	});
 });

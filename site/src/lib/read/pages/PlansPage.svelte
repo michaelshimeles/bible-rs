@@ -37,7 +37,8 @@
 	const q = $derived(app.pageQuery.trim().toLowerCase());
 	const matches = (p: { title: string; description: string }) =>
 		!q || p.title.toLowerCase().includes(q) || p.description.toLowerCase().includes(q);
-	const mine = $derived(app.customPlans().filter((p) => matches(p)));
+	const allMine = $derived(app.customPlans());
+	const mine = $derived(allMine.filter((p) => matches(p)));
 	const browse = $derived(plans().filter((p) => !active.some((s) => s.id === p.id) && matches(p)));
 	const done = $derived(
 		completed.flatMap((s) => {
@@ -54,7 +55,7 @@
 
 	const opened = $derived.by(() => {
 		const o = plansPage.open;
-		const p = o && plan(o.id, mine);
+		const p = o && plan(o.id, allMine);
 		const s = o && started.find((x) => x.id === o.id);
 		return o && p && s ? { under: new Under(p, s, app), day: o.day } : null;
 	});

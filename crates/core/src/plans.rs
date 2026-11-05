@@ -488,6 +488,9 @@ fn parse_one(token: &str) -> Result<Vec<Passage>, String> {
         }
         return Ok(out);
     }
+    if let Some(cross) = cross_chapter_verses(token) {
+        return cross;
+    }
     let r = reference::parse(token).ok_or_else(|| format!("Couldn't read “{token}” as a passage"))?;
     let verses = match (r.verse, r.verse_end) {
         (Some(a), Some(b)) => Some(if b >= a { (a, b) } else { (b, a) }),
@@ -495,6 +498,71 @@ fn parse_one(token: &str) -> Result<Vec<Passage>, String> {
         (None, _) => None,
     };
     Ok(vec![Passage { chapter: r.chapter_idx(), verses }])
+}
+
+/// "John 3:16–4:2" (a verse range that crosses chapters) as the passages it names.
+/// `reference::parse` only keeps three numbers, so without this "John 3:16–4:2" became John 3:4–16.
+fn cross_chapter_verses(token: &str) -> Option<Result<Vec<Passage>, String>> {
+    let pos = token.rfind(['-', '–', '—'])?;
+    let dash = token[pos..].chars().next()?.len_utf8();
+    let (left, right) = (token[..pos].trim(), token[pos + dash..].trim());
+    let (end_ch, end_vs) = chapter_and_verse(right)?;
+    let start = reference::parse(left)?;
+    let start_vs = start.verse?;
+    Some(expand_cross_chapter(token, start.book, start.chapter, start_vs, end_ch, end_vs))
+}
+
+fn chapter_and_verse(s: &str) -> Option<(u8, u8)> {
+    let pos = s.find([':', '.'])?;
+    if s[pos + 1..].find([':', '.']).is_some() {
+        return None;
+    }
+    let chapter: u8 = s[..pos].trim().parse().ok()?;
+    let verse: u8 = s[pos + 1..].trim().parse().ok()?;
+    (chapter >= 1 && verse >= 1).then_some((chapter, verse))
+}
+
+fn expand_cross_chapter(
+    token: &str,
+    book: BookId,
+    start_ch: u8,
+    start_vs: u8,
+    end_ch: u8,
+    end_vs: u8,
+) -> Result<Vec<Passage>, String> {
+    let first = ChapterIdx::new(book, start_ch)
+        .ok_or_else(|| format!("{} has no chapter {start_ch}", book.name()))?;
+    let last =
+        ChapterIdx::new(book, end_ch).ok_or_else(|| format!("{} has no chapter {end_ch}", book.name()))?;
+    if start_vs < 1 || start_vs > first.kjv_verses() {
+        return Err(format!("{} {start_ch} has no verse {start_vs}", book.name()));
+    }
+    if end_vs < 1 || end_vs > last.kjv_verses() {
+        return Err(format!("{} {end_ch} has no verse {end_vs}", book.name()));
+    }
+    if end_ch < start_ch {
+        return Err(format!("“{token}” is not a forward range"));
+    }
+    if start_ch == end_ch {
+        let (a, b) = if end_vs >= start_vs { (start_vs, end_vs) } else { (end_vs, start_vs) };
+        return Ok(vec![Passage { chapter: first, verses: Some((a, b)) }]);
+    }
+    let mut out = Vec::new();
+    if start_vs == 1 {
+        out.push(Passage::whole(first));
+    } else {
+        out.push(Passage { chapter: first, verses: Some((start_vs, first.kjv_verses())) });
+    }
+    for c in start_ch + 1..end_ch {
+        let ch = ChapterIdx::new(book, c).ok_or_else(|| format!("{} has no chapter {c}", book.name()))?;
+        out.push(Passage::whole(ch));
+    }
+    if end_vs == last.kjv_verses() {
+        out.push(Passage::whole(last));
+    } else {
+        out.push(Passage { chapter: last, verses: Some((1, end_vs)) });
+    }
+    Ok(out)
 }
 
 /// "John 1-3" / "John 1–3" as chapters 1 through 3 of John (not John 1:3).
@@ -550,6 +618,17 @@ mod tests {
         assert_eq!(many.len(), 2);
         assert!(parse_passages("xyzzy").is_err());
         assert!(parse_passages("").is_err());
+
+        // A verse range that names two chapters must not collapse to one chapter's verses.
+        let cross = parse_passages("John 3:16–4:2").unwrap();
+        assert_eq!(cross.len(), 2);
+        assert_eq!(cross[0].chapter.chapter(), 3);
+        assert_eq!(cross[0].verses, Some((16, 36)));
+        assert_eq!(cross[1].chapter.chapter(), 4);
+        assert_eq!(cross[1].verses, Some((1, 2)));
+        let same = parse_passages("John 3:16–3:18").unwrap();
+        assert_eq!(same.len(), 1);
+        assert_eq!(same[0].verses, Some((16, 18)));
     }
 
     #[test]

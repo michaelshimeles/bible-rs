@@ -1578,24 +1578,26 @@ impl StudyStore {
         deleted.bookmarks.retain(|c| c.deleted && include.bookmarks);
         deleted.plans.retain(|c| c.deleted && include.history);
         deleted.plan_reads.retain(|c| c.deleted && include.history);
-        deleted.custom_plans.retain(|c| c.deleted);
+        deleted.custom_plans.retain(|c| c.deleted && include.history);
         doc.deleted = deleted;
-        doc.custom_plans = self
-            .custom_plans()
-            .into_iter()
-            .map(|p| {
-                let stamp = stamp_of(self.custom_plan_revs.get(&p.id));
-                ExportCustomPlan {
-                    days: p.days_as_refs(),
-                    created: rfc3339(p.created),
-                    updated_ms: Some(stamp.at),
-                    device: Some(stamp.device),
-                    id: p.id,
-                    title: p.title,
-                    description: p.description,
-                }
-            })
-            .collect();
+        if include.history {
+            doc.custom_plans = self
+                .custom_plans()
+                .into_iter()
+                .map(|p| {
+                    let stamp = stamp_of(self.custom_plan_revs.get(&p.id));
+                    ExportCustomPlan {
+                        days: p.days_as_refs(),
+                        created: rfc3339(p.created),
+                        updated_ms: Some(stamp.at),
+                        device: Some(stamp.device),
+                        id: p.id,
+                        title: p.title,
+                        description: p.description,
+                    }
+                })
+                .collect();
+        }
         if !include.highlights {
             doc.highlights.clear();
         }
@@ -1686,7 +1688,7 @@ impl StudyStore {
             }
             md.push('\n');
         }
-        let custom = self.custom_plans();
+        let custom = if include.history { self.custom_plans() } else { Vec::new() };
         if !custom.is_empty() {
             let _ = writeln!(md, "## Reading plans\n");
             for p in custom {
@@ -2915,6 +2917,20 @@ mod custom_plan_tests {
         s.start_plan(&id, 2_000).unwrap();
         assert_eq!(s.plans()[0].id, id);
         assert!(s.plan_reads(&id).is_empty(), "starting again begins with no ticks");
+    }
+
+    #[test]
+    fn notes_only_export_omits_custom_plans() {
+        let mut s = StudyStore::open_in_memory().unwrap();
+        s.save_custom_plan(wisdom()).unwrap();
+        let notes = s.export_json_with("KJV", |_| None, Include::STUDY).unwrap();
+        assert!(!notes.contains("Wisdom"), "a notes-only export must not include custom plans");
+        let all = s.export_json_with("KJV", |_| None, Include::EVERYTHING).unwrap();
+        assert!(all.contains("Wisdom"));
+        let md = s.export_markdown_with("KJV", |_| None, Include::STUDY);
+        assert!(!md.contains("Wisdom"));
+        let md_all = s.export_markdown_with("KJV", |_| None, Include::EVERYTHING);
+        assert!(md_all.contains("Wisdom"));
     }
 }
 

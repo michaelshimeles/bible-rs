@@ -1753,8 +1753,12 @@ impl State {
             ),
         };
         let card_w = 420.0;
-        let card =
-            Rect::from_center_size(pos2(content.center().x, content.bottom() - 140.0), vec2(card_w, 176.0));
+        // `content` is a zero-height origin at the page top (see pages::Pages::show); the
+        // visible bottom is the clip rect, so the card stays on screen.
+        let card = Rect::from_center_size(
+            pos2(content.center().x, ui.clip_rect().bottom() - 140.0),
+            vec2(card_w, 176.0),
+        );
         p.shadows.modal.paint(&painter, card, 16.0);
         painter.rect_filled(card, 16.0, p.surface);
         text(
