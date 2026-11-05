@@ -333,28 +333,28 @@ impl State {
         self.leaving = None;
     }
 
-    /// Leave control on an Active card: "Leave plan", then Cancel (same place) and a confirm.
+    /// Leave control on an Active card, on the Continue row so it never covers the day badge.
     fn leave_on_hero(
         &mut self,
         ui: &mut Ui,
         p: &Palette,
         plan_id: &str,
-        right: f32,
+        left: f32,
         cy: f32,
         actions: &mut Vec<Action>,
     ) -> bool {
         if self.is_leaving(plan_id) {
-            let (cancel_b, cancel) = Button::new(Kind::Plain, "Cancel").small().show_right(
+            let (cancel_b, cancel) = Button::new(Kind::Plain, "Cancel").small().show_left(
                 ui,
                 p,
-                right,
+                left,
                 cy,
                 ui.id().with(("leave-cancel", plan_id)),
             );
-            let (_, leave) = Button::new(Kind::Destructive, "Leave plan").small().show_right(
+            let (_, leave) = Button::new(Kind::Destructive, "Leave plan").small().show_left(
                 ui,
                 p,
-                cancel_b.left() - 8.0,
+                cancel_b.right() + 8.0,
                 cy,
                 ui.id().with(("leave-confirm", plan_id)),
             );
@@ -368,10 +368,10 @@ impl State {
             }
             false
         } else {
-            let (_, resp) = Button::new(Kind::Secondary, "Leave plan").small().show_right(
+            let (_, resp) = Button::new(Kind::Secondary, "Leave plan").small().show_left(
                 ui,
                 p,
-                right,
+                left,
                 cy,
                 ui.id().with(("leave-plan", plan_id)),
             );
@@ -483,7 +483,6 @@ impl State {
         let text_w = card.width() - 56.0 - 32.0 - calendar_w;
         let desc = super::elide(&painter, &desc, &theme::ui_font(13.0), text_w);
         text(&painter, x, y + 68.0, 20.0, &desc, theme::ui_font(13.0), p.ink_2, false);
-        let leave_used = self.leave_on_hero(ui, p, u.plan.id, x + text_w, y + 10.0, actions);
         if self.is_leaving(u.plan.id) {
             text(&painter, x, y + 88.0, 16.0, LEAVE_BODY_SHORT, theme::ui_font(12.0), p.ink_2, false);
         }
@@ -545,8 +544,10 @@ impl State {
         let words: usize = u.plan.day(day.max(1)).iter().map(|ps| passage_size(ps, t).1).sum();
         if words > 0 {
             let mins = format!("~{} min today", minutes(words));
-            text(&painter, sx, cy - 8.0, 16.0, &mins, theme::ui_font(13.0), p.ink_2, false);
+            let w = text(&painter, sx, cy - 8.0, 16.0, &mins, theme::ui_font(13.0), p.ink_2, false);
+            sx += w + 16.0;
         }
+        let leave_used = self.leave_on_hero(ui, p, u.plan.id, sx, cy, actions);
 
         // The calendar: this month of the plan as dots.
         let cal = Rect::from_min_size(

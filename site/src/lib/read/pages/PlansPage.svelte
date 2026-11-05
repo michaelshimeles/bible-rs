@@ -135,23 +135,7 @@
 				onclick={() => (plansPage.open = { id: u.info.id, day: current })}
 			>
 				<div class="hero-main">
-					<div class="hero-top">
-						<Badge kind="accent" label={u.today > len ? 'Last day passed' : `Day ${day} of ${len}`} />
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div class="leave-hero" onclick={(e) => e.stopPropagation()}>
-							{#if plansPage.leaving === u.info.id}
-								<Button
-									kind="destructive"
-									size="sm"
-									label="Leave plan"
-									onclick={() => confirmLeave(app, u.info.id)}
-								/>
-								<Button kind="plain" size="sm" label="Cancel" onclick={cancelLeave} />
-							{:else}
-								<Button size="sm" label="Leave plan" onclick={() => requestLeave(u.info.id)} />
-							{/if}
-						</div>
-					</div>
+					<Badge kind="accent" label={u.today > len ? 'Last day passed' : `Day ${day} of ${len}`} />
 					<h2 class="hero-title">{u.info.title}</h2>
 					<p class="hero-description">
 						{u.info.description} Started {s.getDate()}
@@ -180,6 +164,20 @@
 							<span class="streak"><Icon name="flame" size={16} heavy />{streak}-day streak</span>
 						{/if}
 						{#if words > 0}<span class="today">~{minutes(words)} min today</span>{/if}
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div class="leave-hero" onclick={(e) => e.stopPropagation()}>
+							{#if plansPage.leaving === u.info.id}
+								<Button kind="plain" size="sm" label="Cancel" onclick={cancelLeave} />
+								<Button
+									kind="destructive"
+									size="sm"
+									label="Leave plan"
+									onclick={() => confirmLeave(app, u.info.id)}
+								/>
+							{:else}
+								<Button size="sm" label="Leave plan" onclick={() => requestLeave(u.info.id)} />
+							{/if}
+						</div>
 					</div>
 				</div>
 				<div class="calendar">
@@ -263,18 +261,10 @@
 		min-width: 0;
 	}
 
-	.hero-top {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-	}
-
 	.leave-hero {
 		display: flex;
 		flex: none;
 		align-items: center;
-		justify-content: flex-end;
 		gap: 8px;
 	}
 
@@ -329,6 +319,7 @@
 
 	.hero-actions {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 16px;
 		margin-top: 18px;
