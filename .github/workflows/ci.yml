@@ -136,6 +136,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: App Store listing within App Store Connect's limits
+        run: scripts/check-app-store-metadata.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
@@ -146,6 +148,8 @@ jobs:
         run: scripts/build-ios.sh
       - name: Device build (unsigned)
         run: scripts/build-ios.sh --device
+      - name: App Store archive (unsigned, with the privacy manifest and an opaque icon)
+        run: scripts/release-ios.sh --unsigned
 
   macos:
     name: macOS · build, tests, universal app and DMG

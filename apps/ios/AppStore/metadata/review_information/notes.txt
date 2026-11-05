@@ -1,0 +1,3 @@
+Bible is a reader for seven public-domain translations, all inside the app. It needs no account and makes no network connections.
+
+To try it: tap the book name at the top left and type "jn 3:16" to jump there. Tap a verse to highlight it, add a note or bookmark, copy or share it. The magnifying glass searches the whole Bible as you type. The AA button changes the theme and text size. The bookmark button lists your highlights, notes and bookmarks.
