@@ -498,8 +498,10 @@ fn ensure_memory_sync(conn: &Connection, device: &str) -> Result<()> {
     )?;
     let pk = sql.replace(' ', "");
     if !pk.contains("PRIMARYKEY(book,chapter,verse,id)") {
-        conn.execute_batch(
-            "CREATE TABLE memory_reviews_v2(
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(
+            "DROP TABLE IF EXISTS memory_reviews_v2;
+             CREATE TABLE memory_reviews_v2(
                 book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
                 at INTEGER NOT NULL, grade INTEGER NOT NULL, id TEXT NOT NULL,
                 updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
@@ -507,12 +509,13 @@ fn ensure_memory_sync(conn: &Connection, device: &str) -> Result<()> {
                 PRIMARY KEY(book, chapter, verse, id));
              INSERT INTO memory_reviews_v2(book, chapter, verse, at, grade, id, updated_ms, device, deleted, seq)
              SELECT book, chapter, verse, at, grade,
-                    CASE WHEN id = '' THEN (at || ':' || grade) ELSE id END,
+                    CASE WHEN id = '' THEN (at || ':' || grade || ':' || rowid) ELSE id END,
                     updated_ms, device, deleted, seq
              FROM memory_reviews;
              DROP TABLE memory_reviews;
              ALTER TABLE memory_reviews_v2 RENAME TO memory_reviews;",
         )?;
+        tx.commit()?;
     }
     Ok(())
 }
@@ -4544,6 +4547,45 @@ mod sync_tests {
         assert_eq!(c.memory_reviews.len(), 1);
         assert_eq!(c.memory[0].stamp.at, 150_000, "stamped from the newest of created and last_review");
         assert_eq!(c.memory_reviews[0].stamp.at, 150_000);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn older_review_rows_without_a_unique_key_still_open() {
+        let dir = std::env::temp_dir().join(format!(
+            "bible-memory-dup-reviews-{}-{}",
+            std::process::id(),
+            crate::sync::new_device_id()
+        ));
+        let path = dir.join("study.sqlite");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE memory(
+                    book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL, last_verse INTEGER NOT NULL,
+                    translation TEXT NOT NULL, created INTEGER NOT NULL,
+                    due INTEGER NOT NULL, stability REAL NOT NULL, difficulty REAL NOT NULL,
+                    reps INTEGER NOT NULL, lapses INTEGER NOT NULL, last_review INTEGER,
+                    PRIMARY KEY(book, chapter, verse));
+                 CREATE TABLE memory_reviews(
+                    book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
+                    at INTEGER NOT NULL, grade INTEGER NOT NULL);
+                 INSERT INTO memory(book, chapter, verse, last_verse, translation, created, due,
+                     stability, difficulty, reps, lapses, last_review)
+                 VALUES('JHN', 3, 16, 16, 'kjv', 100, 200, 1.5, 2.5, 2, 0, 150);
+                 INSERT INTO memory_reviews(book, chapter, verse, at, grade) VALUES('JHN', 3, 16, 150, 3);
+                 INSERT INTO memory_reviews(book, chapter, verse, at, grade) VALUES('JHN', 3, 16, 150, 3);",
+            )
+            .unwrap();
+        }
+        let s = StudyStore::open(&path).unwrap();
+        assert_eq!(s.reviews(v(16)).len(), 2, "two recalls in the same second both survive opening");
+        drop(s);
+        let s = StudyStore::open(&path).unwrap();
+        assert_eq!(s.reviews(v(16)).len(), 2);
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
     }
