@@ -1044,7 +1044,7 @@ impl Reader {
             recall.step(recall::Step::NextWord);
             ui.ctx().request_repaint();
         }
-        recall::bar(recall, ui, rect, env.theme.palette(), env.recall_letters, actions);
+        recall::bar(recall, ui, rect, env.theme.palette(), env.recall_letters, env.study, actions);
     }
 
     /// The place in the text at `pt`: in a block of verse text under it. While words are being

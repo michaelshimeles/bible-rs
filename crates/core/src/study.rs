@@ -216,6 +216,7 @@ CREATE TABLE IF NOT EXISTS memory(
 CREATE TABLE IF NOT EXISTS memory_reviews(
     book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
     at INTEGER NOT NULL, grade INTEGER NOT NULL, id TEXT NOT NULL,
+    last_verse INTEGER NOT NULL DEFAULT 0, translation TEXT NOT NULL DEFAULT '',
     updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
     deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(book, chapter, verse, id));
@@ -312,6 +313,8 @@ fn schedule_from_reviews(created: i64, reviews: &[Review]) -> Schedule {
 struct LoggedReview {
     id: String,
     review: Review,
+    last_verse: u8,
+    translation: String,
 }
 
 /// Sync metadata for one recall, including tombstones (which are not in [`StudyStore::reviews`]).
@@ -320,6 +323,13 @@ struct ReviewRev {
     rev: Rev,
     at: i64,
     grade: Grade,
+    last_verse: u8,
+    translation: String,
+}
+
+fn review_mismatches(last_verse: u8, translation: &str, m: &Memorised) -> bool {
+    (last_verse != 0 && last_verse != m.last.verse)
+        || (!translation.is_empty() && translation != m.translation)
 }
 
 fn fallback_review_id(at: i64, grade: Grade) -> String {
@@ -491,6 +501,8 @@ fn ensure_memory_sync(conn: &Connection, device: &str) -> Result<()> {
         [device],
     )?;
     add("memory_reviews", "id", "TEXT NOT NULL DEFAULT ''")?;
+    add("memory_reviews", "last_verse", "INTEGER NOT NULL DEFAULT 0")?;
+    add("memory_reviews", "translation", "TEXT NOT NULL DEFAULT ''")?;
     let sql: String = conn.query_row(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_reviews'",
         [],
@@ -504,12 +516,14 @@ fn ensure_memory_sync(conn: &Connection, device: &str) -> Result<()> {
              CREATE TABLE memory_reviews_v2(
                 book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
                 at INTEGER NOT NULL, grade INTEGER NOT NULL, id TEXT NOT NULL,
+                last_verse INTEGER NOT NULL DEFAULT 0, translation TEXT NOT NULL DEFAULT '',
                 updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
                 deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(book, chapter, verse, id));
-             INSERT INTO memory_reviews_v2(book, chapter, verse, at, grade, id, updated_ms, device, deleted, seq)
+             INSERT INTO memory_reviews_v2(book, chapter, verse, at, grade, id, last_verse, translation, updated_ms, device, deleted, seq)
              SELECT book, chapter, verse, at, grade,
                     CASE WHEN id = '' THEN (at || ':' || grade || ':' || rowid) ELSE id END,
+                    last_verse, translation,
                     updated_ms, device, deleted, seq
              FROM memory_reviews;
              DROP TABLE memory_reviews;
@@ -821,27 +835,39 @@ impl StudyStore {
         let reviews = query(
             conn,
             &format!(
-                "SELECT book, chapter, verse, at, grade, id, {META} FROM memory_reviews ORDER BY at, rowid"
+                "SELECT book, chapter, verse, at, grade, id, last_verse, translation, {META}
+                 FROM memory_reviews ORDER BY at, id, rowid"
             ),
             |r| {
                 let n: i64 = r.get(4)?;
                 let grade = Grade::ALL.into_iter().find(|g| *g as i64 == n);
-                Ok((verse(r)?, r.get::<_, i64>(3)?, grade, r.get::<_, String>(5)?, meta(r, 6)?))
+                Ok((
+                    verse(r)?,
+                    r.get::<_, i64>(3)?,
+                    grade,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, u8>(6)?,
+                    r.get::<_, String>(7)?,
+                    meta(r, 8)?,
+                ))
             },
         )?;
         self.reviews.clear();
         self.review_revs.clear();
-        for (first, at, grade, id, (rev, deleted)) in reviews {
+        for (first, at, grade, id, last_verse, translation, (rev, deleted)) in reviews {
             saw(&rev);
             if let (Some(first), Some(grade)) = (first, grade) {
                 let id = assigned_review_id(&id, at, grade);
                 if !deleted {
-                    self.reviews
-                        .entry(first.key())
-                        .or_default()
-                        .push(LoggedReview { id: id.clone(), review: Review { at, grade } });
+                    self.reviews.entry(first.key()).or_default().push(LoggedReview {
+                        id: id.clone(),
+                        review: Review { at, grade },
+                        last_verse,
+                        translation: translation.clone(),
+                    });
                 }
-                self.review_revs.insert((first.key(), id), ReviewRev { rev, at, grade });
+                self.review_revs
+                    .insert((first.key(), id), ReviewRev { rev, at, grade, last_verse, translation });
             }
         }
         self.settings = query(conn, "SELECT key, value FROM settings", |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -1515,7 +1541,7 @@ impl StudyStore {
         let reviews = self.reviews.get(&first.key()).cloned().unwrap_or_default();
         for logged in reviews {
             let rev = self.next_rev();
-            self.store_review(first, logged.review, false, rev, logged.id)?;
+            self.store_review(first, logged, false, rev)?;
         }
         Ok(())
     }
@@ -1528,49 +1554,52 @@ impl StudyStore {
     fn put_review(&mut self, first: VerseRef, review: Review) -> Result<()> {
         let rev = self.next_rev();
         let id = format!("{}:{}", rev.stamp.at, rev.stamp.device);
-        self.store_review(first, review, true, rev, id)
+        let (last_verse, translation) = self
+            .memory
+            .get(&first.key())
+            .map(|m| (m.last.verse, m.translation.clone()))
+            .unwrap_or((0, String::new()));
+        self.store_review(first, LoggedReview { id, review, last_verse, translation }, true, rev)
     }
 
     /// Writes a recall (`live`: it happened; otherwise a tombstone) with its stamp.
-    fn store_review(
-        &mut self,
-        first: VerseRef,
-        review: Review,
-        live: bool,
-        rev: Rev,
-        id: String,
-    ) -> Result<()> {
+    fn store_review(&mut self, first: VerseRef, logged: LoggedReview, live: bool, rev: Rev) -> Result<()> {
         #[cfg(feature = "native")]
         {
             let code = first.book.info().code;
             let n = self.exec(
                 "UPDATE memory_reviews SET updated_ms = ?1, device = ?2, deleted = ?3, seq = ?4,
-                     at = ?5, grade = ?6
-                 WHERE book = ?7 AND chapter = ?8 AND verse = ?9 AND id = ?10",
+                     at = ?5, grade = ?6, last_verse = ?7, translation = ?8
+                 WHERE book = ?9 AND chapter = ?10 AND verse = ?11 AND id = ?12",
                 params![
                     rev.stamp.at,
                     rev.stamp.device,
                     !live,
                     rev.seq,
-                    review.at,
-                    review.grade as u8,
+                    logged.review.at,
+                    logged.review.grade as u8,
+                    logged.last_verse,
+                    logged.translation,
                     code,
                     first.chapter,
                     first.verse,
-                    id
+                    logged.id
                 ],
             )?;
             if n == 0 {
                 self.exec(
-                    "INSERT INTO memory_reviews(book, chapter, verse, at, grade, id, updated_ms, device, deleted, seq)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    "INSERT INTO memory_reviews(book, chapter, verse, at, grade, id, last_verse, translation,
+                         updated_ms, device, deleted, seq)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                     params![
                         code,
                         first.chapter,
                         first.verse,
-                        review.at,
-                        review.grade as u8,
-                        id,
+                        logged.review.at,
+                        logged.review.grade as u8,
+                        logged.id,
+                        logged.last_verse,
+                        logged.translation,
                         rev.stamp.at,
                         rev.stamp.device,
                         !live,
@@ -1580,18 +1609,30 @@ impl StudyStore {
             }
         }
         let key = first.key();
-        let (at, grade) = (review.at, review.grade);
+        let (at, grade) = (logged.review.at, logged.review.grade);
+        let id = logged.id.clone();
+        let last_verse = logged.last_verse;
+        let translation = logged.translation.clone();
         let list = self.reviews.entry(key).or_default();
         list.retain(|r| r.id != id);
         if live {
-            list.push(LoggedReview { id: id.clone(), review });
-            list.sort_by(|a, b| {
-                (a.review.at, a.review.grade as u8, &a.id).cmp(&(b.review.at, b.review.grade as u8, &b.id))
-            });
+            list.push(logged);
+            list.sort_by(|a, b| (a.review.at, &a.id).cmp(&(b.review.at, &b.id)));
         } else if list.is_empty() {
             self.reviews.remove(&key);
         }
-        self.review_revs.insert((key, id), ReviewRev { rev, at, grade });
+        self.review_revs.insert((key, id), ReviewRev { rev, at, grade, last_verse, translation });
+        Ok(())
+    }
+
+    fn forget_mismatched_reviews(&mut self, first: VerseRef, m: &Memorised) -> Result<()> {
+        let reviews = self.reviews.get(&first.key()).cloned().unwrap_or_default();
+        for logged in reviews {
+            if review_mismatches(logged.last_verse, &logged.translation, m) {
+                let rev = self.next_rev();
+                self.store_review(first, logged, false, rev)?;
+            }
+        }
         Ok(())
     }
 
@@ -1927,6 +1968,8 @@ impl StudyStore {
                                     at: rfc3339(r.review.at),
                                     grade: r.review.grade.name().to_string(),
                                     id: Some(r.id.clone()),
+                                    last_verse: (r.last_verse != 0).then_some(r.last_verse),
+                                    translation: (!r.translation.is_empty()).then(|| r.translation.clone()),
                                     updated_ms: Some(rs.at),
                                     device: Some(rs.device),
                                 }
@@ -2206,6 +2249,8 @@ impl StudyStore {
                     at,
                     grade,
                     id: assigned_review_id(r.id.as_deref().unwrap_or(""), at, g),
+                    last_verse: r.last_verse.unwrap_or(0),
+                    translation: r.translation.clone().unwrap_or_default(),
                     stamp: stamp(r.updated_ms, &r.device, at),
                     deleted: false,
                 });
@@ -2455,6 +2500,8 @@ impl StudyStore {
                 at: rr.at,
                 grade: rr.grade.name().to_string(),
                 id: id.clone(),
+                last_verse: rr.last_verse,
+                translation: rr.translation.clone(),
                 stamp: rr.rev.stamp.clone(),
                 deleted: !live,
             });
@@ -2764,7 +2811,28 @@ impl StudyStore {
                 Pick::Remote => Rev { stamp: c.stamp.clone(), seq: self.next_seq() },
                 Pick::Revive => self.next_rev(),
             };
-            self.store_review(first, Review { at: c.at, grade }, !c.deleted, rev, id)?;
+            let last_verse = c.last_verse;
+            let translation = c.translation.clone();
+            if !c.deleted
+                && let Some(m) = self.memory.get(&first.key())
+                && review_mismatches(last_verse, &translation, m)
+            {
+                let drop = self.next_rev();
+                self.store_review(
+                    first,
+                    LoggedReview { id, review: Review { at: c.at, grade }, last_verse, translation },
+                    false,
+                    drop,
+                )?;
+                report.memory_reviews += 1;
+                continue;
+            }
+            self.store_review(
+                first,
+                LoggedReview { id, review: Review { at: c.at, grade }, last_verse, translation },
+                !c.deleted,
+                rev,
+            )?;
             report.memory_reviews += 1;
             rebuild.push(first);
         }
@@ -2775,7 +2843,8 @@ impl StudyStore {
         rebuild.sort();
         rebuild.dedup();
         for first in rebuild {
-            if self.memory.contains_key(&first.key()) {
+            if let Some(m) = self.memory.get(&first.key()).cloned() {
+                self.forget_mismatched_reviews(first, &m)?;
                 self.rebuild_memory_from_reviews(first)?;
             } else if self.memory_revs.contains_key(&first.key()) {
                 // A newer forget beat a concurrent review: drop the review so it cannot linger.
@@ -2915,6 +2984,10 @@ struct ExportReview {
     grade: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_verse: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    translation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     updated_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4430,6 +4503,25 @@ mod sync_tests {
     }
 
     #[test]
+    fn a_review_of_a_replaced_passage_is_dropped() {
+        let (mut a, clock_a) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.memorise(v(16), v(17), "kjv").unwrap();
+        sync(&a, &mut b);
+        later(&clock_a, 10);
+        a.review(v(16), Grade::Good, a.now_s()).unwrap();
+        later(&clock_b, 20);
+        b.memorise(v(16), v(18), "kjv").unwrap();
+        sync(&a, &mut b);
+        sync(&b, &mut a);
+        for s in [&a, &b] {
+            let m = s.memorised_at(v(16)).cloned().unwrap();
+            assert_eq!((m.first, m.last), (v(16), v(18)));
+            assert!(s.reviews(v(16)).is_empty(), "a grade of the old range must not schedule the new one");
+        }
+    }
+
+    #[test]
     fn reviews_in_the_same_second_are_both_kept() {
         let (mut a, _) = device("aaaa", T0);
         let (mut b, _) = device("bbbb", T0);
@@ -4437,14 +4529,20 @@ mod sync_tests {
         sync(&a, &mut b);
         let at = a.now_s();
         a.review(v(16), Grade::Good, at).unwrap();
-        a.review(v(16), Grade::Good, at).unwrap();
+        a.review(v(16), Grade::Hard, at).unwrap();
         b.review(v(16), Grade::Good, at).unwrap();
         sync(&a, &mut b);
         sync(&b, &mut a);
         for s in [&a, &b] {
-            assert_eq!(s.reviews(v(16)).len(), 3, "each recall keeps its own log entry");
-            assert_eq!(s.reviews(v(16)).iter().filter(|r| r.grade == Grade::Good && r.at == at).count(), 3);
+            let grades: Vec<Grade> = s.reviews(v(16)).iter().map(|r| r.grade).collect();
+            assert_eq!(grades.len(), 3, "each recall keeps its own log entry");
+            assert_eq!(grades.iter().filter(|g| **g == Grade::Good).count(), 2);
+            assert_eq!(grades.iter().filter(|g| **g == Grade::Hard).count(), 1);
         }
+        assert_eq!(a.reviews(v(16)), b.reviews(v(16)));
+        assert_eq!(a.memorised_at(v(16)).unwrap().schedule, b.memorised_at(v(16)).unwrap().schedule);
+        let rebuilt = schedule_from_reviews(a.memorised_at(v(16)).unwrap().created, &a.reviews(v(16)));
+        assert_eq!(a.memorised_at(v(16)).unwrap().schedule, rebuilt);
     }
 
     #[test]

@@ -339,7 +339,15 @@ pub fn paint_dimmed(painter: &Painter, at: Pos2, galley: &Arc<Galley>, color: Co
 
 /// The bar along the reader's foot while recalling: back, the passage, what to do, and once it is
 /// all shown, the grades, each with when the passage would come back.
-pub fn bar(recall: &Recall, ui: &mut Ui, rect: Rect, p: &Palette, letters: bool, actions: &mut Vec<Action>) {
+pub fn bar(
+    recall: &Recall,
+    ui: &mut Ui,
+    rect: Rect,
+    p: &Palette,
+    letters: bool,
+    study: &bible_core::study::StudyStore,
+    actions: &mut Vec<Action>,
+) {
     let painter = ui.painter().clone();
     let font = text::UI.font();
     let reference =
@@ -361,7 +369,9 @@ pub fn bar(recall: &Recall, ui: &mut Ui, rect: Rect, p: &Palette, letters: bool,
     let status = painter.layout_no_wrap(status.to_string(), font, p.ink_2);
 
     let now = bible_core::study::now();
-    let due = recall.passage.schedule.preview(now);
+    let schedule =
+        study.memorised_at(recall.passage.first).map(|m| m.schedule).unwrap_or(recall.passage.schedule);
+    let due = schedule.preview(now);
     let labels: Vec<String> = Grade::ALL
         .iter()
         .zip(due)

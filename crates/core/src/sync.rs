@@ -412,6 +412,12 @@ pub struct MemoryReviewChange {
     /// both keep their log entries.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
+    /// Last verse of the passage this recall was of (0 in older files).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub last_verse: u8,
+    /// Translation the passage was learnt in when recalled (empty in older files).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub translation: String,
     #[serde(flatten)]
     pub stamp: Stamp,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -522,6 +528,10 @@ fn is_false(b: &bool) -> bool {
 }
 
 fn is_zero(n: &i64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u8(n: &u8) -> bool {
     *n == 0
 }
 
