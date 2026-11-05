@@ -210,6 +210,11 @@ const MONTHS: [&str; 12] = [
 impl State {
     /// Shows the list on the `active`, `browse` or `completed` tab (demo captures), closing any
     /// plan's day view, which hides the tabs.
+    pub fn open_new_plan(&mut self) {
+        self.confirm = None;
+        self.editor = Some(Editor::blank());
+    }
+
     pub fn set_tab(&mut self, name: &str) {
         self.open = None;
         self.editor = None;

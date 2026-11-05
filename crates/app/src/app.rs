@@ -1136,6 +1136,7 @@ impl BibleApp {
     /// One `BIBLE_RS_DEMO` step: `jump:<reference>`, `select:<reference>`, `palette:<query>`,
     /// `search:<query>`, `scope:<ot|nt>`, `step:<n>` (search results), `offline:<reference>`, `note:<reference>`, `compare:<reference>`, `study:<bookmarks|highlights|notes>`,
     /// `settings:<reading|translations|data>`, `plans-tab:<active|browse|completed|mine>`,
+    /// `plan-new`, `custom-plan:<title>|<source>` or `title|description|source` (saved, then My Plans),
     /// `size:<width>x<height>` (the window's inner size).
     fn demo_step(&mut self, ctx: &egui::Context, step: &str, actions: &mut Vec<Action>) {
         let (cmd, arg) = step.split_once(':').unwrap_or((step, ""));
@@ -1203,6 +1204,39 @@ impl BibleApp {
             }
             "pick" => self.pages.translations.selected = Some(arg.to_string()),
             "plans-tab" => self.pages.plans.set_tab(arg),
+            "plan-new" => self.pages.plans.open_new_plan(),
+            // `custom-plan:<title>|<source>` or `title|description|source`.
+            "custom-plan" => {
+                let parts: Vec<&str> = arg.split('|').collect();
+                let (title, description, source) = match parts.as_slice() {
+                    [title, source] => (*title, "", *source),
+                    [title, description, source, ..] => (*title, *description, *source),
+                    _ => ("", "", ""),
+                };
+                match bible_core::plans::parse_passages(source) {
+                    Ok(passages) => match bible_core::plans::schedule(
+                        &passages,
+                        bible_core::plans::Pace::ChaptersPerDay(1),
+                    ) {
+                        Ok(days) => {
+                            let plan = bible_core::plans::CustomPlan {
+                                id: String::new(),
+                                title: title.trim().into(),
+                                description: description.trim().into(),
+                                days,
+                                created: 0,
+                            };
+                            if let Err(e) = self.study.save_custom_plan(plan) {
+                                eprintln!("BIBLE_RS_DEMO custom-plan: {e:#}");
+                            } else {
+                                self.pages.plans.set_tab("mine");
+                            }
+                        }
+                        Err(e) => eprintln!("BIBLE_RS_DEMO custom-plan: {e}"),
+                    },
+                    Err(e) => eprintln!("BIBLE_RS_DEMO custom-plan: {e}"),
+                }
+            }
             // `plan-day:<plan>@<day>`: a plan's day view.
             "plan-day" => {
                 let (id, day) = arg.split_once('@').unwrap_or((arg, "1"));
