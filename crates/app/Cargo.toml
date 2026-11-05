@@ -19,8 +19,14 @@ bible-core = { workspace = true, default-features = true }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-eframe = { version = "0.36", default-features = false, features = [
+# 0.37 keeps the glow (OpenGL) path answering compositor pings when Hyprland
+# hides the window and stops sending Wayland frame callbacks, so the app no
+# longer shows "Application Not Responding" (emilk/egui#8631, issue #83).
+eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
+    # Copy/paste. eframe 0.37 made this optional; without it, egui-winit never
+    # opens arboard, and the Wayland data-control paste path from #64 is unused.
+    "clipboard",
     "default_fonts",
     "glow",
     "wgpu",
@@ -102,7 +108,7 @@ embed-resource = "3"
 
 [dev-dependencies]
 sha2 = "0.10"
-egui_kittest = { version = "0.36", features = ["eframe", "wgpu"] }
+egui_kittest = { version = "0.37", features = ["eframe", "wgpu"] }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]

@@ -50,7 +50,8 @@ fn selected(harness: &Harness<'_, Vec<Action>>, label: &str) -> bool {
 #[test]
 fn books_sit_in_the_menu_insets_with_the_current_one_selected() {
     let harness = open();
-    let area = harness.ctx.memory(|m| m.area_rect(egui::Id::new("book-picker"))).expect("the picker is open");
+    let area =
+        harness.ctx.memory(|m| m.area_rect(egui::Id::unique("book-picker"))).expect("the picker is open");
     let edge = area.shrink(Theme::Light.palette().shadows.popover.ring_width);
     let rect = |label: &str| harness.get_by_label(label).rect();
     let (genesis, exodus, leviticus, numbers) =
@@ -79,7 +80,8 @@ fn books_sit_in_the_menu_insets_with_the_current_one_selected() {
 fn the_books_fit_the_narrowest_window() {
     // The window's minimum width.
     let harness = open_in(egui::vec2(620.0, 700.0));
-    let area = harness.ctx.memory(|m| m.area_rect(egui::Id::new("book-picker"))).expect("the picker is open");
+    let area =
+        harness.ctx.memory(|m| m.area_rect(egui::Id::unique("book-picker"))).expect("the picker is open");
     assert!(area.left() >= 0.0 && area.right() <= 620.0, "the picker fits the window: {area:?}");
     let (genesis, exodus) = (harness.get_by_label("Genesis").rect(), harness.get_by_label("Exodus").rect());
     // The cells narrow but keep the text inset before each name and a gap after the longest.

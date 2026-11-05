@@ -31,7 +31,7 @@ fn in_the_app_the_picker_takes_single_keys_but_copying_still_works() {
     });
     harness.run_steps(4);
     harness.state_mut().reader.set_selection(Some(VerseRef::new(JOHN, 1, 1)));
-    egui::Popup::open_id(&harness.ctx, egui::Id::new("book-picker"));
+    egui::Popup::open_id(&harness.ctx, egui::Id::unique("book-picker"));
     harness.run_steps(2);
     assert!(book_picker::is_open(&harness.ctx));
     // Presses a chord in one frame and says whether that frame copied text.

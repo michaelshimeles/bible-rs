@@ -188,7 +188,7 @@ fn page(
     let mut x = cx - total / 2.0;
     for (c, label, w) in pills {
         let r = Rect::from_min_size(pos2(x, card.top() + 40.0), vec2(w, 28.0));
-        if widgets::pill_tab(ui, p, r, &label, None, None, false, ui.id().with(("offline-pill", c.0)))
+        if widgets::pill_tab(ui, p, r, &label, None, None, false, ui.scope_id().with(("offline-pill", c.0)))
             .clicked()
         {
             actions.push(Action::Jump { chapter: c, verse: None, flash: false });
