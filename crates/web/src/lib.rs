@@ -297,7 +297,7 @@ struct PlanInfo {
     custom: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct CustomPlanDraft {
     id: String,
@@ -305,12 +305,6 @@ struct CustomPlanDraft {
     description: String,
     /// Each day's typed references ("John 1 · Proverbs 3").
     days: Vec<String>,
-}
-
-impl Default for CustomPlanDraft {
-    fn default() -> Self {
-        Self { id: String::new(), title: String::new(), description: String::new(), days: Vec::new() }
-    }
 }
 
 #[derive(Serialize)]

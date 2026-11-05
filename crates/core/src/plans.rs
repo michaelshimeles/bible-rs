@@ -428,11 +428,8 @@ pub fn schedule(items: &[Passage], pace: Pace) -> Result<Vec<Vec<Passage>>, Stri
 /// "Proverbs 3, James 1:2–8", or a book name for every chapter of that book. Does not invent
 /// verse text — only the references.
 pub fn parse_passages(input: &str) -> Result<Vec<Passage>, String> {
-    let parts: Vec<&str> = input
-        .split(|c: char| c == ',' || c == ';' || c == '\n' || c == '·')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
+    let parts: Vec<&str> =
+        input.split([',', ';', '\n', '·']).map(str::trim).filter(|s| !s.is_empty()).collect();
     if parts.is_empty() {
         return Err("Add a book, chapter, or verse range".into());
     }
@@ -456,19 +453,19 @@ fn parse_one(token: &str) -> Result<Vec<Passage>, String> {
         }
         return Ok(chapters.into_iter().map(Passage::whole).collect());
     }
-    if !token.contains(':') && !token.contains('.') {
-        if let Some((book, start, end)) = chapter_span(token) {
-            if start < 1 || end < start {
-                return Err(format!("“{token}” is not a chapter range"));
-            }
-            let mut out = Vec::new();
-            for c in start..=end {
-                let ch =
-                    ChapterIdx::new(book, c).ok_or_else(|| format!("{} has no chapter {c}", book.name()))?;
-                out.push(Passage::whole(ch));
-            }
-            return Ok(out);
+    if !token.contains(':')
+        && !token.contains('.')
+        && let Some((book, start, end)) = chapter_span(token)
+    {
+        if start < 1 || end < start {
+            return Err(format!("“{token}” is not a chapter range"));
         }
+        let mut out = Vec::new();
+        for c in start..=end {
+            let ch = ChapterIdx::new(book, c).ok_or_else(|| format!("{} has no chapter {c}", book.name()))?;
+            out.push(Passage::whole(ch));
+        }
+        return Ok(out);
     }
     let r = reference::parse(token).ok_or_else(|| format!("Couldn't read “{token}” as a passage"))?;
     let verses = match (r.verse, r.verse_end) {
@@ -481,7 +478,7 @@ fn parse_one(token: &str) -> Result<Vec<Passage>, String> {
 
 /// "John 1-3" / "John 1–3" as chapters 1 through 3 of John (not John 1:3).
 fn chapter_span(token: &str) -> Option<(BookId, u8, u8)> {
-    let pos = token.rfind(|c: char| matches!(c, '-' | '–' | '—'))?;
+    let pos = token.rfind(['-', '–', '—'])?;
     let (left, right) = (token[..pos].trim(), token[pos + token[pos..].chars().next()?.len_utf8()..].trim());
     let end: u8 = right.parse().ok()?;
     let r = reference::parse(left)?;

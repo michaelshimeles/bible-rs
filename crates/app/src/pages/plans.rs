@@ -351,7 +351,7 @@ impl State {
                 }
             }
             Tab::Mine => {
-                y = self.mine_list(ui, p, left, right, y, &mine, &started, env, actions);
+                y = self.mine_list(ui, p, left, right, y, &mine, started, env, actions);
             }
             Tab::Browse => {
                 y = self.grid(ui, p, left, right, y, &browse, "Start", actions);
@@ -1078,6 +1078,7 @@ impl State {
         card.bottom()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn mine_list(
         &mut self,
         ui: &mut Ui,
