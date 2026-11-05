@@ -145,7 +145,8 @@ fn leaving_a_reading_plan() {
     assert_left(&h);
     assert!(h.state().pages.plans.open.is_none(), "the day view closes");
 
-    // A 620 pt window is as narrow as the app goes; leave must not paint over the day badge.
+    // A 620 pt window is as narrow as the app goes; leave must not paint over the day badge,
+    // and both confirmation buttons must stay on screen.
     let mut h = app(&root.join("narrow"), egui::vec2(620.0, 800.0), false);
     start_plan(&mut h);
     let badges = find_rects(&h, "Day 1 of 21");
@@ -157,4 +158,15 @@ fn leaving_a_reading_plan() {
             assert!(!badge.intersects(*leave), "leave {leave:?} covers the badge {badge:?}");
         }
     }
+    let at = one(&h, "Leave plan");
+    click(&mut h, at);
+    assert!(shown(&h, "This clears your reading ticks."));
+    for label in ["Cancel", "Leave plan"] {
+        let r = find_rects(&h, label);
+        assert_eq!(r.len(), 1, "{label} drawn at {r:?}");
+        assert!(r[0].right() <= 620.0 && r[0].left() >= 0.0, "{label} offscreen at {:?}", r[0]);
+    }
+    let at = one(&h, "Leave plan");
+    click(&mut h, at);
+    assert_left(&h);
 }

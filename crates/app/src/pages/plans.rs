@@ -547,7 +547,14 @@ impl State {
             let w = text(&painter, sx, cy - 8.0, 16.0, &mins, theme::ui_font(13.0), p.ink_2, false);
             sx += w + 16.0;
         }
-        let leave_used = self.leave_on_hero(ui, p, u.plan.id, sx, cy, actions);
+        // Reserve room for Cancel + Leave plan so a narrow card does not lose the confirm
+        // off the right edge (a 620 pt window leaves little after Continue, streak and time).
+        let needed = Button::new(Kind::Plain, "Cancel").small().width(&painter)
+            + 8.0
+            + Button::new(Kind::Destructive, "Leave plan").small().width(&painter);
+        let row_right = card.right() - 28.0 - calendar_w - 12.0;
+        let (leave_x, leave_cy) = if sx + needed <= row_right { (sx, cy) } else { (x, cy + 36.0) };
+        let leave_used = self.leave_on_hero(ui, p, u.plan.id, leave_x, leave_cy, actions);
 
         // The calendar: this month of the plan as dots.
         let cal = Rect::from_min_size(

@@ -247,7 +247,8 @@
 		display: flex;
 		align-items: center;
 		gap: 32px;
-		height: 232px;
+		min-height: 232px;
+		height: auto;
 		margin-bottom: 20px;
 		padding: 28px;
 		border-radius: 20px;
