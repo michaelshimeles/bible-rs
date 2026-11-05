@@ -56,6 +56,8 @@ pub struct SettingsUi {
     recording: Option<&'static str>,
     /// Data: Erase… was pressed and waits for the second click.
     confirm_erase: bool,
+    /// Data: the study library folder and how its sync stands (set by the app each frame).
+    pub sync: crate::study_sync::SyncView,
 }
 
 impl SettingsUi {
@@ -73,6 +75,7 @@ impl SettingsUi {
             shortcut_filter: String::new(),
             recording: None,
             confirm_erase: false,
+            sync: Default::default(),
         }
     }
 
@@ -323,6 +326,8 @@ impl SettingsUi {
         });
         ui.add_space(24.0);
 
+        self.study_library(ui, p, study, actions);
+
         group_title(ui, p, "Export");
         rows_card(ui, p, &[56.0, 56.0, 44.0], |ui, i, r| {
             let right = r.right() - 16.0;
@@ -487,6 +492,139 @@ impl SettingsUi {
                 }
             }
         });
+    }
+
+    /// Data → Study Library (beta): the folder the study syncs with, how that stands, and the
+    /// copies kept of notes edited on two devices.
+    fn study_library(&self, ui: &mut Ui, p: &Palette, study: &StudyStore, actions: &mut Vec<Action>) {
+        group_title(ui, p, "Study Library (beta)");
+        let view = &self.sync;
+        match &view.folder {
+            None => rows_card(ui, p, &[56.0], |ui, _, r| {
+                row_label(
+                    ui,
+                    p,
+                    r,
+                    "Sync with a folder",
+                    Some(
+                        "Keep your study in iCloud Drive, Dropbox or Syncthing to use it on your other devices.",
+                    ),
+                );
+                let (_, resp) = Button::new(Kind::Secondary, "Choose Folder…")
+                    .small()
+                    .icon(icons::tray)
+                    .show_right(ui, p, r.right() - 16.0, r.center().y, ui.id().with("library-choose"));
+                if resp.clicked() {
+                    actions.push(Action::ChooseStudyLibrary);
+                }
+            }),
+            Some(folder) => rows_card(ui, p, &[44.0, 56.0], |ui, i, r| {
+                let right = r.right() - 16.0;
+                let cy = r.center().y;
+                if i == 0 {
+                    row_label(ui, p, r, "Location", None);
+                    let (stop, resp) = Button::new(Kind::Plain, "Stop Syncing").small().show_right(
+                        ui,
+                        p,
+                        right,
+                        cy,
+                        ui.id().with("library-stop"),
+                    );
+                    if resp.clicked() {
+                        actions.push(Action::StopStudyLibrary);
+                    }
+                    let (change, resp) = Button::new(Kind::Secondary, "Change…").small().show_right(
+                        ui,
+                        p,
+                        stop.left() - 8.0,
+                        cy,
+                        ui.id().with("library-change"),
+                    );
+                    if resp.clicked() {
+                        actions.push(Action::ChooseStudyLibrary);
+                    }
+                    let painter = ui.painter();
+                    let path = crate::pages::elide(
+                        painter,
+                        &tilde(folder),
+                        &FontId::monospace(12.0),
+                        change.left() - 10.0 - (r.left() + 120.0),
+                    );
+                    painter.text(
+                        pos2(change.left() - 10.0, cy),
+                        Align2::RIGHT_CENTER,
+                        path,
+                        FontId::monospace(12.0),
+                        p.ink_2,
+                    );
+                } else {
+                    row_label(ui, p, r, &view.label, view.detail.as_deref());
+                    let label = if view.syncing { "Syncing…" } else { "Sync Now" };
+                    let (_, resp) = Button::new(Kind::Secondary, label).small().show_right(
+                        ui,
+                        p,
+                        right,
+                        cy,
+                        ui.id().with("library-sync"),
+                    );
+                    if resp.clicked() && !view.syncing {
+                        actions.push(Action::SyncStudyLibrary);
+                    }
+                }
+            }),
+        }
+        ui.add_space(24.0);
+
+        let copies = study.note_conflicts();
+        if copies.is_empty() {
+            return;
+        }
+        group_title(ui, p, "Conflict copies");
+        let rows = vec![56.0; copies.len()];
+        rows_card(ui, p, &rows, |ui, i, r| {
+            let (v, copy) = &copies[i];
+            let right = r.right() - 16.0;
+            let cy = r.center().y;
+            let (dismiss, resp) = Button::new(Kind::Plain, "Dismiss").small().show_right(
+                ui,
+                p,
+                right,
+                cy,
+                ui.id().with(("conflict-dismiss", i)),
+            );
+            if resp.clicked() {
+                actions.push(Action::DismissConflict(*v, copy.stamp.clone()));
+            }
+            let (keep, resp) = Button::new(Kind::Secondary, "Use This").small().show_right(
+                ui,
+                p,
+                dismiss.left() - 8.0,
+                cy,
+                ui.id().with(("conflict-use", i)),
+            );
+            if resp.clicked() {
+                actions.push(Action::UseConflict(*v, copy.stamp.clone()));
+            }
+            let painter = ui.painter();
+            let x = r.left() + 16.0;
+            let width = keep.left() - 16.0 - x;
+            let current = study.note(*v).map_or("deleted", |n| n.body.as_str());
+            let title = crate::pages::elide(
+                painter,
+                &format!("{v} · now “{}”", first_line(current)),
+                &text::UI.font(),
+                width,
+            );
+            painter.text(pos2(x, cy - 8.0), Align2::LEFT_CENTER, title, text::UI.font(), p.ink);
+            let body = crate::pages::elide(
+                painter,
+                &format!("Other version: “{}”", first_line(&copy.body)),
+                &text::SMALL.font(),
+                width,
+            );
+            painter.text(pos2(x, cy + 10.0), Align2::LEFT_CENTER, body, text::SMALL.font(), p.ink_3);
+        });
+        ui.add_space(24.0);
     }
 
     /// Puts a shortcut row into recording (demo steps).
@@ -1241,6 +1379,18 @@ impl SettingsUi {
 }
 
 /// A group: a 13 pt semibold title, then its content 8 pt below; groups are 24 pt apart.
+/// A path with the home folder as `~`.
+fn tilde(path: &std::path::Path) -> String {
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
+    let path = path.to_string_lossy().into_owned();
+    if !home.is_empty() && path.starts_with(&home) { format!("~{}", &path[home.len()..]) } else { path }
+}
+
+/// A note's first line, for a one-line row.
+fn first_line(body: &str) -> &str {
+    body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("")
+}
+
 fn group_title(ui: &mut Ui, p: &Palette, title: &str) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
     ui.painter().text(r.left_center(), Align2::LEFT_CENTER, title, text::UI_STRONG.font(), p.ink);

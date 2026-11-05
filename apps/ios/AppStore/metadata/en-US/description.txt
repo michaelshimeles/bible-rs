@@ -1,0 +1,25 @@
+Bible is the Bible and nothing else, typeset to be read. It opens where you left off and finds any word in the whole Bible as you type.
+
+READ
+• Set in Literata, a serif made for long reading, with poetry in its lines and the words of Jesus in red.
+• Scroll from Genesis to Revelation without page breaks or waiting.
+• Jump anywhere by typing a reference such as "jn 3:16" or "ps 23", or pick a book and chapter.
+• Light, sepia and dark themes. The text follows your device's text size, and you can make it larger or smaller.
+
+SEARCH
+• Results appear as you type, with the matching words highlighted.
+• Search the whole Bible, the Old or New Testament, or the book you're reading.
+• Misspell a word and Bible suggests the one you meant.
+
+STUDY
+• Highlight verses in six colours, add notes and bookmarks, and find them all in Study.
+• Copy or share a verse with its reference.
+• Export your notes and highlights as Markdown or JSON.
+
+SEVEN TRANSLATIONS, BUILT IN
+King James Version, World English Bible, Berean Standard Bible, American Standard Version, Young's Literal Translation, Darby and Webster. All are in the public domain and work offline.
+
+PRIVATE
+No account, no ads, no analytics and no tracking. Bible never goes online, and your notes stay on your device.
+
+Bible is also on the Mac: simplymybible.com

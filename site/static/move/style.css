@@ -1,0 +1,50 @@
+/* The move pages (move.js): a line of text while they work, more only when something needs the reader. */
+:root {
+	color-scheme: light dark;
+	font: 16px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+	background: #fff;
+	color: #1d1d1f;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		background: #161618;
+		color: #f5f5f7;
+	}
+}
+body {
+	max-width: 32rem;
+	margin: 18vh auto 0;
+	padding: 0 1.5rem;
+}
+h1 {
+	font-size: 1.25rem;
+	font-weight: 600;
+	margin: 0 0 0.5rem;
+}
+p {
+	margin: 0 0 1rem;
+	opacity: 0.85;
+}
+a,
+button {
+	color: inherit;
+	font: inherit;
+}
+button {
+	padding: 0.45rem 1rem;
+	border-radius: 0.5rem;
+	border: 1px solid currentColor;
+	background: none;
+	cursor: pointer;
+	margin: 0 0.5rem 0.5rem 0;
+}
+section {
+	display: none;
+}
+body:not([data-state]) [data-for='working'],
+body[data-state='working'] [data-for='working'],
+body[data-state='keep'] [data-for='keep'],
+body[data-state='ask'] [data-for='ask'],
+body[data-state='error'] [data-for='error'] {
+	display: block;
+}

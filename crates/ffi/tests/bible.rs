@@ -52,9 +52,9 @@ fn translations_list_the_bundled_texts() {
     let list = bible.translations();
     let ids: Vec<&str> = list.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, ["kjv", "web", "bsb", "asv", "ylt", "dby", "wbs"]);
-    assert!(
-        list.iter().all(|t| t.origin == TranslationOrigin::Bundled && t.license.starts_with("Public Domain"))
-    );
+    assert!(list
+        .iter()
+        .all(|t| t.origin == TranslationOrigin::Bundled && t.license.starts_with("Public Domain")));
     assert_eq!((list[0].abbrev.as_str(), list[0].year), ("KJV", Some(1769)));
     assert!(list[0].red_letters && list[2].headings);
     bible.prepare("kjv".into()).unwrap();
@@ -74,9 +74,9 @@ fn prose_has_inline_numbers_and_red_letters() {
     assert_eq!(first.space_before, 16.0);
     assert_eq!(first.runs[0], Run { text: "1\u{a0}".into(), verse: 1, number: true, ..plain() });
     // Later paragraphs are indented and 16 pt apart.
-    assert!(
-        c.blocks[1..].iter().all(|b| b.kind == BlockKind::Prose { indent: true } && b.space_before == 16.0)
-    );
+    assert!(c.blocks[1..]
+        .iter()
+        .all(|b| b.kind == BlockKind::Prose { indent: true } && b.space_before == 16.0));
     let v16: Vec<&Run> = c.blocks.iter().flat_map(|b| &b.runs).filter(|r| r.verse == 16).collect();
     assert_eq!(v16[0].text, "16\u{a0}");
     assert!(v16[1].red && v16[1].text.starts_with("For God so loved the world"));
@@ -366,4 +366,69 @@ fn memorising_and_recall_plans() {
     assert!(plan.verses[0].first_letters[at as usize]);
     assert_eq!(plan.end, plan.phrases[1].stop);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+
+fn a_study_library_folder_carries_notes_between_devices() {
+    let (phone, a) = open("library-phone");
+    let (mac, b) = open("library-mac");
+    let folder = std::env::temp_dir().join(format!("bible-ffi-library-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder).unwrap();
+    let path: String = folder.to_string_lossy().into();
+
+    phone.set_note(JOHN_3_16, "For God so loved".into()).unwrap();
+    assert_eq!(phone.study_library_status(path.clone()).label, "1 waiting");
+    let r = phone.sync_study_library(path.clone()).unwrap();
+    assert_eq!((r.read, r.written), (0, 1));
+    let r = mac.sync_study_library(path.clone()).unwrap();
+    assert_eq!((r.read, r.changed, r.conflicts), (1, 1, 0));
+    assert_eq!(mac.note(JOHN_3_16).unwrap().as_deref(), Some("For God so loved"));
+    let s = mac.study_library_status(path.clone());
+    assert_eq!((s.label.as_str(), s.devices), ("Synced", 1));
+
+    let gone: String = folder.join("not-there").to_string_lossy().into();
+    assert!(mac.study_library_status(gone.clone()).offline);
+    assert!(mac.sync_study_library(gone).is_err());
+    for d in [a, b, folder] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[test]
+fn a_study_library_folder_carries_memorised_passages_between_devices() {
+    let (phone, a) = open("library-phone-memory");
+    let (mac, b) = open("library-mac-memory");
+    let folder = std::env::temp_dir().join(format!("bible-ffi-library-memory-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder).unwrap();
+    let path: String = folder.to_string_lossy().into();
+
+    let v17 = VerseRef { verse: 17, ..JOHN_3_16 };
+    phone.memorise(JOHN_3_16, v17, "kjv".into()).unwrap();
+    let r = phone.sync_study_library(path.clone()).unwrap();
+    assert_eq!((r.read, r.written), (0, 1));
+    let r = mac.sync_study_library(path.clone()).unwrap();
+    assert_eq!((r.read, r.changed, r.conflicts), (1, 1, 0));
+    let m = mac.memorised_at(JOHN_3_16).unwrap();
+    assert_eq!((m.reference.as_str(), m.translation.as_str()), ("John 3:16–17", "kjv"));
+
+    phone.review(JOHN_3_16, RecallGrade::Good).unwrap();
+    let r = phone.sync_study_library(path.clone()).unwrap();
+    assert_eq!((r.read, r.written), (0, 2));
+    let r = mac.sync_study_library(path.clone()).unwrap();
+    assert_eq!((r.read, r.changed), (1, 2));
+    assert!(mac.due_passages(bible_core::study::now()).is_empty());
+    assert_eq!(mac.memorised_passages().len(), 1);
+
+    phone.forget(JOHN_3_16).unwrap();
+    let r = phone.sync_study_library(path.clone()).unwrap();
+    assert_eq!((r.read, r.written), (0, 2));
+    mac.sync_study_library(path.clone()).unwrap();
+    assert!(mac.memorised_at(JOHN_3_16).is_none());
+
+    for d in [a, b, folder] {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

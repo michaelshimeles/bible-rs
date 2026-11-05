@@ -216,6 +216,11 @@ verses, like a highlight, rather than a separate flashcard app inside this one.
   passage and its schedule, and `memory_reviews` logs every recall (when, and its grade), only ever
   added to. The log can rebuild any schedule, so a new scheduler, or weights fitted to a reader's
   own recalls, needs no lossy migration. Backups (and exports that include history) carry both.
+- **Sync** uses the same stamps and tombstones as highlights, notes, bookmarks and plans, so a
+  passage memorised or recalled on one device reaches the others through a Study Library folder.
+  The recall log is the source of the schedule after a merge: if two devices review the same
+  passage before they sync, both reviews are kept and the schedule is rebuilt from them in order.
+  Importing a backup still replaces overlapping passages, as memorising one does.
 - **Known gap:** Literata joins some letter pairs into one glyph ("Th", "fi"), so such a pair is
   revealed together, and a first-letter hint shows both letters.
 - **On the Mac** a recall happens in the reader: the chapter is typeset as for reading and never
