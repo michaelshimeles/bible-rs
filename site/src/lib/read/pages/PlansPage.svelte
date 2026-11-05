@@ -8,7 +8,22 @@
 	import { Badge, Button, EmptyState, Icon, PillTab } from '../ui';
 	import PageHead from './PageHead.svelte';
 	import PlanDay from './PlanDay.svelte';
-	import { DAY, ICONS, MONTHS, Under, minutes, openPassage, passageSize, plan, plans, plansPage } from './plans.svelte';
+	import {
+		DAY,
+		ICONS,
+		LEAVE_BODY_SHORT,
+		MONTHS,
+		Under,
+		cancelLeave,
+		confirmLeave,
+		minutes,
+		openPassage,
+		passageSize,
+		plan,
+		plans,
+		plansPage,
+		requestLeave
+	} from './plans.svelte';
 
 	const app = getApp();
 
@@ -120,12 +135,31 @@
 				onclick={() => (plansPage.open = { id: u.info.id, day: current })}
 			>
 				<div class="hero-main">
-					<Badge kind="accent" label={u.today > len ? 'Last day passed' : `Day ${day} of ${len}`} />
+					<div class="hero-top">
+						<Badge kind="accent" label={u.today > len ? 'Last day passed' : `Day ${day} of ${len}`} />
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div class="leave-hero" onclick={(e) => e.stopPropagation()}>
+							{#if plansPage.leaving === u.info.id}
+								<Button
+									kind="destructive"
+									size="sm"
+									label="Leave plan"
+									onclick={() => confirmLeave(app, u.info.id)}
+								/>
+								<Button kind="plain" size="sm" label="Cancel" onclick={cancelLeave} />
+							{:else}
+								<Button size="sm" label="Leave plan" onclick={() => requestLeave(u.info.id)} />
+							{/if}
+						</div>
+					</div>
 					<h2 class="hero-title">{u.info.title}</h2>
 					<p class="hero-description">
 						{u.info.description} Started {s.getDate()}
 						{MONTHS[s.getMonth()]}.
 					</p>
+					{#if plansPage.leaving === u.info.id}
+						<p class="leave-note">{LEAVE_BODY_SHORT}</p>
+					{/if}
 					<div class="hero-progress">
 						<span class="track"><span class="fill" style:width="{(320 * doneDays) / len}px"></span></span>
 						<span>{doneDays} of {len} days</span>
@@ -227,6 +261,27 @@
 		flex: 1;
 		align-self: flex-start;
 		min-width: 0;
+	}
+
+	.hero-top {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
+	.leave-hero {
+		display: flex;
+		flex: none;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 8px;
+	}
+
+	.leave-note {
+		margin-top: 6px;
+		color: var(--ink-2);
+		font: 400 12px/16px var(--font-ui);
 	}
 
 	.hero-title {
