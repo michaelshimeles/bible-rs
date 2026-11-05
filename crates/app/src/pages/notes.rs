@@ -11,7 +11,7 @@ use eframe::egui::{self, Align, Color32, FontId, Rect, Sense, Stroke, Ui, pos2, 
 
 use bible_core::VerseRef;
 
-use super::{Empty, Page, PageEnv, Tone, text};
+use super::{Empty, Page, PageEnv, Tone, note_save_failed, text};
 use crate::actions::Action;
 use crate::icons;
 use crate::sidebar::{ListItem, list_item};
@@ -179,12 +179,14 @@ impl State {
         // the save keeps the other version as a conflict copy (see `Action::SaveNote`).
         if let Some(e) = &mut self.editor {
             let body = env.study.note(e.verse).map(|n| n.body.clone()).unwrap_or_default();
-            // The save didn't land (the note isn't the text sent): keep the draft unsaved, so a
-            // later save keeps whatever is stored now as a conflict copy.
-            if let Some(base) = e.sent.take()
-                && body != e.saved
-            {
-                e.saved = base;
+            // A failed save keeps the draft unsaved, so a later save keeps whatever is stored
+            // now as a conflict copy. Success is the write's own result: a later remote edit
+            // must not look like a failed save and restore the old base.
+            if let Some(base) = e.sent.take() {
+                let reported = env.note_saves.get(&e.verse).and_then(|r| (r.body == e.saved).then_some(r.ok));
+                if note_save_failed(&body, &e.saved, &base, reported) {
+                    e.saved = base;
+                }
             }
             if body != e.saved && e.changed.is_none() && to_markdown(&e.text) == e.saved {
                 *e = Editor::new(e.verse, &body);

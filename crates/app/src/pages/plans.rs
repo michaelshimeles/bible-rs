@@ -9,7 +9,7 @@ use bible_core::plans::{self, Passage, Plan, PlanIcon};
 use bible_core::study::PlanProgress;
 use bible_core::{ChapterIdx, Translation, VerseRef};
 
-use super::{PageEnv, group_label, text};
+use super::{PageEnv, group_label, note_save_failed, text};
 use crate::actions::Action;
 use crate::icons;
 use crate::theme::{self, Palette};
@@ -874,13 +874,16 @@ impl State {
     ) -> f32 {
         let painter = ui.painter().clone();
         let saved = env.study.note(v).map(|n| n.body.clone()).unwrap_or_default();
-        // The save didn't land (the note isn't the text sent): keep the draft unsaved.
-        if let Some((sent, body)) = self.reflection_sent.take()
+        // A failed save keeps the draft unsaved. Success is the write's own result, so a
+        // remote edit that arrives after a successful save is not treated as a failure.
+        if let Some((sent, sent_body)) = self.reflection_sent.take()
             && let Some((rv, base, _)) = &mut self.reflection
             && *rv == v
-            && saved != body
         {
-            *base = sent;
+            let reported = env.note_saves.get(&v).and_then(|r| (r.body == sent_body).then_some(r.ok));
+            if note_save_failed(&saved, &sent_body, &sent, reported) {
+                *base = sent;
+            }
         }
         // New, or a sync changed the note under a draft with nothing typed: start from the note.
         if self

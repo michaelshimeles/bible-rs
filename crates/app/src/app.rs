@@ -1,5 +1,6 @@
 //! Application state and the per-frame UI orchestration.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -346,6 +347,8 @@ pub struct BibleApp {
     backup_checked: Option<f64>,
     /// Syncing with the study library folder, when one is set.
     study_sync: crate::study_sync::StudySync,
+    /// The last note save for each verse, so open editors can tell success from a later remote edit.
+    note_saves: HashMap<VerseRef, crate::pages::NoteSaveResult>,
     /// The day the plan reminder last showed.
     reminded: Option<i64>,
     /// The page in the main area (the reader unless a library or study page is open).
@@ -480,6 +483,7 @@ impl BibleApp {
             focus_reveal: false,
             backup_checked: None,
             study_sync: Default::default(),
+            note_saves: HashMap::new(),
             pages: Default::default(),
             object_view: Default::default(),
             object_rect: None,
@@ -1016,15 +1020,24 @@ impl BibleApp {
                 Err(e) => self.toast(ctx, format!("{e:#}")),
             },
             Action::OpenPage(page) => self.pages.open(page),
-            Action::SaveNote(v, body, base) => match self.study.set_note_over(v, &body, &base) {
-                Ok(true) => self.toast(
-                    ctx,
-                    "This note was also edited on another device. Both versions are kept in Settings › Data."
-                        .to_string(),
-                ),
-                Ok(false) => {}
-                Err(e) => self.toast(ctx, format!("Couldn't save note: {e:#}")),
-            },
+            Action::SaveNote(v, body, base) => {
+                let ok = match self.study.set_note_over(v, &body, &base) {
+                    Ok(true) => {
+                        self.toast(
+                            ctx,
+                            "This note was also edited on another device. Both versions are kept in Settings › Data."
+                                .to_string(),
+                        );
+                        true
+                    }
+                    Ok(false) => true,
+                    Err(e) => {
+                        self.toast(ctx, format!("Couldn't save note: {e:#}"));
+                        false
+                    }
+                };
+                self.note_saves.insert(v, crate::pages::NoteSaveResult { body, ok });
+            }
             Action::StartPlan(id) => {
                 let today = crate::time::day_start(bible_core::study::now());
                 if let Err(e) = self.study.start_plan(&id, today) {
@@ -2657,6 +2670,7 @@ impl eframe::App for BibleApp {
                     settings: &self.settings,
                     query: &query,
                     toolbar: self.chrome.height,
+                    note_saves: &self.note_saves,
                 };
                 self.pages.show(ui, full, &env, &mut actions);
                 if self.pages.page == crate::pages::Page::Ark {
