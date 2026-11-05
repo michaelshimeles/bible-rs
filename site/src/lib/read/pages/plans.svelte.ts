@@ -24,10 +24,37 @@ export const MONTHS = [
 ];
 
 /** Kept across visits to the page, as the Mac keeps it. */
-export const plansPage = $state<{ tab: 'active' | 'browse' | 'completed'; open: { id: string; day: number } | null }>({
+export const plansPage = $state<{
+	tab: 'active' | 'browse' | 'completed';
+	open: { id: string; day: number } | null;
+	/** Plan waiting for leave confirmation (`null`: none). */
+	leaving: string | null;
+}>({
 	tab: 'active',
-	open: null
+	open: null,
+	leaving: null
 });
+
+/** What leaving does: `stopPlan` drops the plan and its ticks; starting again begins from day 1. */
+export const LEAVE_TITLE = 'Leave this plan?';
+export const LEAVE_BODY =
+	'Leaving removes this plan from Active and clears its reading ticks. You can start it again from the beginning.';
+export const LEAVE_BODY_SHORT = 'This clears your reading ticks.';
+export const LEAVE_HINT = 'Clears its reading ticks.';
+
+export function requestLeave(id: string) {
+	plansPage.leaving = id;
+}
+
+export function cancelLeave() {
+	plansPage.leaving = null;
+}
+
+export function confirmLeave(app: ReadApp, id: string) {
+	app.dispatch({ type: 'stopPlan', id });
+	if (plansPage.open?.id === id) plansPage.open = null;
+	plansPage.leaving = null;
+}
 
 let catalogue: PlanInfo[] | null = null;
 const days = new Map<string, PlanDay[]>();

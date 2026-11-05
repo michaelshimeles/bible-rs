@@ -21,6 +21,12 @@ const CARD_W: f32 = 300.0;
 /// Reading speed for time estimates, in words a minute.
 const WPM: usize = 230;
 
+/// What leaving does: `stop_plan` drops the plan and its ticks; starting again begins from day 1.
+const LEAVE_TITLE: &str = "Leave this plan?";
+const LEAVE_BODY: &str = "Leaving removes this plan from Active and clears its reading ticks. You can start it again from the beginning.";
+const LEAVE_BODY_SHORT: &str = "This clears your reading ticks.";
+const LEAVE_HINT: &str = "Clears its reading ticks.";
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
     #[default]
@@ -39,6 +45,8 @@ pub struct State {
     /// The text the last reflection save was sent over, until the next frame shows whether it
     /// landed.
     reflection_sent: Option<(String, String)>,
+    /// Plan the user asked to leave, waiting for a confirm (`None`: none).
+    leaving: Option<String>,
 }
 
 /// A plan with its progress, as of today.
@@ -314,6 +322,140 @@ impl State {
         y
     }
 
+    fn is_leaving(&self, id: &str) -> bool {
+        self.leaving.as_deref() == Some(id)
+    }
+
+    fn request_leave(&mut self, id: &str) {
+        self.leaving = Some(id.to_string());
+    }
+
+    fn cancel_leave(&mut self) {
+        self.leaving = None;
+    }
+
+    fn confirm_leave(&mut self, id: &str, actions: &mut Vec<Action>) {
+        actions.push(Action::StopPlan(id.to_string()));
+        if self.open.as_ref().is_some_and(|(open_id, _)| open_id == id) {
+            self.open = None;
+        }
+        self.leaving = None;
+    }
+
+    /// Leave control on an Active card, on the Continue row so it never covers the day badge.
+    fn leave_on_hero(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        plan_id: &str,
+        left: f32,
+        cy: f32,
+        actions: &mut Vec<Action>,
+    ) -> bool {
+        if self.is_leaving(plan_id) {
+            let (cancel_b, cancel) = Button::new(Kind::Plain, "Cancel").small().show_left(
+                ui,
+                p,
+                left,
+                cy,
+                ui.id().with(("leave-cancel", plan_id)),
+            );
+            let (_, leave) = Button::new(Kind::Destructive, "Leave plan").small().show_left(
+                ui,
+                p,
+                cancel_b.right() + 8.0,
+                cy,
+                ui.id().with(("leave-confirm", plan_id)),
+            );
+            if leave.clicked() {
+                self.confirm_leave(plan_id, actions);
+                return true;
+            }
+            if cancel.clicked() {
+                self.cancel_leave();
+                return true;
+            }
+            false
+        } else {
+            let (_, resp) = Button::new(Kind::Secondary, "Leave plan").small().show_left(
+                ui,
+                p,
+                left,
+                cy,
+                ui.id().with(("leave-plan", plan_id)),
+            );
+            if resp.clicked() {
+                self.request_leave(plan_id);
+                return true;
+            }
+            false
+        }
+    }
+
+    /// Leave control on a plan's day: "Leave…", then a confirm that explains the ticks go too.
+    #[allow(clippy::too_many_arguments)]
+    fn leave_on_page(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        left: f32,
+        top: f32,
+        width: f32,
+        plan_id: &str,
+        actions: &mut Vec<Action>,
+    ) -> f32 {
+        let painter = ui.painter().clone();
+        let confirming = self.is_leaving(plan_id);
+        let inner = width - 32.0;
+        let body = if confirming { LEAVE_BODY } else { LEAVE_HINT };
+        let mut job = egui::text::LayoutJob::simple(body.into(), theme::ui_font(12.0), p.ink_3, inner);
+        job.sections[0].format.line_height = Some(16.0);
+        let galley = painter.layout_job(job);
+        let h = if confirming { 12.0 + 20.0 + 4.0 + galley.size().y + 12.0 + 24.0 + 12.0 } else { 60.0 };
+        let card = Rect::from_min_size(pos2(left, top), vec2(width, h));
+        painter.rect_filled(card, 12.0, p.surface);
+        painter.rect_stroke(card, 12.0, Stroke::new(0.5, p.border), StrokeKind::Outside);
+        if confirming {
+            text(&painter, left + 16.0, top + 12.0, 20.0, LEAVE_TITLE, theme::ui_medium(13.0), p.ink, false);
+            painter.galley(pos2(left + 16.0, top + 36.0), galley, p.ink_3);
+            let cy = card.bottom() - 24.0;
+            let (leave_b, leave) = Button::new(Kind::Destructive, "Leave plan").small().show_right(
+                ui,
+                p,
+                card.right() - 16.0,
+                cy,
+                ui.id().with(("leave-confirm", plan_id)),
+            );
+            let (_, cancel) = Button::new(Kind::Plain, "Cancel").small().show_right(
+                ui,
+                p,
+                leave_b.left() - 8.0,
+                cy,
+                ui.id().with(("leave-cancel", plan_id)),
+            );
+            if leave.clicked() {
+                self.confirm_leave(plan_id, actions);
+            }
+            if cancel.clicked() {
+                self.cancel_leave();
+            }
+        } else {
+            text(&painter, left + 16.0, top + 12.0, 20.0, "Leave plan", theme::ui_medium(13.0), p.ink, false);
+            text(&painter, left + 16.0, top + 32.0, 16.0, LEAVE_HINT, theme::ui_font(12.0), p.ink_3, false);
+            let (_, resp) = Button::new(Kind::Secondary, "Leave…").small().show_right(
+                ui,
+                p,
+                card.right() - 16.0,
+                card.center().y,
+                ui.id().with(("leave-plan", plan_id)),
+            );
+            if resp.clicked() {
+                self.request_leave(plan_id);
+            }
+        }
+        card.bottom()
+    }
+
     /// The plan under way: its day, progress, what to read and a calendar.
     #[allow(clippy::too_many_arguments)]
     fn hero(
@@ -350,6 +492,9 @@ impl State {
         let text_w = card.width() - 56.0 - 32.0 - calendar_w;
         let desc = super::elide(&painter, &desc, &theme::ui_font(13.0), text_w);
         text(&painter, x, y + 68.0, 20.0, &desc, theme::ui_font(13.0), p.ink_2, false);
+        if self.is_leaving(u.plan.id) {
+            text(&painter, x, y + 88.0, 16.0, LEAVE_BODY_SHORT, theme::ui_font(12.0), p.ink_2, false);
+        }
         let done = u.done_days();
         let track = Rect::from_min_size(pos2(x, y + 107.0), vec2(320.0, 6.0));
         painter.rect_filled(track, 3.0, p.fill_strong);
@@ -408,8 +553,17 @@ impl State {
         let words: usize = u.plan.day(day.max(1)).iter().map(|ps| passage_size(ps, t).1).sum();
         if words > 0 {
             let mins = format!("~{} min today", minutes(words));
-            text(&painter, sx, cy - 8.0, 16.0, &mins, theme::ui_font(13.0), p.ink_2, false);
+            let w = text(&painter, sx, cy - 8.0, 16.0, &mins, theme::ui_font(13.0), p.ink_2, false);
+            sx += w + 16.0;
         }
+        // Reserve room for Cancel + Leave plan so a narrow card does not lose the confirm
+        // off the right edge (a 620 pt window leaves little after Continue, streak and time).
+        let needed = Button::new(Kind::Plain, "Cancel").small().width(&painter)
+            + 8.0
+            + Button::new(Kind::Destructive, "Leave plan").small().width(&painter);
+        let row_right = card.right() - 28.0 - calendar_w - 12.0;
+        let (leave_x, leave_cy) = if sx + needed <= row_right { (sx, cy) } else { (x, cy + 36.0) };
+        let leave_used = self.leave_on_hero(ui, p, u.plan.id, leave_x, leave_cy, actions);
 
         // The calendar: this month of the plan as dots.
         let cal = Rect::from_min_size(
@@ -458,7 +612,7 @@ impl State {
             let w = text(&painter, lx + 12.0, ly, 16.0, label, theme::ui_medium(11.0), p.ink_3, false);
             lx += 12.0 + w + 12.0;
         }
-        if resp.clicked() {
+        if resp.clicked() && !leave_used {
             self.open = Some((u.plan.id.to_string(), current));
         }
         card.bottom()
@@ -868,7 +1022,9 @@ impl State {
         {
             actions.push(Action::SetPlanReminder(on));
         }
-        bottom.max(reminder.bottom())
+        let leave_bottom =
+            self.leave_on_page(ui, p, sx, reminder.bottom() + 16.0, side_w, u.plan.id, actions);
+        bottom.max(leave_bottom)
     }
 
     /// The reflection card: the verse quoted, and a note on it.
