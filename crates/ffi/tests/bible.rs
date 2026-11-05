@@ -52,9 +52,9 @@ fn translations_list_the_bundled_texts() {
     let list = bible.translations();
     let ids: Vec<&str> = list.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, ["kjv", "web", "bsb", "asv", "ylt", "dby", "wbs"]);
-    assert!(list
-        .iter()
-        .all(|t| t.origin == TranslationOrigin::Bundled && t.license.starts_with("Public Domain")));
+    assert!(
+        list.iter().all(|t| t.origin == TranslationOrigin::Bundled && t.license.starts_with("Public Domain"))
+    );
     assert_eq!((list[0].abbrev.as_str(), list[0].year), ("KJV", Some(1769)));
     assert!(list[0].red_letters && list[2].headings);
     bible.prepare("kjv".into()).unwrap();
@@ -74,9 +74,9 @@ fn prose_has_inline_numbers_and_red_letters() {
     assert_eq!(first.space_before, 16.0);
     assert_eq!(first.runs[0], Run { text: "1\u{a0}".into(), verse: 1, number: true, ..plain() });
     // Later paragraphs are indented and 16 pt apart.
-    assert!(c.blocks[1..]
-        .iter()
-        .all(|b| b.kind == BlockKind::Prose { indent: true } && b.space_before == 16.0));
+    assert!(
+        c.blocks[1..].iter().all(|b| b.kind == BlockKind::Prose { indent: true } && b.space_before == 16.0)
+    );
     let v16: Vec<&Run> = c.blocks.iter().flat_map(|b| &b.runs).filter(|r| r.verse == 16).collect();
     assert_eq!(v16[0].text, "16\u{a0}");
     assert!(v16[1].red && v16[1].text.starts_with("For God so loved the world"));

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use std::time::Instant;
 
-use bible_core::books::{Testament, BIBLE_SECTIONS, BOOKS, CHAPTER_COUNT, FIRST_NT_BOOK};
+use bible_core::books::{BIBLE_SECTIONS, BOOKS, CHAPTER_COUNT, FIRST_NT_BOOK, Testament};
 use bible_core::folder::{FolderLibrary, SyncStatus};
 use bible_core::library::{Chapter, Library};
 use bible_core::model::{Origin, Translation};
@@ -23,7 +23,7 @@ pub mod content;
 pub mod tokens;
 
 pub use content::{Block, BlockKind, ChapterContent, ChapterStatus, ContentOptions, Run};
-pub use tokens::{palette, Palette, ThemeName};
+pub use tokens::{Palette, ThemeName, palette};
 
 uniffi::setup_scaffolding!();
 
