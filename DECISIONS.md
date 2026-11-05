@@ -184,6 +184,54 @@ verse in its colour. Its Highlights list has a row per highlight, and removing a
 that one. Choosing words needs hand-drawn selection handles over its custom text
 drawing, so it's left for later.
 
+## Memorising (an experiment)
+
+Memorising is speculative: it may be more than a reader that is "just the Bible" should carry, and
+it can be dropped without touching anything else. It treats memorising as one more thing you do to
+verses, like a highlight, rather than a separate flashcard app inside this one.
+
+- **A passage** is verses `first..=last` of one chapter, keyed by canonical reference as highlights
+  are. The translation it was learnt in is kept, but a recall uses the translation being read, so
+  nothing switches under you. Memorising depends on exact wording, so this is open to revisiting.
+  A translation that lacks any of the passage (the WEB leaves out Luke 17:36) can't grade it, since
+  a grade schedules all of it: the recall offers Skip, which leaves it due. Parallel columns wait
+  while recalling, so another translation can't give the passage away.
+- **Scheduling** is [FSRS](https://github.com/open-spaced-repetition/awesome-fsrs/wiki/ABC-of-FSRS)-6
+  with its default weights (a port of ts-fsrs 5.4.1): 90 % retention, intervals of 1 to 36,500
+  days, no fuzz. FSRS models how memory fades, so a passage comes back just before it would be
+  forgotten, and spends fewer reviews than fixed intervals for the same recall. Each grade shows
+  when it would bring the passage back. Where it differs from ts-fsrs, on purpose: Again's interval
+  is 0 (see below); after an Again, the other grades only keep their order rather than a day apart,
+  and another Again isn't another lapse.
+- **No learning steps to set.** Again leaves a passage due, so it comes back at the end of the
+  session (and stays due if you stop). FSRS-6's same-day terms then schedule the next recall from
+  how it went. With nothing due, recalling practises every passage early; FSRS counts an early
+  recall for less, and recalling it well never brings it back sooner.
+- **The reveal** (`memory::Reveal`) gives every character a place along one line, so a reveal
+  carries across line breaks on its own. A character fades in over the five places after its own
+  (a soft edge), and each word and phrase is followed by a pause as long as that edge, so a reveal
+  resting at a word's end shows all of it and none of the next. Letting go of a drag settles back
+  on the last whole word, so it never shows more than was dragged through.
+- **Storage** is two tables, created if missing, so older files open unchanged: `memory` holds each
+  passage and its schedule, and `memory_reviews` logs every recall (when, and its grade), only ever
+  added to. The log can rebuild any schedule, so a new scheduler, or weights fitted to a reader's
+  own recalls, needs no lossy migration. Backups (and exports that include history) carry both.
+- **Sync** uses the same stamps and tombstones as highlights, notes, bookmarks and plans, so a
+  passage memorised or recalled on one device reaches the others through a Study Library folder.
+  The recall log is the source of the schedule after a merge: if two devices review the same
+  passage before they sync, both reviews are kept and the schedule is rebuilt from them in order.
+  Importing a backup still replaces overlapping passages, as memorising one does.
+- **Known gap:** Literata joins some letter pairs into one glyph ("Th", "fi"), so such a pair is
+  revealed together, and a first-letter hint shows both letters.
+- **On the Mac** a recall happens in the reader: the chapter is typeset as for reading and never
+  reflows. The passage's galleys are painted again with each glyph's vertices faded by the reveal,
+  and the rest of the chapter is dimmed. A horizontal drag or two-finger swipe moves the reveal; a
+  swipe holds the page still while it lasts.
+- **On iPhone** the same, in TextKit 1: iOS has no draw-only text colours, so the passage is drawn
+  in runs of characters at their own opacity over the unchanged layout. A sideways pan reveals; the
+  reader's scrolling waits only for it to decide it isn't one. The FFI gives the phone the
+  scheduling and the reveal's plan (`recall_plan`), so the two apps reveal alike.
+
 ## macOS integration
 
 - Native menu bar via `muda` (`cfg(target_os = "macos")`). Menu items with key equivalents are

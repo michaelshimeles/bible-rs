@@ -11,6 +11,8 @@ struct ReaderContainer: UIViewRepresentable {
     let selection: VerseSelection?
     let marksVersion: Int
     let jump: JumpRequest?
+    let recall: RecallRun?
+    let recallLetters: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store) }
 
@@ -39,6 +41,7 @@ struct ReaderContainer: UIViewRepresentable {
             c.jump = jump.id
             view.jump(to: jump.chapter, verse: jump.verse, animated: jump.animated, flash: jump.flash)
         }
+        view.setRecall(recall?.passage, id: recall?.id, letters: recallLetters, whole: recall?.whole ?? true)
     }
 
     @MainActor
@@ -67,8 +70,12 @@ struct ReaderContainer: UIViewRepresentable {
         }
 
         func reader(_ reader: ReaderView, isReadingOn: Bool) {
-            guard store.selection == nil, store.barsHidden != isReadingOn else { return }
+            guard store.selection == nil, store.recall == nil, store.barsHidden != isReadingOn else { return }
             store.barsHidden = isReadingOn
+        }
+
+        func reader(_ reader: ReaderView, recallChanged status: RecallStatus) {
+            store.recallChanged(status)
         }
     }
 }

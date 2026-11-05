@@ -66,6 +66,8 @@ pub struct Settings {
     pub pinned_books: Vec<u8>,
     /// The sidebar's books in their testaments, or in the canon's sections.
     pub book_grouping: BookGrouping,
+    /// A recall hints at hidden words with their first letters, rather than showing nothing.
+    pub recall_letters: bool,
     /// Data → Study Library (beta): the folder the study syncs with, if any.
     pub study_library: Option<String>,
 }
@@ -104,6 +106,7 @@ impl Default for Settings {
             onboarded: false,
             pinned_books: Vec::new(),
             book_grouping: BookGrouping::Testament,
+            recall_letters: true,
             study_library: None,
         }
     }
@@ -329,6 +332,8 @@ pub struct BibleApp {
     sidebar_probe: Option<crate::probe::SidebarProbe>,
     reading: crate::reading::Tracker,
     verse_menu: Option<crate::verse_menu::VerseMenu>,
+    /// The memorised passages being recalled this session, in order.
+    recall_queue: Vec<bible_core::memory::Memorised>,
     note_popover: Option<NotePopover>,
     /// The first-launch screens, until they are done.
     onboarding: Option<crate::onboarding::Onboarding>,
@@ -470,6 +475,7 @@ impl BibleApp {
             sidebar_probe: crate::probe::SidebarProbe::from_env(),
             reading: Default::default(),
             verse_menu: None,
+            recall_queue: Vec::new(),
             note_popover: None,
             onboarding,
             import_sheet: None,
@@ -507,7 +513,8 @@ impl BibleApp {
 
     pub fn columns(&self) -> Vec<String> {
         let mut cols = vec![self.settings.translation.clone()];
-        if self.settings.parallel_on {
+        // Recalling shows one column, so another translation can't give the passage away.
+        if self.settings.parallel_on && self.reader.recall.is_none() {
             for id in &self.settings.parallel {
                 if cols.len() < 4 && !cols.contains(id) && self.library.contains(id) {
                     cols.push(id.clone());
@@ -635,6 +642,33 @@ impl BibleApp {
             if typing {
                 return;
             }
+            // Recalling, the reader's single keys reveal the passage.
+            if let Some(recall) = &self.reader.recall
+                && !picker
+            {
+                use crate::reader::recall::Step;
+                let done = recall.done();
+                key(Modifiers::SHIFT, Key::Space, Action::Recall(Step::PreviousPhrase));
+                key(Modifiers::NONE, Key::Space, Action::Recall(Step::NextPhrase));
+                key(Modifiers::NONE, Key::ArrowRight, Action::Recall(Step::NextWord));
+                key(Modifiers::NONE, Key::ArrowLeft, Action::Recall(Step::PreviousWord));
+                key(Modifiers::NONE, Key::Escape, Action::EndRecall);
+                if recall.unavailable() {
+                    key(Modifiers::NONE, Key::Enter, Action::SkipRecall);
+                }
+                if done {
+                    key(Modifiers::NONE, Key::Enter, Action::RecallGrade(None));
+                    for (g, k) in bible_core::memory::Grade::ALL.into_iter().zip([
+                        Key::Num1,
+                        Key::Num2,
+                        Key::Num3,
+                        Key::Num4,
+                    ]) {
+                        key(Modifiers::NONE, k, Action::RecallGrade(Some(g)));
+                    }
+                }
+                return;
+            }
             // Copying works with the book picker open; the reader's single keys wait for it.
             for (c, a) in bindings.iter().filter(|(c, a)| *a == Action::Copy || !(c.is_command() || picker)) {
                 key(c.modifiers(), c.key, a.clone());
@@ -665,6 +699,34 @@ impl BibleApp {
             key(Modifiers::NONE, Key::Num0, Action::Highlight(None));
             key(Modifiers::NONE, Key::Backspace, Action::Highlight(None));
         });
+    }
+
+    /// Recalls the session's passage `i` in the reader, in the translation being read.
+    fn start_recall(&mut self, i: usize) {
+        let Some(m) = self.recall_queue.get(i).cloned() else { return };
+        self.pages.open(crate::pages::Page::Reader);
+        self.reader.set_selection(None);
+        let (first, last) = (m.first, m.last);
+        self.reader.recall = Some(crate::reader::recall::Recall::new(m, i + 1, self.recall_queue.len()));
+        self.reader.jump_centered(first.chapter_idx(), first.verse, last.verse, false);
+    }
+
+    /// Recalls the session's passage `i`, or past its last, ends the session.
+    fn next_recall(&mut self, ctx: &egui::Context, i: usize) {
+        if i < self.recall_queue.len() {
+            self.start_recall(i);
+            return;
+        }
+        let mut firsts: Vec<_> = self.recall_queue.iter().map(|m| m.first).collect();
+        firsts.sort();
+        firsts.dedup();
+        let n = firsts.len();
+        self.apply_one(ctx, Action::EndRecall);
+        match n {
+            0 => {}
+            1 => self.toast(ctx, "Recalled 1 passage"),
+            n => self.toast(ctx, format!("Recalled {n} passages")),
+        }
     }
 
     fn apply(&mut self, ctx: &egui::Context, actions: Vec<Action>) {
@@ -705,6 +767,21 @@ impl BibleApp {
     }
 
     fn apply_one(&mut self, ctx: &egui::Context, a: Action) {
+        // Going somewhere else ends a recall.
+        if self.reader.recall.is_some()
+            && matches!(
+                a,
+                Action::Jump { .. }
+                    | Action::OpenLink(_)
+                    | Action::Back
+                    | Action::Forward
+                    | Action::PrevChapter
+                    | Action::NextChapter
+                    | Action::OpenPage(_)
+            )
+        {
+            self.apply_one(ctx, Action::EndRecall);
+        }
         match a {
             Action::Jump { chapter, verse, flash } => {
                 self.pages.open(crate::pages::Page::Reader);
@@ -853,6 +930,96 @@ impl BibleApp {
                 let v = self.selection_or_location()[0];
                 self.apply_one(ctx, Action::EditNote(v));
             }
+            Action::Memorise | Action::StopMemorising => {
+                let refs = self.selection_or_location();
+                let (first, last) = (refs[0], *refs.last().unwrap_or(&refs[0]));
+                let reference = |a: VerseRef, b: VerseRef| {
+                    if a == b { a.to_string() } else { format!("{a}–{}", b.verse) }
+                };
+                // Passages the selection touches are never reset. Stopping deletes their history,
+                // so only the verse menu's Stop Memorising does it, never a stray M.
+                let memorised: Vec<_> = self.study.memorised_in(first, last).into_iter().cloned().collect();
+                let names = memorised.iter().map(|m| m.reference()).collect::<Vec<_>>().join(", ");
+                let result = match (a, memorised.is_empty()) {
+                    (Action::StopMemorising, false) => memorised
+                        .iter()
+                        .try_for_each(|m| self.study.forget(m.first))
+                        .map(|()| format!("Stopped memorising {names}")),
+                    (_, false) => Ok(format!("Already memorising {names}")),
+                    (_, true) => self
+                        .study
+                        .memorise(first, last, &self.settings.translation)
+                        .map(|()| format!("Memorising {}", reference(first, last))),
+                };
+                match result {
+                    Ok(msg) => self.toast_keyed(ctx, format!("memorise {first}"), msg),
+                    Err(e) => self.toast(ctx, format!("Couldn't save: {e:#}")),
+                }
+            }
+            Action::StartRecall => {
+                let due: Vec<_> = self.study.due(crate::time::end_of_today()).into_iter().cloned().collect();
+                self.recall_queue = if due.is_empty() {
+                    // Nothing due: practise them all early, soonest due first.
+                    let all: Vec<_> = self.study.memorised().into_iter().cloned().collect();
+                    if all.is_empty() {
+                        self.toast(ctx, "Select verses and press M to memorise them");
+                        return;
+                    }
+                    self.toast(ctx, "Nothing is due, so this is extra practice");
+                    all
+                } else {
+                    due
+                };
+                // Back returns to where you were reading.
+                self.history.push(self.here());
+                self.start_recall(0);
+            }
+            Action::Recall(step) => {
+                if let Some(r) = &mut self.reader.recall {
+                    r.step(step);
+                }
+            }
+            Action::RecallGrade(grade) => {
+                let Some(r) = &self.reader.recall else { return };
+                if !r.done() {
+                    return;
+                }
+                let (first, index, grade) =
+                    (r.passage.first, r.index, grade.unwrap_or(bible_core::memory::Grade::Good));
+                // Erased or replaced (by an import, say) since the recall began: nothing to grade.
+                if self.study.memorised_at(first).is_none_or(|m| (m.first, m.last) != (first, r.passage.last))
+                {
+                    self.apply_one(ctx, Action::EndRecall);
+                    return;
+                }
+                if let Err(e) = self.study.review(first, grade, bible_core::study::now()) {
+                    // Stays on the passage, to grade again.
+                    self.toast(ctx, format!("Couldn't save: {e:#}"));
+                    return;
+                }
+                // Again stays due: it comes back at the end of this session.
+                if grade == bible_core::memory::Grade::Again
+                    && let Some(m) = self.study.memorised_at(first)
+                {
+                    self.recall_queue.push(m.clone());
+                }
+                self.next_recall(ctx, index);
+            }
+            Action::SkipRecall => {
+                let Some(r) = &self.reader.recall else { return };
+                if !r.unavailable() {
+                    return;
+                }
+                // Dropped from this session only: it stays due.
+                let index = r.index - 1;
+                self.recall_queue.remove(index);
+                self.next_recall(ctx, index);
+            }
+            Action::EndRecall => {
+                self.reader.recall = None;
+                self.recall_queue.clear();
+            }
+            Action::ToggleRecallHints => self.settings.recall_letters = !self.settings.recall_letters,
             Action::PinBook(b) => self.settings.pin_book(b),
             Action::UnpinBook(b) => self.settings.unpin_book(b),
             Action::ToggleBookmark => {
@@ -1135,6 +1302,16 @@ impl BibleApp {
                 }
             }
             "select" => self.reader.set_selection(verse()),
+            // Memorise a passage ("rom 8:38-39"), then recall what is due.
+            "memorise" => {
+                if let Some(r) = bible_core::reference::parse(arg) {
+                    let first = r.verse_ref();
+                    let last = VerseRef { verse: r.verse_end.unwrap_or(first.verse), ..first };
+                    self.reader.select_range(first, last);
+                    actions.push(Action::Memorise);
+                }
+            }
+            "recall" => actions.push(Action::StartRecall),
             "palette" => self.palette = Some(CommandPalette::with_query(arg)),
             "search" => actions.push(Action::OpenSearch(Some(arg.to_string()))),
             "step" => actions.push(Action::SearchStep(arg.parse().unwrap_or(1))),
@@ -1334,7 +1511,7 @@ impl BibleApp {
         let every = if self.settings.backup_weekly { 7 * 86_400 } else { 86_400 };
         let due = last_backup(&self.data_dir).is_none_or(|(at, _)| bible_core::study::now() - at >= every);
         let (h, n, b) = self.study.counts();
-        if due && h + n + b > 0 {
+        if due && h + n + b + self.study.memorised().len() > 0 {
             let _ = self.backup_now();
         }
     }
@@ -1405,7 +1582,7 @@ impl BibleApp {
         self.reminded = Some(today);
         let due = self.study.plans().into_iter().filter(|p| p.finished.is_none()).find_map(|p| {
             let plan = bible_core::plans::get(&p.id)?;
-            let day = ((today - p.started) / 86_400 + 1) as usize;
+            let day = (crate::time::days_between(p.started, today) + 1) as usize;
             let reads = self.study.plan_reads(&p.id);
             let todo = (0..plan.day(day).len()).any(|i| !reads.contains(&(day as u16, i as u8)));
             todo.then(|| {
@@ -1669,7 +1846,7 @@ impl BibleApp {
                 .unwrap_or_else(|| c.book().ref_name().into())
         };
         let title = format!("{book_name} {}", c.chapter());
-        let abbrev = if self.settings.parallel_on {
+        let abbrev = if self.columns().len() > 1 {
             self.columns()
                 .iter()
                 .filter_map(|id| self.library.get(id).map(|e| e.meta.abbrev.clone()))
@@ -2710,6 +2887,8 @@ impl eframe::App for BibleApp {
                 online_generation: &self.online_gen,
                 toolbar: top,
                 resizing: self.sidebar_motion.moving(),
+                recall_letters: self.settings.recall_letters,
+                reduce_motion: self.settings.reduce_motion,
             };
             let mut reader_ui = ui.new_child(egui::UiBuilder::new().max_rect(reader_rect));
             if let (Some(state), Some(retrying)) = (&self.offline, offline) {

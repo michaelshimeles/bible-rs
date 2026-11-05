@@ -143,6 +143,11 @@ final class ChapterLayout {
     /// One full-line band per line a verse's words run across.
     func bands(of verse: Int) -> [CGRect] {
         guard let ranges = words[verse] else { return [] }
+        return bands(for: ranges)
+    }
+
+    /// One full-line band per line some characters run across.
+    func bands(for ranges: [NSRange]) -> [CGRect] {
         var rects: [CGRect] = []
         for range in ranges {
             let glyphs = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
@@ -186,12 +191,20 @@ final class ChapterLayout {
     struct Decorations {
         var theme: Theme
         var selected: Set<Int> = []
+        /// A passage of this chapter being recalled.
+        var recall: RecallSession?
+        /// A passage elsewhere is being recalled: this chapter is dimmed.
+        var dimmed = false
     }
 
     /// Draws the part of the chapter inside `rect` (chapter coordinates) into the current
     /// context, translated so the chapter's top-left is at the origin.
     func draw(_ rect: CGRect, decorations d: Decorations) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
+        if d.recall != nil || d.dimmed {
+            drawRecalling(rect, decorations: d, ctx: ctx)
+            return
+        }
         let radius = typography.s(4)
         for (verse, mark) in marks {
             guard let color = mark.highlight else { continue }
@@ -223,6 +236,128 @@ final class ChapterLayout {
             {
                 ribbon.draw(at: CGPoint(x: frame.midX - ribbon.size.width / 2, y: frame.maxY + 2))
             }
+        }
+        // The first verse of a passage being memorised: cards, below any note or bookmark marker.
+        for (verse, mark) in marks where mark.memorised {
+            guard var frame = markerFrame(of: verse) else { continue }
+            let above = (mark.note ? 1 : 0) + (mark.bookmark ? 1 : 0)
+            frame.origin.y += CGFloat(above) * (frame.height + 4)
+            guard frame.insetBy(dx: 0, dy: -frame.height).intersects(rect) else { continue }
+            let config = UIImage.SymbolConfiguration(pointSize: frame.height * 0.8, weight: .medium)
+            guard let image = UIImage(systemName: "rectangle.on.rectangle", withConfiguration: config)?
+                .withTintColor(d.theme.accent, renderingMode: .alwaysOriginal)
+            else { continue }
+            image.draw(at: CGPoint(x: frame.midX - image.size.width / 2, y: frame.midY - image.size.height / 2))
+        }
+    }
+
+    // MARK: Recall
+
+    /// A passage's characters as typeset: each verse's text, with the character offsets where a
+    /// new line starts inside it, and for each character (Unicode scalar) where it is in the
+    /// storage and where a hint's rule goes under it if it is a letter.
+    struct RecallText {
+        var verses: [RecallVerse] = []
+        var locations: [[Int]] = []
+        var lengths: [[Int]] = []
+        var rules: [[CGRect?]] = []
+        /// The whole passage in the storage, its first verse number included.
+        var range = NSRange(location: 0, length: 0)
+    }
+
+    func recallText(first: Int, last: Int) -> RecallText? {
+        guard first <= last else { return nil }
+        let ns = storage.string as NSString
+        let weight = max(1, typography.s(1)).rounded()
+        var out = RecallText()
+        var end = 0
+        for verse in first...last {
+            guard let ranges = words[verse], !ranges.isEmpty else { continue }
+            var text = String.UnicodeScalarView()
+            var breaks: [UInt32] = []
+            var locations: [Int] = []
+            var lengths: [Int] = []
+            var rules: [CGRect?] = []
+            for (k, range) in ranges.enumerated() {
+                if k > 0 { breaks.append(UInt32(locations.count)) }
+                var location = range.location
+                for scalar in ns.substring(with: range).unicodeScalars {
+                    let length = scalar.utf16.count
+                    let chars = NSRange(location: location, length: length)
+                    text.append(scalar)
+                    locations.append(location)
+                    lengths.append(length)
+                    rules.append(CharacterSet.letters.contains(scalar) ? rule(under: chars, weight: weight) : nil)
+                    location += length
+                }
+                end = max(end, NSMaxRange(range))
+            }
+            out.verses.append(RecallVerse(text: String(text), breaks: breaks))
+            out.locations.append(locations)
+            out.lengths.append(lengths)
+            out.rules.append(rules)
+        }
+        guard let firstLocation = out.locations.first?.first else { return nil }
+        // From the first verse's number, so it shows with the passage.
+        var start = firstLocation
+        storage.enumerateAttribute(.verse, in: NSRange(location: 0, length: firstLocation)) { value, range, stop in
+            if value as? Int == first {
+                start = range.location
+                stop.pointee = true
+            }
+        }
+        out.range = NSRange(location: start, length: end - start)
+        return out
+    }
+
+    /// A thin rule just under the baseline of some characters (chapter coordinates).
+    private func rule(under chars: NSRange, weight: CGFloat) -> CGRect? {
+        let glyphs = manager.glyphRange(forCharacterRange: chars, actualCharacterRange: nil)
+        guard glyphs.length > 0 else { return nil }
+        let line = manager.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+        let baseline = line.minY + manager.location(forGlyphAt: glyphs.location).y
+        let box = manager.boundingRect(forGlyphRange: glyphs, in: container)
+        return CGRect(x: box.minX, y: baseline + typography.s(3), width: box.width, height: weight)
+            .offsetBy(dx: origin.x, dy: origin.y)
+    }
+
+    /// Recalling: the passage drawn as revealed so far, with rules for hidden letters; everything
+    /// else dimmed.
+    private func drawRecalling(_ rect: CGRect, decorations d: Decorations, ctx: CGContext) {
+        let local = rect.offsetBy(dx: -origin.x, dy: -origin.y)
+        let visible = manager.glyphRange(forBoundingRect: local, in: container)
+        guard let session = d.recall else {
+            ctx.saveGState()
+            ctx.setAlpha(RecallSession.dim)
+            if visible.length > 0 { manager.drawGlyphs(forGlyphRange: visible, at: origin) }
+            ctx.restoreGState()
+            return
+        }
+        // Drawing happens on the main thread, where the session lives.
+        let (range, runs, rules) = MainActor.assumeIsolated {
+            (session.text.range, session.runs(), session.rules())
+        }
+        let passage = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let before = NSIntersectionRange(visible, NSRange(location: 0, length: passage.location))
+        let after = NSIntersectionRange(
+            visible, NSRange(location: NSMaxRange(passage), length: max(0, NSMaxRange(visible) - NSMaxRange(passage))))
+        ctx.saveGState()
+        ctx.setAlpha(RecallSession.dim)
+        if before.length > 0 { manager.drawGlyphs(forGlyphRange: before, at: origin) }
+        if after.length > 0 { manager.drawGlyphs(forGlyphRange: after, at: origin) }
+        ctx.restoreGState()
+        // The passage, a run of characters at a time, each as much as the reveal shows of it.
+        for (chars, alpha) in runs where alpha > 0 {
+            let glyphs = NSIntersectionRange(visible, manager.glyphRange(forCharacterRange: chars, actualCharacterRange: nil))
+            guard glyphs.length > 0 else { continue }
+            ctx.saveGState()
+            if alpha < 1 { ctx.setAlpha(alpha) }
+            manager.drawGlyphs(forGlyphRange: glyphs, at: origin)
+            ctx.restoreGState()
+        }
+        for (r, alpha) in rules where r.intersects(rect) {
+            ctx.setFillColor(d.theme.ink3.withAlphaComponent(0.6 * alpha).cgColor)
+            ctx.fill(r)
         }
     }
 

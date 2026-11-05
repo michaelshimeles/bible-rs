@@ -40,6 +40,7 @@ impl VerseMenu {
 
     fn lines(study: &StudyStore, refs: &[VerseRef]) -> Vec<Line> {
         let first = refs[0];
+        let memorised = !study.memorised_in(first, *refs.last().unwrap_or(&first)).is_empty();
         let item = |icon: IconFn, label: &str, shortcut: &'static str, action: Option<Action>| Line::Item {
             icon,
             label: label.to_string(),
@@ -59,6 +60,11 @@ impl VerseMenu {
                 "B",
                 Some(Action::ToggleBookmark),
             ),
+            if memorised {
+                item(icons::cards, "Stop Memorising", "", Some(Action::StopMemorising))
+            } else {
+                item(icons::cards, "Memorise", "M", Some(Action::Memorise))
+            },
             Line::Separator,
             item(icons::copy, "Copy", "⌘C", Some(Action::CopyText)),
             item(icons::quote, "Copy with Reference", "⇧⌘C", Some(Action::Copy)),

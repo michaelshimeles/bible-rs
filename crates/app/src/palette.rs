@@ -97,6 +97,7 @@ fn command_list(settings: &Settings) -> Vec<(&'static str, IconFn, Vec<&'static 
         ("Bigger text", icons::text_size, vec!["⌘", "+"], Action::FontSize(1.0)),
         ("Smaller text", icons::text_size, vec!["⌘", "−"], Action::FontSize(-1.0)),
         ("Toggle sidebar", icons::sidebar, vec!["⌘", "B"], Action::ToggleSidebar),
+        ("Recall memorised passages", icons::cards, vec![], Action::StartRecall),
         ("Export notes as Markdown…", icons::note, vec!["⌘", "E"], Action::Export(ExportKind::Markdown)),
         ("Export notes as JSON…", icons::note, vec!["⇧", "⌘", "E"], Action::Export(ExportKind::Json)),
         ("Import a translation…", icons::book, vec!["⌘", "I"], Action::ImportTranslation),
@@ -152,7 +153,7 @@ impl CommandPalette {
         Self { query: query.to_string(), ..Self::default() }
     }
 
-    fn items(&self, library: &Library, settings: &Settings) -> Vec<Item> {
+    fn items(&self, library: &Library, settings: &Settings, memorising: bool) -> Vec<Item> {
         let q = self.query.trim();
         let mut items = Vec::new();
         let entry = library.get(&settings.translation);
@@ -312,7 +313,10 @@ impl CommandPalette {
             }
         }
         let ql = q.to_lowercase();
-        for (title, icon, keys, action) in command_list(settings) {
+        // Recalling waits until something is memorised.
+        for (title, icon, keys, action) in
+            command_list(settings).into_iter().filter(|c| memorising || c.3 != Action::StartRecall)
+        {
             if q.is_empty() || title.to_lowercase().contains(&ql) {
                 items.push(command(icon, title.to_string(), keys, action));
             }
@@ -333,7 +337,7 @@ impl CommandPalette {
         if self.recent.is_none() {
             self.recent = Some(study.reading_since(bible_core::study::now() - 30 * 86_400));
         }
-        let items = self.items(library, settings);
+        let items = self.items(library, settings, !study.memorised().is_empty());
         if self.selected >= items.len() {
             self.selected = items.len().saturating_sub(1);
         }

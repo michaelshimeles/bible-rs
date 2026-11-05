@@ -16,6 +16,8 @@ struct ReaderSettings: Codable, Equatable {
     var headings = true
     var wholeWords = false
     var bookLayout = BookLayout.allBooks
+    /// A recall hints at hidden words with their first letters, rather than showing nothing.
+    var recallLetters = true
 
     static let textSizes: ClosedRange<Double> = 14...32
     static let lineSpacings: ClosedRange<Double> = 1.3...2.0
@@ -39,6 +41,7 @@ struct ReaderSettings: Codable, Equatable {
         headings = value(.headings, d.headings)
         wholeWords = value(.wholeWords, d.wholeWords)
         bookLayout = value(.bookLayout, d.bookLayout)
+        recallLetters = value(.recallLetters, d.recallLetters)
     }
 }
 
@@ -59,6 +62,19 @@ struct JumpRequest: Equatable {
     var verse: Int
     var animated = false
     var flash = false
+}
+
+/// The memorised passages being recalled, one after another in the reader.
+struct RecallRun: Equatable {
+    /// New for each passage shown, so the reader hides it afresh even when it comes round again.
+    let id = UUID()
+    var queue: [MemorisedPassage]
+    var index = 0
+    /// The translation being read has all of the passage, so it can be recalled and graded.
+    var whole = true
+    var status = RecallStatus()
+
+    var passage: MemorisedPassage { queue[index] }
 }
 
 enum Sheet: Identifiable, Equatable {
@@ -101,6 +117,7 @@ final class Store {
     var sheet: Sheet?
     var barsHidden = false
     private(set) var toast: String?
+    private(set) var recall: RecallRun?
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
@@ -127,7 +144,24 @@ final class Store {
         self.settings = settings
         self.position = position
         jump = JumpRequest(chapter: position.chapter, verse: position.verse)
+        #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--recall-demo") { recallDemo() }
+        #endif
     }
+
+    #if DEBUG
+        /// Screenshots and checks without touch: memorises John 3:16–17 and recalls it.
+        private func recallDemo() {
+            let first = VerseRef(book: 42, chapter: 3, verse: 16)
+            let last = VerseRef(book: 42, chapter: 3, verse: 17)
+            if bible.memorisedAt(verse: first) == nil {
+                try? bible.memorise(first: first, last: last, translation: settings.translation)
+            }
+            guard let m = bible.memorisedAt(verse: first) else { return }
+            recall = run([m])
+            showRecalled()
+        }
+    #endif
 
     /// The study database and imported texts live in Application Support. If that can't be
     /// opened the reader still works, keeping study data in a temporary folder.
@@ -170,6 +204,8 @@ final class Store {
 
     private func translationChanged() {
         selection = nil
+        // Another translation's words: the recall starts the passage over.
+        if let run = recall { recall = self.run(run.queue, index: run.index) }
         warm()
     }
 
@@ -193,6 +229,8 @@ final class Store {
     // MARK: Moving
 
     func go(to chapter: Int, verse: Int = 1, flash: Bool = false, animated: Bool = false) {
+        // Going to another chapter ends a recall.
+        if let run = recall, Int(run.passage.chapterIndex) != chapter { recall = nil }
         selection = nil
         barsHidden = false
         position = Position(chapter: chapter, verse: verse)
@@ -214,6 +252,7 @@ final class Store {
     // MARK: Selection
 
     func tap(verse: Int, chapter: Int) {
+        guard recall == nil else { return }
         barsHidden = false
         if var s = selection, s.chapter == chapter {
             if s.verses.contains(verse) { s.verses.remove(verse) } else { s.verses.insert(verse) }
@@ -279,6 +318,122 @@ final class Store {
         UIPasteboard.general.string = selectionText
         show("Copied \(selectionLabel)")
         selection = nil
+    }
+
+    // MARK: Memorising
+
+    /// The memorised passages the selection touches.
+    private var selectionPassages: [MemorisedPassage] {
+        var out: [MemorisedPassage] = []
+        for ref in selectedRefs {
+            if let m = bible.memorisedAt(verse: ref), !out.contains(where: { $0.first == m.first }) { out.append(m) }
+        }
+        return out
+    }
+
+    var selectionMemorised: Bool { !selectionPassages.isEmpty }
+
+    /// Memorises the selected verses, or stops memorising them.
+    func memoriseSelection() {
+        let refs = selectedRefs
+        guard let first = refs.first, let last = refs.last else { return }
+        // A selection touching passages already memorised stops them, never resets them.
+        let memorised = selectionPassages
+        if !memorised.isEmpty {
+            if study({ for m in memorised { try bible.forget(first: m.first) } }) {
+                show("Stopped memorising \(memorised.map(\.reference).joined(separator: ", "))")
+            }
+            selection = nil
+            return
+        }
+        guard Int(last.verse) - Int(first.verse) == refs.count - 1 else {
+            show("Select verses next to each other")
+            return
+        }
+        let label = rangeLabel(from: first, to: last)
+        if study({ try bible.memorise(first: first, last: last, translation: settings.translation) }) {
+            show("Memorising \(label)")
+        }
+        selection = nil
+    }
+
+    /// Due by the end of today: a passage is due all of the day it falls on.
+    var duePassages: [MemorisedPassage] {
+        let calendar = Calendar.current
+        let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: .now)) ?? .now
+        return bible.duePassages(until: Int64(end.timeIntervalSince1970))
+    }
+    var memorisedPassages: [MemorisedPassage] { bible.memorisedPassages() }
+
+    /// Recalls the passages due now in the reader, or with nothing due, practises them all early.
+    func startRecall() {
+        let due = duePassages
+        let queue = due.isEmpty ? memorisedPassages : due
+        guard !queue.isEmpty else {
+            show("Select verses, then Memorise")
+            return
+        }
+        if due.isEmpty { show("Nothing is due, so this is extra practice") }
+        recall = run(queue)
+        showRecalled()
+    }
+
+    /// Recalls `queue[index]`, in the translation being read.
+    private func run(_ queue: [MemorisedPassage], index: Int = 0) -> RecallRun {
+        var run = RecallRun(queue: queue, index: index)
+        // Only all of it: a grade from part of the passage would schedule the whole.
+        run.whole = bible.hasPassage(translation: settings.translation, passage: run.passage)
+        return run
+    }
+
+    private func showRecalled() {
+        // Recalled in the translation being read.
+        guard let passage = recall?.passage else { return }
+        sheet = nil
+        go(to: Int(passage.chapterIndex), verse: Int(passage.first.verse))
+    }
+
+    func recallChanged(_ status: RecallStatus) {
+        recall?.status = status
+    }
+
+    /// When the passage being recalled would come back for each grade: "1 day", "3 weeks".
+    var gradeLabels: [String] {
+        guard let run = recall else { return [] }
+        return bible.gradeLabels(first: run.passage.first)
+    }
+
+    /// Grades the passage and goes on to the next, or ends.
+    func grade(_ grade: RecallGrade) {
+        guard let run = recall, run.status.done else { return }
+        // A failed save stays on the passage, to grade again.
+        guard study({ try bible.review(first: run.passage.first, grade: grade) }) else { return }
+        // Again stays due: it comes back at the end of this session.
+        let queue = grade == .again ? run.queue + [run.passage] : run.queue
+        next(queue, index: run.index + 1)
+    }
+
+    /// Goes on from a passage the translation doesn't have all of, without grading it. It stays due.
+    func skipRecall() {
+        guard let run = recall, run.status.unavailable else { return }
+        var queue = run.queue
+        queue.remove(at: run.index)
+        next(queue, index: run.index)
+    }
+
+    private func next(_ queue: [MemorisedPassage], index: Int) {
+        if index < queue.count {
+            recall = run(queue, index: index)
+            showRecalled()
+        } else {
+            recall = nil
+            let n = Set(queue.map(\.first)).count
+            if n > 0 { show(n == 1 ? "Recalled 1 passage" : "Recalled \(n) passages") }
+        }
+    }
+
+    func endRecall() {
+        recall = nil
     }
 
     // MARK: Study

@@ -73,6 +73,15 @@ typeset, searchable as you type, with highlights, notes and bookmarks kept on yo
 - Notes and bookmarks show in the margin; the Study sidebar lists everything.
 - Export to Markdown (⌘E) or JSON (⌘⇧E); JSON imports back.
 
+**Memorising** (an experiment)
+- Select verses and press M to memorise them; a mark in the margin shows a passage being learnt.
+- Memory in the sidebar recalls the passages due, each in place in the chapter: its words hidden
+  (first letters as hints, or nothing), revealed word by word as you drag across it, swipe with
+  two fingers or click (Space shows a phrase). Then grade it: each grade shows when the passage
+  would come back, as [FSRS](https://github.com/open-spaced-repetition/awesome-fsrs/wiki/ABC-of-FSRS)
+  schedules it. Again brings it back in the same session; with nothing due, Memory is extra
+  practice.
+
 **Translations**
 - Instant switching (⌘1…⌘9 or the toolbar), parallel columns (⌘⇧P) aligned verse by verse, and a
   compare view showing one verse in every installed translation.
@@ -176,6 +185,8 @@ chapter by chapter, and appear in parallel and compare views as their chapters l
 | Drag, ⇧-click | Choose words, extend them |
 | 1–6, 0 | Highlight colour, remove highlight |
 | N · B or ⌘D · ⌘C · ⇧⌘C · C | Note · bookmark · copy · copy with reference · compare |
+| M | Memorise the selected verses (stop from the verse menu) |
+| Space · → ← · ⏎ or 1–4 · Esc | While recalling: next phrase · word forward, back · grade (⏎ is Good) · back to reading |
 | ⌘1…⌘9 | Switch translation |
 | ⌘⇧P | Parallel translations |
 | ⌘L · ⌘R · ⌘⇧L | Verse-per-line · red letters · theme |
@@ -370,8 +381,9 @@ bible-rs open bible://jhn.3.16-18
 `apps/ios` is the iPhone app (iPad runs it too): SwiftUI around the same Rust core, through
 UniFFI (`crates/ffi`). It has the Mac's typesetting, themes and colours. You can scroll through all
 1,189 chapters, jump to a reference (`jn 3:16`), search as you type, and highlight, annotate,
-bookmark, copy or share verses. Parallel and compare views, import and online translations are
-Mac-only for now.
+bookmark, copy or share verses. Memorising works as on the Mac: Memorise in the selection bar,
+then Study › Memory to recall what's due.
+Parallel and compare views, import and online translations are Mac-only for now.
 
 <table>
 <tr>

@@ -62,7 +62,8 @@ impl Under<'_> {
             .filter(|s| s.finished())
             .filter_map(|s| s.chapter_idx())
             .collect();
-        let today = ((time::day_start(bible_core::study::now()) - state.started) / DAY).max(0) as usize + 1;
+        let days = time::days_between(state.started, time::day_start(bible_core::study::now()));
+        let today = days.max(0) as usize + 1;
         Under { plan, state, reads, finished, today }
     }
 

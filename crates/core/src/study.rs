@@ -1,4 +1,5 @@
-//! Local study data: highlights, notes, bookmarks, reading history, plans and settings.
+//! Local study data: highlights, notes, bookmarks, reading history, plans, memorised passages and
+//! settings.
 //!
 //! Everything is keyed by canonical verse reference (not by translation), so a highlight made
 //! while reading the KJV shows up in the WEB too. A verse can hold several highlights, each over
@@ -9,7 +10,8 @@
 //! one SQLite file and write straight through (WAL mode, a few hundred microseconds each); the web
 //! app has no SQLite and saves the store's JSON export instead.
 //!
-//! Every highlighted verse, note, bookmark, plan and ticked passage also carries what sync needs
+//! Every highlighted verse, note, bookmark, plan, ticked passage and memorised passage also
+//! carries what sync needs
 //! ([`crate::sync`]): when it last changed and on which device, and a local sequence number, so
 //! [`StudyStore::changes_since`] can say what changed after a point. Deleting leaves a tombstone.
 //! Importing a JSON export and taking in another copy's changes go through one merge,
@@ -26,11 +28,13 @@ use serde::{Deserialize, Serialize};
 use crate::books::{BookId, ChapterIdx, VerseRef};
 use crate::highlight;
 pub use crate::highlight::{Highlight, TextSpan};
+use crate::memory::{Grade, Memorised, Review, Schedule};
 use crate::sync::{
-    self, BookmarkChange, HighlightPart, HighlightsChange, Hlc, NoteChange, NotePick, NoteVersion, Pick,
-    PlanChange, PlanReadChange, VerseKey, lww,
+    self, BookmarkChange, HighlightPart, HighlightsChange, Hlc, MemoryChange, MemoryReviewChange, NoteChange,
+    NotePick, NoteVersion, Pick, PlanChange, PlanReadChange, VerseKey, lww,
 };
 pub use crate::sync::{Changes, MergeMode, MergeReport, NoteConflict, Stamp};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HighlightColor {
@@ -131,6 +135,10 @@ pub struct StudyStore {
     reading: BTreeMap<i64, ReadingSession>,
     plans: HashMap<String, PlanProgress>,
     plan_reads: HashMap<String, HashSet<(u16, u8)>>,
+    /// Passages being memorised, by their first verse.
+    memory: BTreeMap<u32, Memorised>,
+    /// Every recall of each passage being memorised, oldest first, by its first verse.
+    reviews: BTreeMap<u32, Vec<LoggedReview>>,
     settings: HashMap<String, String>,
     generation: u64,
     // Sync state of every record, tombstones (records not in the maps above) included.
@@ -139,6 +147,8 @@ pub struct StudyStore {
     bookmark_revs: HashMap<u32, Rev>,
     plan_revs: HashMap<String, PlanRev>,
     read_revs: HashMap<(String, u16, u8), ReadRev>,
+    memory_revs: HashMap<u32, Rev>,
+    review_revs: HashMap<(u32, String), ReviewRev>,
     conflicts: BTreeMap<(u32, Stamp), NoteConflict>,
     device: String,
     hlc: Hlc,
@@ -195,6 +205,21 @@ CREATE TABLE IF NOT EXISTS plan_reads(
     updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
     deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(plan, day, passage));
+CREATE TABLE IF NOT EXISTS memory(
+    book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL, last_verse INTEGER NOT NULL,
+    translation TEXT NOT NULL, created INTEGER NOT NULL,
+    due INTEGER NOT NULL, stability REAL NOT NULL, difficulty REAL NOT NULL,
+    reps INTEGER NOT NULL, lapses INTEGER NOT NULL, last_review INTEGER,
+    updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
+    deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(book, chapter, verse));
+CREATE TABLE IF NOT EXISTS memory_reviews(
+    book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
+    at INTEGER NOT NULL, grade INTEGER NOT NULL, id TEXT NOT NULL,
+    last_verse INTEGER NOT NULL DEFAULT 0, translation TEXT NOT NULL DEFAULT '',
+    updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
+    deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(book, chapter, verse, id));
 CREATE TABLE IF NOT EXISTS conflicts(
     book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
     body TEXT NOT NULL, updated_ms INTEGER NOT NULL, device TEXT NOT NULL, found INTEGER NOT NULL,
@@ -273,6 +298,46 @@ fn verse_of(k: &VerseKey) -> Option<VerseRef> {
 
 fn key_of(v: VerseRef) -> VerseKey {
     VerseKey { book: v.book.info().code.to_string(), chapter: v.chapter, verse: v.verse }
+}
+
+fn schedule_from_reviews(created: i64, reviews: &[Review]) -> Schedule {
+    let mut s = Schedule::new(created);
+    for r in reviews {
+        s = s.next(r.grade, r.at);
+    }
+    s
+}
+
+/// A recall as stored: the grade FSRS needs, and the id sync uses to tell two recalls apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoggedReview {
+    id: String,
+    review: Review,
+    last_verse: u8,
+    translation: String,
+}
+
+/// Sync metadata for one recall, including tombstones (which are not in [`StudyStore::reviews`]).
+#[derive(Debug, Clone)]
+struct ReviewRev {
+    rev: Rev,
+    at: i64,
+    grade: Grade,
+    last_verse: u8,
+    translation: String,
+}
+
+fn review_mismatches(last_verse: u8, translation: &str, m: &Memorised) -> bool {
+    (last_verse != 0 && last_verse != m.last.verse)
+        || (!translation.is_empty() && translation != m.translation)
+}
+
+fn fallback_review_id(at: i64, grade: Grade) -> String {
+    format!("{}:{}", at, grade as u8)
+}
+
+fn assigned_review_id(id: &str, at: i64, grade: Grade) -> String {
+    if id.is_empty() { fallback_review_id(at, grade) } else { id.to_string() }
 }
 
 fn part_of(h: &Highlight) -> HighlightPart {
@@ -406,6 +471,69 @@ fn migrate(conn: &Connection, device: &str) -> Result<()> {
     Ok(())
 }
 
+/// Adds sync columns to memorised-passage tables written before they joined the sync model
+/// (the tables in this file's first form had none). Files that already have the columns are left
+/// as they are. Idempotent, so it can run after [`migrate`] even when that returns early.
+#[cfg(feature = "native")]
+fn ensure_memory_sync(conn: &Connection, device: &str) -> Result<()> {
+    if !has_column(conn, "memory", "book")? {
+        return Ok(());
+    }
+    let add = |table: &str, column: &str, decl: &str| -> Result<()> {
+        if !has_column(conn, table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+                .with_context(|| format!("adding {table}.{column}"))?;
+        }
+        Ok(())
+    };
+    for table in ["memory", "memory_reviews"] {
+        for (column, decl) in SYNC_COLUMNS {
+            add(table, column, decl)?;
+        }
+    }
+    conn.execute(
+        "UPDATE memory SET updated_ms = MAX(created, COALESCE(last_review, created)) * 1000, device = ?1, seq = 1
+         WHERE updated_ms = 0",
+        [device],
+    )?;
+    conn.execute(
+        "UPDATE memory_reviews SET updated_ms = at * 1000, device = ?1, seq = 1 WHERE updated_ms = 0",
+        [device],
+    )?;
+    add("memory_reviews", "id", "TEXT NOT NULL DEFAULT ''")?;
+    add("memory_reviews", "last_verse", "INTEGER NOT NULL DEFAULT 0")?;
+    add("memory_reviews", "translation", "TEXT NOT NULL DEFAULT ''")?;
+    let sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_reviews'",
+        [],
+        |r| r.get(0),
+    )?;
+    let pk = sql.replace(' ', "");
+    if !pk.contains("PRIMARYKEY(book,chapter,verse,id)") {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(
+            "DROP TABLE IF EXISTS memory_reviews_v2;
+             CREATE TABLE memory_reviews_v2(
+                book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
+                at INTEGER NOT NULL, grade INTEGER NOT NULL, id TEXT NOT NULL,
+                last_verse INTEGER NOT NULL DEFAULT 0, translation TEXT NOT NULL DEFAULT '',
+                updated_ms INTEGER NOT NULL DEFAULT 0, device TEXT NOT NULL DEFAULT '',
+                deleted INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(book, chapter, verse, id));
+             INSERT INTO memory_reviews_v2(book, chapter, verse, at, grade, id, last_verse, translation, updated_ms, device, deleted, seq)
+             SELECT book, chapter, verse, at, grade,
+                    CASE WHEN id = '' THEN (at || ':' || grade || ':' || rowid) ELSE id END,
+                    last_verse, translation,
+                    updated_ms, device, deleted, seq
+             FROM memory_reviews;
+             DROP TABLE memory_reviews;
+             ALTER TABLE memory_reviews_v2 RENAME TO memory_reviews;",
+        )?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
 impl Default for StudyStore {
     fn default() -> Self {
         Self::new()
@@ -424,6 +552,8 @@ impl StudyStore {
             reading: BTreeMap::new(),
             plans: HashMap::new(),
             plan_reads: HashMap::new(),
+            memory: BTreeMap::new(),
+            reviews: BTreeMap::new(),
             settings: HashMap::new(),
             meta: HashMap::new(),
             generation: 1,
@@ -432,6 +562,8 @@ impl StudyStore {
             bookmark_revs: HashMap::new(),
             plan_revs: HashMap::new(),
             read_revs: HashMap::new(),
+            memory_revs: HashMap::new(),
+            review_revs: HashMap::new(),
             conflicts: BTreeMap::new(),
             device: sync::new_device_id(),
             hlc: Hlc::default(),
@@ -489,6 +621,7 @@ impl StudyStore {
         conn.execute_batch(SCHEMA)?;
         let device = device_id(&conn)?;
         migrate(&conn, &device)?;
+        ensure_memory_sync(&conn, &device)?;
         let mut s = Self { conn: Some(conn), device, ..Self::new() };
         s.load()?;
         Ok(s)
@@ -668,6 +801,75 @@ impl StudyStore {
         )?;
         self.conflicts =
             conflicts.into_iter().filter_map(|(v, c)| Some(((v?.key(), c.stamp.clone()), c))).collect();
+        let memory = query(
+            conn,
+            &format!(
+                "SELECT book, chapter, verse, last_verse, translation, created, due, stability, difficulty,
+                        reps, lapses, last_review, {META} FROM memory"
+            ),
+            |r| {
+                let first = verse(r)?;
+                let last_verse = u8::try_from(r.get::<_, i64>(3)?).ok();
+                let last = first.zip(last_verse).map(|(f, n)| VerseRef::new(f.book, f.chapter, n));
+                let schedule = Schedule {
+                    due: r.get(6)?,
+                    stability: r.get(7)?,
+                    difficulty: r.get(8)?,
+                    reps: r.get(9)?,
+                    lapses: r.get(10)?,
+                    last_review: r.get(11)?,
+                };
+                Ok((first, last, r.get::<_, String>(4)?, r.get::<_, i64>(5)?, schedule, meta(r, 12)?))
+            },
+        )?;
+        self.memory.clear();
+        self.memory_revs.clear();
+        for (first, last, translation, created, schedule, (rev, deleted)) in memory {
+            saw(&rev);
+            let Some((first, last)) = first.zip(last) else { continue };
+            if !deleted {
+                self.memory.insert(first.key(), Memorised { first, last, translation, created, schedule });
+            }
+            self.memory_revs.insert(first.key(), rev);
+        }
+        let reviews = query(
+            conn,
+            &format!(
+                "SELECT book, chapter, verse, at, grade, id, last_verse, translation, {META}
+                 FROM memory_reviews ORDER BY at, id, rowid"
+            ),
+            |r| {
+                let n: i64 = r.get(4)?;
+                let grade = Grade::ALL.into_iter().find(|g| *g as i64 == n);
+                Ok((
+                    verse(r)?,
+                    r.get::<_, i64>(3)?,
+                    grade,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, u8>(6)?,
+                    r.get::<_, String>(7)?,
+                    meta(r, 8)?,
+                ))
+            },
+        )?;
+        self.reviews.clear();
+        self.review_revs.clear();
+        for (first, at, grade, id, last_verse, translation, (rev, deleted)) in reviews {
+            saw(&rev);
+            if let (Some(first), Some(grade)) = (first, grade) {
+                let id = assigned_review_id(&id, at, grade);
+                if !deleted {
+                    self.reviews.entry(first.key()).or_default().push(LoggedReview {
+                        id: id.clone(),
+                        review: Review { at, grade },
+                        last_verse,
+                        translation: translation.clone(),
+                    });
+                }
+                self.review_revs
+                    .insert((first.key(), id), ReviewRev { rev, at, grade, last_verse, translation });
+            }
+        }
         self.settings = query(conn, "SELECT key, value FROM settings", |r| Ok((r.get(0)?, r.get(1)?)))?
             .into_iter()
             .collect();
@@ -1265,6 +1467,327 @@ impl StudyStore {
         Ok(())
     }
 
+    /// The passage being memorised that verse `v` is part of.
+    pub fn memorised_at(&self, v: VerseRef) -> Option<&Memorised> {
+        self.memory.range(..=v.key()).next_back().map(|(_, m)| m).filter(|m| m.contains(v))
+    }
+
+    /// Every passage being memorised, the soonest due first.
+    pub fn memorised(&self) -> Vec<&Memorised> {
+        let mut v: Vec<&Memorised> = self.memory.values().collect();
+        v.sort_by_key(|m| (m.schedule.due, m.first));
+        v
+    }
+
+    pub fn has_memorised(&self) -> bool {
+        !self.memory.is_empty()
+    }
+
+    /// The passages that share a verse with `first..=last`.
+    pub fn memorised_in(&self, first: VerseRef, last: VerseRef) -> Vec<&Memorised> {
+        self.memory.values().filter(|m| m.overlaps(first, last)).collect()
+    }
+
+    /// The passages due at `now`, the longest overdue first.
+    pub fn due(&self, now: i64) -> Vec<&Memorised> {
+        self.memorised().into_iter().filter(|m| m.schedule.is_due(now)).collect()
+    }
+
+    pub fn due_count(&self, now: i64) -> usize {
+        self.memory.values().filter(|m| m.schedule.is_due(now)).count()
+    }
+
+    /// Starts memorising verses `first..=last` (one chapter) as `translation` has them, due now.
+    /// Passages it overlaps are replaced.
+    pub fn memorise(&mut self, first: VerseRef, last: VerseRef, translation: &str) -> Result<()> {
+        if first.chapter_idx() != last.chapter_idx() || last < first {
+            bail!("a passage to memorise is verses of one chapter");
+        }
+        let overlapping: Vec<VerseRef> =
+            self.memory.values().filter(|m| m.overlaps(first, last)).map(|m| m.first).collect();
+        let t = self.now_s();
+        let m = Memorised {
+            first,
+            last,
+            translation: translation.to_string(),
+            created: t,
+            schedule: Schedule::new(t),
+        };
+        self.transaction(|s| {
+            for f in overlapping {
+                s.forget_passage(f)?;
+            }
+            s.put_memorised(&m)
+        })?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// Stops memorising the passage that starts at `first`.
+    pub fn forget(&mut self, first: VerseRef) -> Result<()> {
+        self.transaction(|s| s.forget_passage(first))?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    fn forget_passage(&mut self, first: VerseRef) -> Result<()> {
+        let rev = self.next_rev();
+        self.store_memorised(first, None, rev)?;
+        self.forget_reviews(first)
+    }
+
+    /// Tombstones every live recall of the passage that starts at `first`.
+    fn forget_reviews(&mut self, first: VerseRef) -> Result<()> {
+        let reviews = self.reviews.get(&first.key()).cloned().unwrap_or_default();
+        for logged in reviews {
+            let rev = self.next_rev();
+            self.store_review(first, logged, false, rev)?;
+        }
+        Ok(())
+    }
+
+    /// Every recall of the passage that starts at `first`, oldest first.
+    pub fn reviews(&self, first: VerseRef) -> Vec<Review> {
+        self.reviews.get(&first.key()).map(|v| v.iter().map(|r| r.review).collect()).unwrap_or_default()
+    }
+
+    fn put_review(&mut self, first: VerseRef, review: Review) -> Result<()> {
+        let rev = self.next_rev();
+        let id = format!("{}:{}", rev.stamp.at, rev.stamp.device);
+        let (last_verse, translation) = self
+            .memory
+            .get(&first.key())
+            .map(|m| (m.last.verse, m.translation.clone()))
+            .unwrap_or((0, String::new()));
+        self.store_review(first, LoggedReview { id, review, last_verse, translation }, true, rev)
+    }
+
+    /// Writes a recall (`live`: it happened; otherwise a tombstone) with its stamp.
+    fn store_review(&mut self, first: VerseRef, logged: LoggedReview, live: bool, rev: Rev) -> Result<()> {
+        #[cfg(feature = "native")]
+        {
+            let code = first.book.info().code;
+            let n = self.exec(
+                "UPDATE memory_reviews SET updated_ms = ?1, device = ?2, deleted = ?3, seq = ?4,
+                     at = ?5, grade = ?6, last_verse = ?7, translation = ?8
+                 WHERE book = ?9 AND chapter = ?10 AND verse = ?11 AND id = ?12",
+                params![
+                    rev.stamp.at,
+                    rev.stamp.device,
+                    !live,
+                    rev.seq,
+                    logged.review.at,
+                    logged.review.grade as u8,
+                    logged.last_verse,
+                    logged.translation,
+                    code,
+                    first.chapter,
+                    first.verse,
+                    logged.id
+                ],
+            )?;
+            if n == 0 {
+                self.exec(
+                    "INSERT INTO memory_reviews(book, chapter, verse, at, grade, id, last_verse, translation,
+                         updated_ms, device, deleted, seq)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![
+                        code,
+                        first.chapter,
+                        first.verse,
+                        logged.review.at,
+                        logged.review.grade as u8,
+                        logged.id,
+                        logged.last_verse,
+                        logged.translation,
+                        rev.stamp.at,
+                        rev.stamp.device,
+                        !live,
+                        rev.seq
+                    ],
+                )?;
+            }
+        }
+        let key = first.key();
+        let (at, grade) = (logged.review.at, logged.review.grade);
+        let id = logged.id.clone();
+        let last_verse = logged.last_verse;
+        let translation = logged.translation.clone();
+        let list = self.reviews.entry(key).or_default();
+        list.retain(|r| r.id != id);
+        if live {
+            list.push(logged);
+            list.sort_by(|a, b| (a.review.at, &a.id).cmp(&(b.review.at, &b.id)));
+        } else if list.is_empty() {
+            self.reviews.remove(&key);
+        }
+        self.review_revs.insert((key, id), ReviewRev { rev, at, grade, last_verse, translation });
+        Ok(())
+    }
+
+    fn forget_reviews_matching(&mut self, first: VerseRef, last_verse: u8, translation: &str) -> Result<()> {
+        let reviews = self.reviews.get(&first.key()).cloned().unwrap_or_default();
+        for logged in reviews {
+            let matches_version = if logged.last_verse == 0 && logged.translation.is_empty() {
+                true
+            } else {
+                logged.last_verse == last_verse && logged.translation == translation
+            };
+            if matches_version {
+                let rev = self.next_rev();
+                self.store_review(first, logged, false, rev)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a recall of the passage that starts at `first`, scheduling it again.
+    pub fn review(&mut self, first: VerseRef, grade: Grade, at: i64) -> Result<()> {
+        let Some(mut m) = self.memory.get(&first.key()).cloned() else {
+            bail!("{first} isn't being memorised")
+        };
+        m.schedule = m.schedule.next(grade, at);
+        self.transaction(|s| {
+            s.put_review(first, Review { at, grade })?;
+            s.put_memorised(&m)
+        })?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    fn put_memorised(&mut self, m: &Memorised) -> Result<()> {
+        let rev = self.next_rev();
+        self.store_memorised(m.first, Some(m.clone()), rev)
+    }
+
+    /// Writes a memorised passage (`None`: a tombstone) with its stamp.
+    fn store_memorised(&mut self, first: VerseRef, passage: Option<Memorised>, rev: Rev) -> Result<()> {
+        #[cfg(feature = "native")]
+        {
+            let (last_verse, translation, created, due, stability, difficulty, reps, lapses, last_review) =
+                passage.as_ref().map_or((0, "", 0, 0, 0.0, 0.0, 0, 0, None), |m| {
+                    (
+                        m.last.verse,
+                        m.translation.as_str(),
+                        m.created,
+                        m.schedule.due,
+                        m.schedule.stability,
+                        m.schedule.difficulty,
+                        m.schedule.reps,
+                        m.schedule.lapses,
+                        m.schedule.last_review,
+                    )
+                });
+            self.exec(
+                "INSERT INTO memory(book, chapter, verse, last_verse, translation, created, due,
+                     stability, difficulty, reps, lapses, last_review, updated_ms, device, deleted, seq)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 ON CONFLICT(book, chapter, verse) DO UPDATE SET
+                     last_verse = excluded.last_verse, translation = excluded.translation,
+                     created = excluded.created, due = excluded.due, stability = excluded.stability,
+                     difficulty = excluded.difficulty, reps = excluded.reps, lapses = excluded.lapses,
+                     last_review = excluded.last_review, updated_ms = excluded.updated_ms,
+                     device = excluded.device, deleted = excluded.deleted, seq = excluded.seq",
+                params![
+                    first.book.info().code,
+                    first.chapter,
+                    first.verse,
+                    last_verse,
+                    translation,
+                    created,
+                    due,
+                    stability,
+                    difficulty,
+                    reps,
+                    lapses,
+                    last_review,
+                    rev.stamp.at,
+                    rev.stamp.device,
+                    passage.is_none(),
+                    rev.seq
+                ],
+            )?;
+        }
+        match passage {
+            Some(m) => {
+                self.memory.insert(first.key(), m);
+            }
+            None => {
+                self.memory.remove(&first.key());
+            }
+        }
+        self.memory_revs.insert(first.key(), rev);
+        Ok(())
+    }
+
+    /// Forgets live passages that overlap `first..=last`, other than the one that starts at `keep`.
+    fn retire_overlapping(&mut self, first: VerseRef, last: VerseRef, keep: VerseRef) -> Result<()> {
+        let overlapping: Vec<VerseRef> = self
+            .memory
+            .values()
+            .filter(|o| o.first != keep && o.overlaps(first, last))
+            .map(|o| o.first)
+            .collect();
+        for f in overlapping {
+            self.forget_passage(f)?;
+        }
+        Ok(())
+    }
+
+    /// Among live passages that share a verse, keeps the one with the newer stamp so two devices
+    /// that memorised overlapping ranges agree. Returns how many were forgotten.
+    fn resolve_memory_overlaps(&mut self) -> Result<usize> {
+        let mut n = 0;
+        loop {
+            let live: Vec<Memorised> = self.memory.values().cloned().collect();
+            let mut loser = None;
+            'pairs: for a in &live {
+                for b in &live {
+                    if a.first >= b.first || !a.overlaps(b.first, b.last) {
+                        continue;
+                    }
+                    let sa = self.memory_revs.get(&a.first.key()).map(|r| &r.stamp);
+                    let sb = self.memory_revs.get(&b.first.key()).map(|r| &r.stamp);
+                    loser = Some(match (sa, sb) {
+                        (Some(sa), Some(sb)) if sa < sb => a.first,
+                        (Some(sa), Some(sb)) if sb < sa => b.first,
+                        _ if a.first > b.first => a.first,
+                        _ => b.first,
+                    });
+                    break 'pairs;
+                }
+            }
+            let Some(first) = loser else { break };
+            self.forget_passage(first)?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Rebuilds a live passage's schedule from its recalls, so two devices that each reviewed it
+    /// agree after they have both logs.
+    fn rebuild_memory_from_reviews(&mut self, first: VerseRef) -> Result<()> {
+        let Some(mut m) = self.memory.get(&first.key()).cloned() else { return Ok(()) };
+        let reviews = self
+            .reviews
+            .get(&first.key())
+            .into_iter()
+            .flatten()
+            .filter(|r| !review_mismatches(r.last_verse, &r.translation, &m))
+            .map(|r| r.review)
+            .collect::<Vec<_>>();
+        if reviews.is_empty() {
+            return Ok(());
+        }
+        let rebuilt = schedule_from_reviews(m.created, &reviews);
+        if rebuilt == m.schedule {
+            return Ok(());
+        }
+        m.schedule = rebuilt;
+        let Some(rev) = self.memory_revs.get(&first.key()).cloned() else { return Ok(()) };
+        self.store_memorised(m.first, Some(m), rev)
+    }
+
     pub fn setting(&self, key: &str) -> Option<String> {
         self.settings.get(key).cloned()
     }
@@ -1310,6 +1833,7 @@ impl StudyStore {
             translation: translation.to_string(),
             history: Vec::new(),
             plans: Vec::new(),
+            memory: Vec::new(),
             highlights: self
                 .highlights()
                 .into_iter()
@@ -1369,6 +1893,8 @@ impl StudyStore {
         deleted.bookmarks.retain(|c| c.deleted && include.bookmarks);
         deleted.plans.retain(|c| c.deleted && include.history);
         deleted.plan_reads.retain(|c| c.deleted && include.history);
+        deleted.memory.retain(|c| c.deleted && include.history);
+        deleted.memory_reviews.retain(|c| c.deleted && include.history);
         doc.deleted = deleted;
         if !include.highlights {
             doc.highlights.clear();
@@ -1422,6 +1948,47 @@ impl StudyStore {
                         device: Some(stamp.device),
                         reset_ms: rev.map_or(0, |r| r.reset),
                         id: p.id,
+                    }
+                })
+                .collect();
+            doc.memory = self
+                .memorised()
+                .into_iter()
+                .map(|m| {
+                    let stamp = stamp_of(self.memory_revs.get(&m.first.key()));
+                    ExportMemorised {
+                        verse: entry(m.first),
+                        last_verse: m.last.verse,
+                        translation: m.translation.clone(),
+                        created: rfc3339(m.created),
+                        due: rfc3339(m.schedule.due),
+                        stability: m.schedule.stability,
+                        difficulty: m.schedule.difficulty,
+                        reps: m.schedule.reps,
+                        lapses: m.schedule.lapses,
+                        last_review: m.schedule.last_review.map(rfc3339),
+                        reviews: self
+                            .reviews
+                            .get(&m.first.key())
+                            .into_iter()
+                            .flatten()
+                            .map(|r| {
+                                let rs = stamp_of(
+                                    self.review_revs.get(&(m.first.key(), r.id.clone())).map(|rr| &rr.rev),
+                                );
+                                ExportReview {
+                                    at: rfc3339(r.review.at),
+                                    grade: r.review.grade.name().to_string(),
+                                    id: Some(r.id.clone()),
+                                    last_verse: (r.last_verse != 0).then_some(r.last_verse),
+                                    translation: (!r.translation.is_empty()).then(|| r.translation.clone()),
+                                    updated_ms: Some(rs.at),
+                                    device: Some(rs.device),
+                                }
+                            })
+                            .collect(),
+                        updated_ms: Some(stamp.at),
+                        device: Some(stamp.device),
                     }
                 })
                 .collect();
@@ -1489,6 +2056,20 @@ impl StudyStore {
                 }
                 let _ = writeln!(md, "{}\n", n.body.trim_end());
             }
+        }
+        let memory = if include.history { self.memorised() } else { Vec::new() };
+        if !memory.is_empty() {
+            let _ = writeln!(md, "## Memorising\n");
+            for m in memory {
+                let _ = writeln!(
+                    md,
+                    "- **{}** ({}) next due {}",
+                    m.reference(),
+                    m.translation,
+                    &rfc3339(m.schedule.due)[..10]
+                );
+            }
+            md.push('\n');
         }
         let history = if include.history { self.reading_since(0) } else { Vec::new() };
         if !history.is_empty() {
@@ -1652,17 +2233,55 @@ impl StudyStore {
                 });
             }
         }
+        for m in &doc.memory {
+            let first = verse(&m.verse)?;
+            let created = date(&m.created);
+            let last_review = m.last_review.as_deref().and_then(parse_rfc3339);
+            let newest = created.max(last_review.unwrap_or(created));
+            changes.memory.push(MemoryChange {
+                verse: first.clone(),
+                last_verse: m.last_verse,
+                translation: m.translation.clone(),
+                created,
+                due: parse_rfc3339(&m.due).unwrap_or(created),
+                stability: m.stability,
+                difficulty: m.difficulty,
+                reps: m.reps,
+                lapses: m.lapses,
+                last_review,
+                stamp: stamp(m.updated_ms, &m.device, newest),
+                deleted: false,
+            });
+            for r in &m.reviews {
+                let Some(at) = parse_rfc3339(&r.at) else { continue };
+                let grade = r.grade.clone();
+                let Some(g) = Grade::from_name(&grade) else { continue };
+                changes.memory_reviews.push(MemoryReviewChange {
+                    verse: first.clone(),
+                    at,
+                    grade,
+                    id: assigned_review_id(r.id.as_deref().unwrap_or(""), at, g),
+                    last_verse: r.last_verse.unwrap_or(0),
+                    translation: r.translation.clone().unwrap_or_default(),
+                    stamp: stamp(r.updated_ms, &r.device, at),
+                    deleted: false,
+                });
+            }
+        }
         let d = &doc.deleted;
         changes.highlights.extend(d.highlights.iter().filter(|c| c.deleted).cloned());
         changes.notes.extend(d.notes.iter().filter(|c| c.deleted).cloned());
         changes.bookmarks.extend(d.bookmarks.iter().filter(|c| c.deleted).cloned());
         changes.plans.extend(d.plans.iter().filter(|c| c.deleted).cloned());
         changes.plan_reads.extend(d.plan_reads.iter().filter(|c| c.deleted).cloned());
+        changes.memory.extend(d.memory.iter().filter(|c| c.deleted).cloned());
+        changes.memory_reviews.extend(d.memory_reviews.iter().filter(|c| c.deleted).cloned());
         Ok(changes)
     }
 
-    /// Erases every highlight, note, bookmark, plan and the reading history. The erasure is a
-    /// change like any other: a study library passes it on to the reader's other devices.
+    /// Erases every highlight, note, bookmark, plan, memorised passage and the reading history.
+    /// The erasure is a change like any other: a study library passes it on to the reader's other
+    /// devices.
     pub fn erase_all(&mut self) -> Result<()> {
         self.transaction(|s| {
             let verses: HashSet<u32> =
@@ -1678,6 +2297,11 @@ impl StudyStore {
             plans.sort_unstable();
             for id in plans {
                 s.drop_plan(&id)?;
+            }
+            let mut passages: Vec<VerseRef> = s.memory.values().map(|m| m.first).collect();
+            passages.sort();
+            for first in passages {
+                s.forget_passage(first)?;
             }
             let mut with_copies: Vec<u32> = s.conflicts.keys().map(|(k, _)| *k).collect();
             with_copies.dedup();
@@ -1858,6 +2482,42 @@ impl StudyStore {
                 at: rev.at,
             });
         }
+        for (&k, rev) in &self.memory_revs {
+            let Some(v) = VerseRef::from_key(k).filter(|_| want(rev)) else { continue };
+            let m = self.memory.get(&k);
+            let s = m.map(|m| m.schedule);
+            c.memory.push(MemoryChange {
+                verse: key_of(v),
+                last_verse: m.map(|m| m.last.verse).unwrap_or(0),
+                translation: m.map(|m| m.translation.clone()).unwrap_or_default(),
+                created: m.map_or(0, |m| m.created),
+                due: s.map_or(0, |s| s.due),
+                stability: s.map_or(0.0, |s| s.stability),
+                difficulty: s.map_or(0.0, |s| s.difficulty),
+                reps: s.map_or(0, |s| s.reps),
+                lapses: s.map_or(0, |s| s.lapses),
+                last_review: s.and_then(|s| s.last_review),
+                stamp: rev.stamp.clone(),
+                deleted: m.is_none(),
+            });
+        }
+        for ((k, id), rr) in &self.review_revs {
+            if !want(&rr.rev) {
+                continue;
+            }
+            let Some(v) = VerseRef::from_key(*k) else { continue };
+            let live = self.reviews.get(k).is_some_and(|rs| rs.iter().any(|r| r.id == *id));
+            c.memory_reviews.push(MemoryReviewChange {
+                verse: key_of(v),
+                at: rr.at,
+                grade: rr.grade.name().to_string(),
+                id: id.clone(),
+                last_verse: rr.last_verse,
+                translation: rr.translation.clone(),
+                stamp: rr.rev.stamp.clone(),
+                deleted: !live,
+            });
+        }
         // In the order they were made, so a reader of them sees the same thing every time.
         let verse = |v: &VerseKey| (v.book.clone(), v.chapter, v.verse);
         c.highlights.sort_by_key(|h| (h.stamp.clone(), verse(&h.verse)));
@@ -1866,6 +2526,16 @@ impl StudyStore {
         c.plans.sort_by(|a, b| (&a.stamp, &a.id).cmp(&(&b.stamp, &b.id)));
         c.plan_reads.sort_by(|a, b| {
             (&a.stamp, &a.plan, a.day, a.passage).cmp(&(&b.stamp, &b.plan, b.day, b.passage))
+        });
+        c.memory.sort_by(|a, b| (&a.stamp, verse(&a.verse)).cmp(&(&b.stamp, verse(&b.verse))));
+        c.memory_reviews.sort_by(|a, b| {
+            (&a.stamp, verse(&a.verse), a.at, &a.grade, &a.id).cmp(&(
+                &b.stamp,
+                verse(&b.verse),
+                b.at,
+                &b.grade,
+                &b.id,
+            ))
         });
         c
     }
@@ -2089,6 +2759,99 @@ impl StudyStore {
             self.store_read(&c.plan, c.day, c.passage, !c.deleted, ReadRev { rev, at: c.at })?;
             report.plan_reads += 1;
         }
+        let mut rebuild = Vec::new();
+        for c in &changes.memory {
+            let Some(first) = verse_of(&c.verse) else { continue };
+            let k = first.key();
+            let local = self.memory_revs.get(&k).map(|r| (r.stamp.clone(), self.memory.contains_key(&k)));
+            let rev = match lww(local.as_ref().map(|(s, l)| (s, *l)), (&c.stamp, !c.deleted), mode) {
+                Pick::Local => continue,
+                Pick::Remote => Rev { stamp: c.stamp.clone(), seq: self.next_seq() },
+                Pick::Revive => self.next_rev(),
+            };
+            let created = match self.memory.get(&k).map(|m| m.created) {
+                Some(l) if l > 0 && (c.created == 0 || l < c.created) => l,
+                _ => c.created,
+            };
+            let passage = if c.deleted {
+                None
+            } else {
+                let last = VerseRef::new(first.book, first.chapter, c.last_verse);
+                if last < first {
+                    continue;
+                }
+                Some(Memorised {
+                    first,
+                    last,
+                    translation: c.translation.clone(),
+                    created,
+                    schedule: Schedule {
+                        due: c.due,
+                        stability: c.stability,
+                        difficulty: c.difficulty,
+                        reps: c.reps,
+                        lapses: c.lapses,
+                        last_review: c.last_review,
+                    },
+                })
+            };
+            if let Some(m) = &passage {
+                if mode == MergeMode::Import {
+                    self.retire_overlapping(m.first, m.last, m.first)?;
+                }
+                if let Some((old_last, old_tr)) =
+                    self.memory.get(&k).map(|old| (old.last.verse, old.translation.clone()))
+                    && (old_last != m.last.verse || old_tr != m.translation)
+                {
+                    // Only grades of the outgoing range: a newer recall of the incoming one may
+                    // already be waiting, and must not be deleted before its passage arrives.
+                    self.forget_reviews_matching(first, old_last, &old_tr)?;
+                }
+            } else {
+                self.forget_reviews(first)?;
+            }
+            self.store_memorised(first, passage, rev)?;
+            report.memory += 1;
+            rebuild.push(first);
+        }
+        for c in &changes.memory_reviews {
+            let Some(first) = verse_of(&c.verse) else { continue };
+            let Some(grade) = Grade::from_name(&c.grade) else { continue };
+            let id = assigned_review_id(&c.id, c.at, grade);
+            let key = (first.key(), id.clone());
+            let local = self.review_revs.get(&key).map(|r| r.rev.stamp.clone());
+            let live_here = self.reviews.get(&first.key()).is_some_and(|rs| rs.iter().any(|r| r.id == id));
+            let rev = match lww(local.as_ref().map(|s| (s, live_here)), (&c.stamp, !c.deleted), mode) {
+                Pick::Local => continue,
+                Pick::Remote => Rev { stamp: c.stamp.clone(), seq: self.next_seq() },
+                Pick::Revive => self.next_rev(),
+            };
+            let last_verse = c.last_verse;
+            let translation = c.translation.clone();
+            self.store_review(
+                first,
+                LoggedReview { id, review: Review { at: c.at, grade }, last_verse, translation },
+                !c.deleted,
+                rev,
+            )?;
+            report.memory_reviews += 1;
+            rebuild.push(first);
+        }
+        if mode == MergeMode::Sync {
+            let forgotten = self.resolve_memory_overlaps()?;
+            report.memory += forgotten;
+        }
+        rebuild.sort();
+        rebuild.dedup();
+        for first in rebuild {
+            if self.memory.contains_key(&first.key()) {
+                self.rebuild_memory_from_reviews(first)?;
+            } else if self.memory_revs.contains_key(&first.key()) {
+                // A newer forget beat a concurrent review: drop the review so it cannot linger.
+                // Only when we already have a tombstone — not when the passage simply hasn't arrived.
+                self.forget_reviews(first)?;
+            }
+        }
         Ok(report)
     }
 
@@ -2114,7 +2877,7 @@ impl StudyStore {
     pub fn prune_tombstones(&mut self, before_ms: i64) -> Result<usize> {
         let mut n = 0;
         #[cfg(feature = "native")]
-        for table in ["highlights", "bookmarks", "plans", "plan_reads"] {
+        for table in ["highlights", "bookmarks", "plans", "plan_reads", "memory", "memory_reviews"] {
             self.exec(&format!("DELETE FROM {table} WHERE deleted = 1 AND updated_ms < ?1"), [before_ms])?;
         }
         // A deleted note's conflict copies keep it.
@@ -2146,6 +2909,16 @@ impl StudyStore {
         self.read_revs
             .retain(|(p, d, i), r| live.get(p).is_some_and(|s| s.contains(&(*d, *i))) || !old(&r.rev));
         n += before - self.read_revs.len();
+        let before = self.memory_revs.len();
+        let live = &self.memory;
+        self.memory_revs.retain(|k, r| live.contains_key(k) || !old(r));
+        n += before - self.memory_revs.len();
+        let before = self.review_revs.len();
+        let live = &self.reviews;
+        self.review_revs.retain(|(k, id), r| {
+            live.get(k).is_some_and(|rs| rs.iter().any(|x| x.id == *id)) || !old(&r.rev)
+        });
+        n += before - self.review_revs.len();
         if n > 0 {
             let seq = self.seq.to_string();
             self.set_sync_value("seq", &seq)?;
@@ -2171,10 +2944,54 @@ struct ExportDoc {
     history: Vec<ExportReading>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     plans: Vec<ExportPlan>,
+    /// Passages being memorised and their schedules, when the export includes history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    memory: Vec<ExportMemorised>,
     /// Tombstones: what was deleted, so another copy of the study deletes it too (an import
     /// ignores them).
     #[serde(default, skip_serializing_if = "Changes::is_empty")]
     deleted: Changes,
+}
+
+/// A passage being memorised: verses `verse..=last_verse` of one chapter.
+#[derive(Serialize, Deserialize)]
+struct ExportMemorised {
+    #[serde(flatten)]
+    verse: ExportVerse,
+    last_verse: u8,
+    translation: String,
+    created: String,
+    due: String,
+    stability: f64,
+    difficulty: f64,
+    reps: u32,
+    lapses: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_review: Option<String>,
+    /// Every recall, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reviews: Vec<ExportReview>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    updated_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device: Option<String>,
+}
+
+/// One recall of a passage: when, and its grade ("Again", "Hard", "Good" or "Easy").
+#[derive(Serialize, Deserialize)]
+struct ExportReview {
+    at: String,
+    grade: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_verse: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    translation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    updated_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device: Option<String>,
 }
 
 /// The export format [`StudyStore::export_json_with`] writes. 2 (2026-11) adds each record's
@@ -2230,7 +3047,7 @@ pub struct Include {
     pub highlights: bool,
     pub notes: bool,
     pub bookmarks: bool,
-    /// Reading history and plans.
+    /// Reading history, plans and passages being memorised.
     pub history: bool,
 }
 
@@ -2421,6 +3238,89 @@ mod tests {
         assert_eq!(s.reading_since(1_500).len(), 1);
         s.clear_reading(1_500).unwrap();
         assert_eq!(s.reading_since(0).len(), 1);
+    }
+
+    #[test]
+    fn memorised_passages_are_scheduled_and_kept() {
+        let dir = std::env::temp_dir().join(format!("bible-rs-memory-{}", std::process::id()));
+        let path = dir.join("study.sqlite");
+        let _ = std::fs::remove_dir_all(&dir);
+        let v = |n| VerseRef::new(BookId(42), 3, n);
+        {
+            let mut s = StudyStore::open(&path).unwrap();
+            s.memorise(v(16), v(17), "kjv").unwrap();
+            assert_eq!(s.memorised_at(v(17)).map(|m| m.first), Some(v(16)));
+            assert!(s.memorised_at(v(18)).is_none());
+            assert_eq!(s.due(now()).len(), 1, "a new passage is due at once");
+            // One that overlaps takes its place.
+            s.memorise(v(17), v(18), "kjv").unwrap();
+            assert!(s.memorised_at(v(16)).is_none());
+            assert_eq!(s.memorised().len(), 1);
+            s.review(v(17), Grade::Good, now()).unwrap();
+            assert!(s.due(now()).is_empty());
+            assert!(s.memorise(v(18), VerseRef::new(BookId(42), 4, 1), "kjv").is_err());
+        }
+        let mut s = StudyStore::open(&path).unwrap();
+        let m = s.memorised_at(v(18)).cloned().unwrap();
+        assert_eq!((m.first, m.last, m.translation.as_str(), m.schedule.reps), (v(17), v(18), "kjv", 1));
+        s.forget(v(17)).unwrap();
+        assert!(StudyStore::open(&path).unwrap().memorised().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn memorised_passages_survive_a_backup() {
+        let v = |n| VerseRef::new(BookId(42), 3, n);
+        let mut s = StudyStore::open_in_memory().unwrap();
+        s.memorise(v(16), v(17), "bsb").unwrap();
+        s.review(v(16), Grade::Good, now()).unwrap();
+        let saved = s.memorised_at(v(16)).cloned().unwrap();
+
+        let study_only = s.export_json_with("BSB", |_| None, Include::STUDY).unwrap();
+        assert!(!study_only.contains("\"memory\""), "a notes export leaves memorising out");
+        let backup = s.export_json_with("BSB", |_| None, Include::EVERYTHING).unwrap();
+        assert!(s.export_markdown_with("BSB", |_| None, Include::EVERYTHING).contains("John 3:16–17"));
+
+        let mut restored = StudyStore::open_in_memory().unwrap();
+        // An overlapping passage already there gives way to the backup's.
+        restored.memorise(v(17), v(18), "kjv").unwrap();
+        restored.import_json(&backup).unwrap();
+        let m = restored.memorised_at(v(17)).cloned().unwrap();
+        assert_eq!((m.first, m.last, m.translation.as_str()), (v(16), v(17), "bsb"));
+        assert_eq!(m.schedule.reps, 1);
+        assert_eq!(m.schedule.due, saved.schedule.due, "the schedule carries over");
+        assert_eq!(m.schedule.stability, saved.schedule.stability);
+        assert!(restored.memorised_at(v(18)).is_none());
+        assert_eq!(restored.reviews(v(16)), s.reviews(v(16)), "and so does every recall");
+    }
+
+    #[test]
+    fn every_recall_is_logged_and_kept() {
+        let dir = std::env::temp_dir().join(format!("bible-rs-reviews-{}", std::process::id()));
+        let path = dir.join("study.sqlite");
+        let _ = std::fs::remove_dir_all(&dir);
+        let v = |n| VerseRef::new(BookId(42), 3, n);
+        let t = 1_790_000_000;
+        {
+            let mut s = StudyStore::open(&path).unwrap();
+            s.memorise(v(16), v(17), "bsb").unwrap();
+            s.review(v(16), Grade::Again, t).unwrap();
+            s.review(v(16), Grade::Good, t + 600).unwrap();
+        }
+        let mut s = StudyStore::open(&path).unwrap();
+        let log = [Review { at: t, grade: Grade::Again }, Review { at: t + 600, grade: Grade::Good }];
+        assert_eq!(s.reviews(v(16)), log);
+        let replayed = log.iter().fold(Schedule::new(t), |sch, r| sch.next(r.grade, r.at));
+        assert_eq!(
+            s.memorised_at(v(16)).unwrap().schedule.due,
+            replayed.due,
+            "the log rebuilds the schedule"
+        );
+        s.forget(v(16)).unwrap();
+        assert!(s.reviews(v(16)).is_empty());
+        let s = StudyStore::open(&path).unwrap();
+        assert!(s.reviews(v(16)).is_empty(), "forgetting a passage forgets its recalls");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3522,6 +4422,300 @@ mod sync_tests {
         assert_eq!(s.device_id(), device);
         assert_eq!(s.changes_since(0, false).notes[0].stamp, Stamp::new(200_000, device));
         assert_eq!(std::fs::read(&backup).unwrap(), b"untouched");
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn memorised_passages_sync_between_devices() {
+        let (mut a, clock) = device("aaaa", T0);
+        let (mut b, _) = device("bbbb", T0);
+        a.memorise(v(16), v(17), "kjv").unwrap();
+        assert_eq!(sync(&a, &mut b).memory, 1);
+        let m = b.memorised_at(v(16)).cloned().unwrap();
+        assert_eq!((m.first, m.last, m.translation.as_str()), (v(16), v(17), "kjv"));
+        later(&clock, 10);
+        a.review(v(16), Grade::Good, a.now_s()).unwrap();
+        assert_eq!(sync(&a, &mut b).memory_reviews, 1);
+        assert_eq!(b.reviews(v(16)).len(), 1);
+        assert_eq!(b.memorised_at(v(16)).unwrap().schedule, a.memorised_at(v(16)).unwrap().schedule);
+        later(&clock, 10);
+        a.forget(v(16)).unwrap();
+        sync(&a, &mut b);
+        assert!(b.memorised_at(v(16)).is_none());
+        assert!(b.reviews(v(16)).is_empty());
+    }
+
+    #[test]
+    fn a_newer_forget_drops_a_concurrent_review() {
+        let (mut a, clock_a) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.memorise(v(16), v(16), "kjv").unwrap();
+        sync(&a, &mut b);
+        later(&clock_b, 10);
+        b.review(v(16), Grade::Good, b.now_s()).unwrap();
+        later(&clock_a, 20);
+        a.forget(v(16)).unwrap();
+        sync(&b, &mut a);
+        sync(&a, &mut b);
+        for s in [&a, &b] {
+            assert!(s.memorised_at(v(16)).is_none());
+            assert!(s.reviews(v(16)).is_empty(), "a review must not outlive its forgotten passage");
+        }
+    }
+
+    #[test]
+    fn reviews_without_a_passage_wait_for_it() {
+        let (mut a, _) = device("aaaa", T0);
+        let (mut b, _) = device("bbbb", T0);
+        a.memorise(v(16), v(16), "kjv").unwrap();
+        a.review(v(16), Grade::Good, a.now_s()).unwrap();
+        let mut only_reviews = a.changes_since(0, false);
+        only_reviews.memory.clear();
+        b.merge(&only_reviews, MergeMode::Sync).unwrap();
+        assert!(b.memorised_at(v(16)).is_none());
+        assert_eq!(b.reviews(v(16)).len(), 1);
+        assert!(b.changes_since(0, false).memory_reviews.iter().all(|c| !c.deleted));
+        let mut only_passage = a.changes_since(0, false);
+        only_passage.memory_reviews.clear();
+        b.merge(&only_passage, MergeMode::Sync).unwrap();
+        assert!(b.memorised_at(v(16)).is_some());
+        assert_eq!(b.reviews(v(16)).len(), 1);
+        assert_eq!(b.memorised_at(v(16)).unwrap().schedule, a.memorised_at(v(16)).unwrap().schedule);
+    }
+
+    #[test]
+    fn replacing_a_passage_drops_old_reviews() {
+        let (mut a, clock_a) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.memorise(v(16), v(18), "kjv").unwrap();
+        a.review(v(16), Grade::Good, a.now_s()).unwrap();
+        later(&clock_b, 10);
+        b.memorise(v(16), v(17), "kjv").unwrap();
+        sync(&b, &mut a);
+        later(&clock_a, 10);
+        sync(&a, &mut b);
+        for s in [&a, &b] {
+            let m = s.memorised_at(v(16)).cloned().unwrap();
+            assert_eq!((m.first, m.last), (v(16), v(17)));
+            assert_eq!(
+                m.schedule,
+                Schedule::new(m.created),
+                "grades of the old range must not rebuild the new one"
+            );
+        }
+    }
+
+    #[test]
+    fn a_review_of_a_replaced_passage_is_dropped() {
+        let (mut a, clock_a) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.memorise(v(16), v(17), "kjv").unwrap();
+        sync(&a, &mut b);
+        later(&clock_a, 10);
+        a.review(v(16), Grade::Good, a.now_s()).unwrap();
+        later(&clock_b, 20);
+        b.memorise(v(16), v(18), "kjv").unwrap();
+        sync(&a, &mut b);
+        sync(&b, &mut a);
+        for s in [&a, &b] {
+            let m = s.memorised_at(v(16)).cloned().unwrap();
+            assert_eq!((m.first, m.last), (v(16), v(18)));
+            assert_eq!(
+                m.schedule,
+                Schedule::new(m.created),
+                "a grade of the old range must not schedule the new one"
+            );
+        }
+    }
+
+    #[test]
+    fn a_review_of_a_new_range_waits_for_the_passage() {
+        let (mut a, _) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.memorise(v(16), v(17), "kjv").unwrap();
+        sync(&a, &mut b);
+        later(&clock_b, 10);
+        b.memorise(v(16), v(18), "kjv").unwrap();
+        later(&clock_b, 10);
+        b.review(v(16), Grade::Good, b.now_s()).unwrap();
+        let mut only_review = b.changes_since(0, false);
+        only_review.memory.clear();
+        a.merge(&only_review, MergeMode::Sync).unwrap();
+        assert_eq!(a.memorised_at(v(16)).unwrap().last, v(17));
+        assert_eq!(a.reviews(v(16)).len(), 1, "kept until its passage arrives");
+        assert!(a.changes_since(0, false).memory_reviews.iter().any(|c| !c.deleted && c.last_verse == 18));
+        let mut only_passage = b.changes_since(0, false);
+        only_passage.memory_reviews.clear();
+        a.merge(&only_passage, MergeMode::Sync).unwrap();
+        assert_eq!(a.memorised_at(v(16)).unwrap().last, v(18));
+        assert_eq!(a.reviews(v(16)).len(), 1);
+        assert_eq!(a.memorised_at(v(16)).unwrap().schedule, b.memorised_at(v(16)).unwrap().schedule);
+    }
+
+    #[test]
+    fn reviews_in_the_same_second_are_both_kept() {
+        let (mut a, _) = device("aaaa", T0);
+        let (mut b, _) = device("bbbb", T0);
+        a.memorise(v(16), v(16), "kjv").unwrap();
+        sync(&a, &mut b);
+        let at = a.now_s();
+        a.review(v(16), Grade::Good, at).unwrap();
+        a.review(v(16), Grade::Hard, at).unwrap();
+        b.review(v(16), Grade::Good, at).unwrap();
+        sync(&a, &mut b);
+        sync(&b, &mut a);
+        for s in [&a, &b] {
+            let grades: Vec<Grade> = s.reviews(v(16)).iter().map(|r| r.grade).collect();
+            assert_eq!(grades.len(), 3, "each recall keeps its own log entry");
+            assert_eq!(grades.iter().filter(|g| **g == Grade::Good).count(), 2);
+            assert_eq!(grades.iter().filter(|g| **g == Grade::Hard).count(), 1);
+        }
+        assert_eq!(a.reviews(v(16)), b.reviews(v(16)));
+        assert_eq!(a.memorised_at(v(16)).unwrap().schedule, b.memorised_at(v(16)).unwrap().schedule);
+        let rebuilt = schedule_from_reviews(a.memorised_at(v(16)).unwrap().created, &a.reviews(v(16)));
+        assert_eq!(a.memorised_at(v(16)).unwrap().schedule, rebuilt);
+    }
+
+    #[test]
+    fn concurrent_reviews_rebuild_the_same_schedule() {
+        let (mut a, clock_a) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.memorise(v(16), v(16), "web").unwrap();
+        sync(&a, &mut b);
+        let created = a.memorised_at(v(16)).unwrap().created;
+        later(&clock_a, 10_000);
+        a.review(v(16), Grade::Good, a.now_s()).unwrap();
+        later(&clock_b, 20_000);
+        b.review(v(16), Grade::Hard, b.now_s()).unwrap();
+        sync(&a, &mut b);
+        sync(&b, &mut a);
+        let reviews_a = a.reviews(v(16)).to_vec();
+        let reviews_b = b.reviews(v(16)).to_vec();
+        assert_eq!(reviews_a, reviews_b);
+        assert_eq!(reviews_a.len(), 2);
+        let expected = schedule_from_reviews(created, &reviews_a);
+        assert_eq!(a.memorised_at(v(16)).unwrap().schedule, expected);
+        assert_eq!(b.memorised_at(v(16)).unwrap().schedule, expected);
+    }
+
+    #[test]
+    fn overlapping_passages_keep_the_newer_one() {
+        let (mut a, _) = device("aaaa", T0);
+        let (mut b, clock_b) = device("bbbb", T0);
+        a.memorise(v(16), v(18), "kjv").unwrap();
+        later(&clock_b, 10);
+        b.memorise(v(17), v(19), "kjv").unwrap();
+        sync(&a, &mut b);
+        sync(&b, &mut a);
+        for s in [&a, &b] {
+            assert!(s.memorised_at(v(16)).is_none(), "the older overlapping passage is gone");
+            let m = s.memorised_at(v(17)).cloned().unwrap();
+            assert_eq!((m.first, m.last), (v(17), v(19)));
+        }
+    }
+
+    #[test]
+    fn a_forgotten_passage_stays_gone_after_reopen() {
+        let dir = std::env::temp_dir().join(format!(
+            "bible-memory-tombstone-{}-{}",
+            std::process::id(),
+            crate::sync::new_device_id()
+        ));
+        let path = dir.join("study.sqlite");
+        let _ = std::fs::remove_dir_all(&dir);
+        {
+            let mut s = StudyStore::open(&path).unwrap();
+            s.memorise(v(16), v(17), "kjv").unwrap();
+            s.review(v(16), Grade::Good, s.now_s()).unwrap();
+            s.forget(v(16)).unwrap();
+            assert!(s.changes_since(0, false).memory.iter().any(|c| c.deleted));
+        }
+        let s = StudyStore::open(&path).unwrap();
+        assert!(s.memorised().is_empty());
+        assert!(s.reviews(v(16)).is_empty());
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn memorised_rows_from_before_sync_are_stamped() {
+        let dir = std::env::temp_dir().join(format!(
+            "bible-memory-presync-{}-{}",
+            std::process::id(),
+            crate::sync::new_device_id()
+        ));
+        let path = dir.join("study.sqlite");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE memory(
+                    book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL, last_verse INTEGER NOT NULL,
+                    translation TEXT NOT NULL, created INTEGER NOT NULL,
+                    due INTEGER NOT NULL, stability REAL NOT NULL, difficulty REAL NOT NULL,
+                    reps INTEGER NOT NULL, lapses INTEGER NOT NULL, last_review INTEGER,
+                    PRIMARY KEY(book, chapter, verse));
+                 CREATE TABLE memory_reviews(
+                    book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
+                    at INTEGER NOT NULL, grade INTEGER NOT NULL);
+                 INSERT INTO memory(book, chapter, verse, last_verse, translation, created, due,
+                     stability, difficulty, reps, lapses, last_review)
+                 VALUES('JHN', 3, 16, 17, 'kjv', 100, 200, 1.5, 2.5, 1, 0, 150);
+                 INSERT INTO memory_reviews(book, chapter, verse, at, grade) VALUES('JHN', 3, 16, 150, 3);",
+            )
+            .unwrap();
+        }
+        let s = StudyStore::open(&path).unwrap();
+        let m = s.memorised_at(v(16)).cloned().unwrap();
+        assert_eq!((m.first, m.last, m.translation.as_str(), m.schedule.reps), (v(16), v(17), "kjv", 1));
+        assert_eq!(s.reviews(v(16)), [Review { at: 150, grade: Grade::Good }]);
+        let c = s.changes_since(0, false);
+        assert_eq!(c.memory.len(), 1);
+        assert!(!c.memory[0].deleted);
+        assert_eq!(c.memory_reviews.len(), 1);
+        assert_eq!(c.memory[0].stamp.at, 150_000, "stamped from the newest of created and last_review");
+        assert_eq!(c.memory_reviews[0].stamp.at, 150_000);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn older_review_rows_without_a_unique_key_still_open() {
+        let dir = std::env::temp_dir().join(format!(
+            "bible-memory-dup-reviews-{}-{}",
+            std::process::id(),
+            crate::sync::new_device_id()
+        ));
+        let path = dir.join("study.sqlite");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE memory(
+                    book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL, last_verse INTEGER NOT NULL,
+                    translation TEXT NOT NULL, created INTEGER NOT NULL,
+                    due INTEGER NOT NULL, stability REAL NOT NULL, difficulty REAL NOT NULL,
+                    reps INTEGER NOT NULL, lapses INTEGER NOT NULL, last_review INTEGER,
+                    PRIMARY KEY(book, chapter, verse));
+                 CREATE TABLE memory_reviews(
+                    book TEXT NOT NULL, chapter INTEGER NOT NULL, verse INTEGER NOT NULL,
+                    at INTEGER NOT NULL, grade INTEGER NOT NULL);
+                 INSERT INTO memory(book, chapter, verse, last_verse, translation, created, due,
+                     stability, difficulty, reps, lapses, last_review)
+                 VALUES('JHN', 3, 16, 16, 'kjv', 100, 200, 1.5, 2.5, 2, 0, 150);
+                 INSERT INTO memory_reviews(book, chapter, verse, at, grade) VALUES('JHN', 3, 16, 150, 3);
+                 INSERT INTO memory_reviews(book, chapter, verse, at, grade) VALUES('JHN', 3, 16, 150, 3);",
+            )
+            .unwrap();
+        }
+        let s = StudyStore::open(&path).unwrap();
+        assert_eq!(s.reviews(v(16)).len(), 2, "two recalls in the same second both survive opening");
+        drop(s);
+        let s = StudyStore::open(&path).unwrap();
+        assert_eq!(s.reviews(v(16)).len(), 2);
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -170,7 +170,7 @@ pub const GROUPS: [&str; 3] = ["Navigate", "Verses", "View"];
 /// the same Ctrl key there, so ⌃⌘F would be Search's Ctrl+F.
 const FOCUS: Chord = if cfg!(target_os = "macos") { Chord::ctrl_cmd(Key::F) } else { Chord::new(Key::F11) };
 
-pub const ALL: [Shortcut; 18] = [
+pub const ALL: [Shortcut; 19] = [
     bindable("jump", "Navigate", "Jump to a reference", Chord::cmd(Key::K)),
     fixed("chapter", "Navigate", "Previous / next chapter", &["←", "→"]),
     fixed("history", "Navigate", "Back / forward", &["⌘", "[", "⌘", "]"]),
@@ -180,6 +180,7 @@ pub const ALL: [Shortcut; 18] = [
     fixed("highlight", "Verses", "Highlight colour · clear", &["1–6", "0"]),
     bindable("note", "Verses", "Note", Chord::new(Key::N)),
     bindable("bookmark", "Verses", "Bookmark", Chord::new(Key::B)),
+    bindable("memorise", "Verses", "Memorise", Chord::new(Key::M)),
     bindable("copy", "Verses", "Copy with reference", Chord::shift_cmd(Key::C)),
     bindable("compare", "Verses", "Compare translations", Chord::new(Key::C)),
     fixed("translation", "View", "Switch translation", &["⌘", "1…9"]),
@@ -199,6 +200,7 @@ pub fn action(id: &str) -> Option<Action> {
         "sidebar" => Action::ToggleSidebar,
         "note" => Action::EditSelectedNote,
         "bookmark" => Action::ToggleBookmark,
+        "memorise" => Action::Memorise,
         "copy" => Action::Copy,
         "compare" => Action::Compare,
         "parallel" => Action::ToggleParallel,

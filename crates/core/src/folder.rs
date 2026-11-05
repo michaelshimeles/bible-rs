@@ -509,6 +509,8 @@ fn add(total: &mut MergeReport, r: &MergeReport) {
     total.bookmarks += r.bookmarks;
     total.plans += r.plans;
     total.plan_reads += r.plan_reads;
+    total.memory += r.memory;
+    total.memory_reviews += r.memory_reviews;
     total.conflicts += r.conflicts;
 }
 
@@ -717,17 +719,19 @@ mod tests {
         a.set_bookmark(v(17), Some("")).unwrap();
         a.start_plan("bible-in-a-year", 1_790_000_000).unwrap();
         a.set_plan_read("bible-in-a-year", 1, 0, true).unwrap();
+        a.memorise(v(16), v(17), "kjv").unwrap();
         let r = lib.sync(&mut a).unwrap();
-        assert_eq!((r.read, r.written), (0, 5));
+        assert_eq!((r.read, r.written), (0, 6));
         assert_eq!(lib.status(&a).label(), "Synced");
 
         assert_eq!(lib.status(&b).label(), "1 waiting");
         let r = lib.sync(&mut b).unwrap();
-        assert_eq!((r.read, r.written, r.merged.changed()), (1, 0, 5));
+        assert_eq!((r.read, r.written, r.merged.changed()), (1, 0, 6));
         assert_eq!(body(&b, 16), Some("love"));
         assert_eq!(b.highlight(v(16)), Some(HighlightColor::Green));
         assert!(b.is_bookmarked(v(17)));
         assert!(b.plan_reads("bible-in-a-year").contains(&(1, 0)));
+        assert_eq!(b.memorised_at(v(16)).map(|m| (m.first, m.last)), Some((v(16), v(17))));
         assert_eq!(lib.status(&b).label(), "Synced");
 
         // A delete there comes back here.
