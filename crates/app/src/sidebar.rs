@@ -487,8 +487,8 @@ impl Sidebar {
                             actions.push(Action::OpenPage(crate::pages::Page::Plans));
                         }
                         // Memory shows once something is memorised.
-                        if !study.memorised().is_empty() {
-                            let due = study.due(crate::time::end_of_today()).len();
+                        if study.has_memorised() {
+                            let due = study.due_count(crate::time::end_of_today());
                             let r = row(
                                 ui,
                                 p,

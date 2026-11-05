@@ -408,6 +408,10 @@ pub struct MemoryReviewChange {
     pub at: i64,
     /// "Again", "Hard", "Good" or "Easy".
     pub grade: String,
+    /// Stable identity of this recall, so two devices grading the same way in the same second
+    /// both keep their log entries.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     #[serde(flatten)]
     pub stamp: Stamp,
     #[serde(default, skip_serializing_if = "is_false")]
