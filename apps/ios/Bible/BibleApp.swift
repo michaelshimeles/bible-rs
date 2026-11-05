@@ -13,10 +13,15 @@ struct BibleApp: App {
                     // The search text is built once the first page is up.
                     try? await Task.sleep(for: .milliseconds(300))
                     store.warm()
+                    store.studyLibraryForeground()
                 }
         }
         .onChange(of: phase) {
-            if phase != .active { store.save() }
+            if phase == .active {
+                store.studyLibraryForeground()
+            } else {
+                store.save()
+            }
         }
     }
 }

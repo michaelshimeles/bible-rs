@@ -86,7 +86,7 @@ struct StudyView: View {
         switch kind {
         case .bookmarks: store.setBookmark(item.verse, false)
         case .highlights: store.removeHighlight(item.verse, item.start)
-        case .notes: store.setNote(item.verse, "")
+        case .notes: store.setNote(item.verse, "", over: store.note(item.verse))
         }
     }
 }
