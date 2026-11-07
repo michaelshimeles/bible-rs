@@ -1,7 +1,8 @@
 //! What two copies of a study need to agree: who wrote each record and when, and the rules that
 //! pick one when they differ.
 //!
-//! Every highlighted verse, note, bookmark, plan and ticked plan passage carries a [`Stamp`]: the
+//! Every highlighted verse, note, bookmark, plan, ticked plan passage and memorised passage
+//! carries a [`Stamp`]: the
 //! time it last changed (Unix milliseconds from a hybrid logical clock, so a device whose clock is
 //! behind still moves forward) and the id of the device that changed it. Deleting keeps the record
 //! as a tombstone with a newer stamp, so the delete travels like any other change.
@@ -368,8 +369,63 @@ pub struct PlanReadChange {
     pub at: i64,
 }
 
+/// A passage being memorised (its first verse is the key), as it travels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryChange {
+    #[serde(flatten)]
+    pub verse: VerseKey,
+    #[serde(default)]
+    pub last_verse: u8,
+    #[serde(default)]
+    pub translation: String,
+    /// Unix seconds.
+    #[serde(default)]
+    pub created: i64,
+    #[serde(default)]
+    pub due: i64,
+    #[serde(default)]
+    pub stability: f64,
+    #[serde(default)]
+    pub difficulty: f64,
+    #[serde(default)]
+    pub reps: u32,
+    #[serde(default)]
+    pub lapses: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_review: Option<i64>,
+    #[serde(flatten)]
+    pub stamp: Stamp,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deleted: bool,
+}
+
+/// One recall of a memorised passage, as it travels. The passage is identified by its first verse.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryReviewChange {
+    #[serde(flatten)]
+    pub verse: VerseKey,
+    /// Unix seconds.
+    pub at: i64,
+    /// "Again", "Hard", "Good" or "Easy".
+    pub grade: String,
+    /// Stable identity of this recall, so two devices grading the same way in the same second
+    /// both keep their log entries.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    /// Last verse of the passage this recall was of (0 in older files).
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub last_verse: u8,
+    /// Translation the passage was learnt in when recalled (empty in older files).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub translation: String,
+    #[serde(flatten)]
+    pub stamp: Stamp,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deleted: bool,
+}
+
 /// Records with their stamps: what one copy of a study sends another.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Changes {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub highlights: Vec<HighlightsChange>,
@@ -381,6 +437,10 @@ pub struct Changes {
     pub plans: Vec<PlanChange>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plan_reads: Vec<PlanReadChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory: Vec<MemoryChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory_reviews: Vec<MemoryReviewChange>,
 }
 
 impl Changes {
@@ -394,6 +454,8 @@ impl Changes {
             + self.bookmarks.len()
             + self.plans.len()
             + self.plan_reads.len()
+            + self.memory.len()
+            + self.memory_reviews.len()
     }
 
     /// Keeps the records whose stamps `keep` says to.
@@ -403,6 +465,8 @@ impl Changes {
         self.bookmarks.retain(|c| keep(&c.stamp));
         self.plans.retain(|c| keep(&c.stamp));
         self.plan_reads.retain(|c| keep(&c.stamp));
+        self.memory.retain(|c| keep(&c.stamp));
+        self.memory_reviews.retain(|c| keep(&c.stamp));
     }
 
     /// Every stamp in it.
@@ -414,6 +478,8 @@ impl Changes {
             .chain(self.bookmarks.iter().map(|c| &c.stamp))
             .chain(self.plans.iter().map(|c| &c.stamp))
             .chain(self.plan_reads.iter().map(|c| &c.stamp))
+            .chain(self.memory.iter().map(|c| &c.stamp))
+            .chain(self.memory_reviews.iter().map(|c| &c.stamp))
     }
 }
 
@@ -425,13 +491,21 @@ pub struct MergeReport {
     pub bookmarks: usize,
     pub plans: usize,
     pub plan_reads: usize,
+    pub memory: usize,
+    pub memory_reviews: usize,
     /// New conflict copies of notes.
     pub conflicts: usize,
 }
 
 impl MergeReport {
     pub fn changed(&self) -> usize {
-        self.highlights + self.notes + self.bookmarks + self.plans + self.plan_reads
+        self.highlights
+            + self.notes
+            + self.bookmarks
+            + self.plans
+            + self.plan_reads
+            + self.memory
+            + self.memory_reviews
     }
 }
 
@@ -454,6 +528,10 @@ fn is_false(b: &bool) -> bool {
 }
 
 fn is_zero(n: &i64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u8(n: &u8) -> bool {
     *n == 0
 }
 

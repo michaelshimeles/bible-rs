@@ -486,6 +486,23 @@ impl Sidebar {
                         if r.clicked() {
                             actions.push(Action::OpenPage(crate::pages::Page::Plans));
                         }
+                        // Memory shows once something is memorised.
+                        if study.has_memorised() {
+                            let due = study.due_count(crate::time::end_of_today());
+                            let r = row(
+                                ui,
+                                p,
+                                &Row {
+                                    icon: Some(crate::icons::cards),
+                                    label: "Memory",
+                                    count: (due > 0).then(|| due.to_string()),
+                                    ..Row::default()
+                                },
+                            );
+                            if r.clicked() {
+                                actions.push(Action::StartRecall);
+                            }
+                        }
                         section(ui, p, "Library", false);
                         let selected = env.page == crate::pages::Page::Translations;
                         let r = row(

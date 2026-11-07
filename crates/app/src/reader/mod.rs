@@ -10,6 +10,7 @@
 //! the text chooses words, within one chapter, for a highlight of just those words.
 
 pub mod layout;
+pub mod recall;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -82,6 +83,9 @@ pub struct Env<'a> {
     /// The reader's width is changing frame by frame (the sidebar sliding): typeset only what is
     /// on screen, not the neighbouring chapters, which would be laid out again next frame.
     pub resizing: bool,
+    /// A recall hints at hidden words with their first letters.
+    pub recall_letters: bool,
+    pub reduce_motion: bool,
 }
 
 /// A place in the text: before char `offset` of a verse's text, in one of the parallel columns.
@@ -182,6 +186,8 @@ pub struct Reader {
     frames: u64,
     /// Chapters typeset so far (`BIBLE_RS_SIDEBAR_PROBE` counts them per transition).
     pub layouts: u64,
+    /// A memorised passage being recalled in place.
+    pub recall: Option<recall::Recall>,
 }
 
 impl Reader {
@@ -217,6 +223,7 @@ impl Reader {
             selection_rect: None,
             frames: 0,
             layouts: 0,
+            recall: None,
         };
         if verse > 1 {
             r.pending_jump = Some(Jump::to(chapter, verse));
@@ -473,6 +480,15 @@ impl Reader {
             self.text_selection = None;
             self.dragging_text = false;
         }
+        let (now, dt) = ui.input(|i| (i.time, i.stable_dt));
+        if let Some(recall) = &mut self.recall {
+            if let Some(id) = env.columns.first() {
+                recall.build(env.library, id);
+            }
+            if recall.tick(dt, now, env.reduce_motion) {
+                ui.ctx().request_repaint();
+            }
+        }
         let id = Id::unique("reader");
         // Text runs under the toolbar, but clicks there belong to the toolbar (and the window).
         let below_toolbar = Rect::from_min_max(pos2(rect.left(), rect.top() + env.toolbar), rect.max);
@@ -569,7 +585,19 @@ impl Reader {
         // Scrolling: wheel/trackpad (already smoothed by egui) and animated keyboard steps.
         let mut dy = 0.0;
         if resp.hovered() || resp.contains_pointer() {
-            dy -= ui.input(|i| i.smooth_scroll_delta.y);
+            let delta = ui.input(|i| i.smooth_scroll_delta);
+            match &mut self.recall {
+                // A two-finger swipe across reveals a passage being recalled, as a sideways
+                // scroller moves on: fingers to the left show more. While it lasts, the page holds
+                // still, so the swipe's drift up or down doesn't scroll it.
+                Some(recall) if recall.swiping() || delta.x.abs() > delta.y.abs() => {
+                    if delta.x != 0.0 {
+                        recall.swipe(-delta.x, geom.col_w, dt, now);
+                        ui.ctx().request_repaint();
+                    }
+                }
+                _ => dy -= delta.y,
+            }
         }
         if self.scroll_remaining.abs() > 0.5 {
             let step = self.scroll_remaining * 0.28;
@@ -643,7 +671,11 @@ impl Reader {
             for (pos, g) in &l.labels {
                 let at = (origin + *pos).to_pos2();
                 if at.y < rect.bottom() && at.y + g.size().y > rect.top() {
-                    painter.galley(at, g.clone(), p.ink);
+                    if self.recall.is_some() {
+                        recall::paint_dimmed(&painter, at, g, p.ink);
+                    } else {
+                        painter.galley(at, g.clone(), p.ink);
+                    }
                     under_toolbar |= at.y < toolbar_bottom;
                 }
             }
@@ -666,6 +698,26 @@ impl Reader {
                 }
                 under_toolbar |= br.top() < toolbar_bottom;
                 let bo = origin + block.pos;
+                // Recalling: the passage's words hidden until revealed, everything else dimmed.
+                if let Some(recall) = &self.recall {
+                    let passage = block.column == 0
+                        && ch == recall.passage.first.chapter_idx()
+                        && block.verses.iter().any(|(_, _, n)| recall.contains(*n));
+                    if passage {
+                        recall.paint_block(&painter, block, bo.to_pos2(), p, self.em, env.recall_letters);
+                    } else {
+                        recall::paint_dimmed(&painter, bo.to_pos2(), &block.galley, p.ink);
+                    }
+                    if let Some((g, gp)) = &block.gutter {
+                        let at = (origin + *gp).to_pos2();
+                        if passage {
+                            painter.galley(at, g.clone(), p.verse);
+                        } else {
+                            recall::paint_dimmed(&painter, at, g, p.verse);
+                        }
+                    }
+                    continue;
+                }
                 // Parallel: a selected verse is marked as a whole row across the columns.
                 let parallel = env.columns.len() > 1;
                 if parallel
@@ -783,6 +835,9 @@ impl Reader {
                         _ => in_view.push((ch, a.number)),
                     }
                 }
+                if self.recall.is_some() {
+                    continue;
+                }
                 // 16 pt glyphs in 20 pt boxes, centred on the first line.
                 let mut x = right;
                 let lh = (self.em * env.typo.line_height).round();
@@ -808,6 +863,12 @@ impl Reader {
                     if pointer.is_some_and(|pt| r.expand(4.0).contains(pt)) {
                         marker_hit = Some(vref);
                     }
+                    x += 24.0;
+                }
+                // The first verse of a passage being memorised.
+                if env.study.memorised_at(vref).is_some_and(|m| m.first == vref) {
+                    let r = Rect::from_center_size(pos2(x + 10.0, cy), vec2(16.0, 16.0));
+                    icons::cards(&painter, r, p.accent);
                     x += 24.0;
                 }
                 // An object built from this passage (objects.rs): its cube opens it in 3D.
@@ -867,6 +928,12 @@ impl Reader {
                 self.chapter_layout(ui, env, &geom, next);
                 ui.ctx().request_repaint();
             }
+        }
+
+        if self.recall.is_some() {
+            self.recall_input(ui, &resp, rect, &geom, env, actions);
+            self.paint_scrollbar(ui, &bar, &bar_resp, p, env);
+            return;
         }
 
         // Interaction.
@@ -944,6 +1011,40 @@ impl Reader {
         }
 
         self.paint_scrollbar(ui, &bar, &bar_resp, p, env);
+    }
+
+    /// Recalling, the reader's drags and clicks reveal the passage; its bar sits at the foot.
+    fn recall_input(
+        &mut self,
+        ui: &mut Ui,
+        resp: &egui::Response,
+        rect: Rect,
+        geom: &Geometry,
+        env: &Env<'_>,
+        actions: &mut Vec<Action>,
+    ) {
+        let clicked = resp.clicked().then(|| resp.interact_pointer_pos()).flatten();
+        let Some(recall) = &mut self.recall else { return };
+        let dt = ui.input(|i| i.stable_dt);
+        if resp.hovered() || recall.dragging() {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        }
+        if resp.dragged_by(egui::PointerButton::Primary)
+            && let Some(pt) = resp.interact_pointer_pos()
+        {
+            recall.drag(pt.x, geom.col_w, dt);
+            ui.ctx().request_repaint();
+        }
+        if resp.drag_stopped() {
+            recall.release();
+            ui.ctx().request_repaint();
+        }
+        // A click anywhere in the reader shows the next word.
+        if clicked.is_some() {
+            recall.step(recall::Step::NextWord);
+            ui.ctx().request_repaint();
+        }
+        recall::bar(recall, ui, rect, env.theme.palette(), env.recall_letters, env.study, actions);
     }
 
     /// The place in the text at `pt`: in a block of verse text under it. While words are being

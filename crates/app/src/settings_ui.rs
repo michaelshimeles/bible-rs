@@ -420,7 +420,7 @@ impl SettingsUi {
                             let day = crate::time::day_start(at);
                             let when = if day == crate::time::day_start(now) {
                                 "Today".to_string()
-                            } else if day == crate::time::day_start(now) - 86_400 {
+                            } else if day == crate::time::days_before(crate::time::day_start(now), 1) {
                                 "Yesterday".to_string()
                             } else {
                                 crate::time::short_date(at)
@@ -483,7 +483,9 @@ impl SettingsUi {
                     p,
                     r,
                     "Erase all study data",
-                    Some("Highlights, notes, bookmarks, plans and history. Translations stay."),
+                    Some(
+                        "Highlights, notes, bookmarks, plans, memorised passages and history. Translations stay.",
+                    ),
                 );
                 let (_, resp) = Button::new(Kind::Destructive, "Erase…").small().show_right(
                     ui,

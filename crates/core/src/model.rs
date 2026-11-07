@@ -340,6 +340,13 @@ impl Translation {
         if r.is_empty() { 0 } else { self.verses[r.end - 1].number_end }
     }
 
+    /// Whether chapter `c` has all of verses `first..=last`, in verses (or bridges) that start
+    /// among them: what a recall of that passage needs to test all of it.
+    pub fn has_passage(&self, c: ChapterIdx, first: u8, last: u8) -> bool {
+        let inside: Vec<_> = self.verses_in(c).filter(|v| (first..=last).contains(&v.number)).collect();
+        (first..=last).all(|n| inside.iter().any(|v| (v.number..=v.number_end).contains(&n)))
+    }
+
     pub fn verse_view(&self, index: u32) -> Option<VerseView<'_>> {
         if index as usize >= self.verses.len() {
             return None;
@@ -864,5 +871,27 @@ mod tests {
         assert!(!t.has_chapter(ChapterIdx(1)));
         assert_eq!(t.chapter_of(1), ChapterIdx(0));
         assert_eq!(t.last_verse(ChapterIdx(0)), 3);
+    }
+
+    #[test]
+    fn has_passage_needs_every_verse_from_a_verse_inside_it() {
+        let mut b = TranslationBuilder::new(meta());
+        b.begin_book(BookId(0));
+        b.begin_chapter(1);
+        b.begin_verse(1, 1);
+        b.text("a");
+        b.begin_verse(2, 3);
+        b.text("b");
+        b.begin_verse(5, 5);
+        b.text("c");
+        let t = b.finish();
+        let c = ChapterIdx(0);
+        assert!(t.has_passage(c, 1, 3));
+        assert!(t.has_passage(c, 2, 2));
+        // Verse 4 is missing.
+        assert!(!t.has_passage(c, 3, 5));
+        // Verse 3 is only in the bridge that starts at 2.
+        assert!(!t.has_passage(c, 3, 3));
+        assert!(!t.has_passage(ChapterIdx(1), 1, 1));
     }
 }

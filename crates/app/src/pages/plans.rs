@@ -70,7 +70,8 @@ impl Under<'_> {
             .filter(|s| s.finished())
             .filter_map(|s| s.chapter_idx())
             .collect();
-        let today = ((time::day_start(bible_core::study::now()) - state.started) / DAY).max(0) as usize + 1;
+        let days = time::days_between(state.started, time::day_start(bible_core::study::now()));
+        let today = days.max(0) as usize + 1;
         Under { plan, state, reads, finished, today }
     }
 
@@ -358,14 +359,14 @@ impl State {
                 p,
                 left,
                 cy,
-                ui.id().with(("leave-cancel", plan_id)),
+                ui.scope_id().with(("leave-cancel", plan_id)),
             );
             let (_, leave) = Button::new(Kind::Destructive, "Leave plan").small().show_left(
                 ui,
                 p,
                 cancel_b.right() + 8.0,
                 cy,
-                ui.id().with(("leave-confirm", plan_id)),
+                ui.scope_id().with(("leave-confirm", plan_id)),
             );
             if leave.clicked() {
                 self.confirm_leave(plan_id, actions);
@@ -382,7 +383,7 @@ impl State {
                 p,
                 left,
                 cy,
-                ui.id().with(("leave-plan", plan_id)),
+                ui.scope_id().with(("leave-plan", plan_id)),
             );
             if resp.clicked() {
                 self.request_leave(plan_id);
@@ -424,14 +425,14 @@ impl State {
                 p,
                 card.right() - 16.0,
                 cy,
-                ui.id().with(("leave-confirm", plan_id)),
+                ui.scope_id().with(("leave-confirm", plan_id)),
             );
             let (_, cancel) = Button::new(Kind::Plain, "Cancel").small().show_right(
                 ui,
                 p,
                 leave_b.left() - 8.0,
                 cy,
-                ui.id().with(("leave-cancel", plan_id)),
+                ui.scope_id().with(("leave-cancel", plan_id)),
             );
             if leave.clicked() {
                 self.confirm_leave(plan_id, actions);
@@ -447,7 +448,7 @@ impl State {
                 p,
                 card.right() - 16.0,
                 card.center().y,
-                ui.id().with(("leave-plan", plan_id)),
+                ui.scope_id().with(("leave-plan", plan_id)),
             );
             if resp.clicked() {
                 self.request_leave(plan_id);
