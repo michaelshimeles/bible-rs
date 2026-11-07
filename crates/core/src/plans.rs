@@ -474,8 +474,10 @@ fn parse_one(token: &str) -> Result<Vec<Passage>, String> {
         }
         return Ok(chapters.into_iter().map(Passage::whole).collect());
     }
-    if !token.contains(':')
-        && !token.contains('.')
+    // Only the numbers after the book name count: the period in "Gen." is not a separator.
+    let numbers = after_book(token);
+    if !numbers.contains(':')
+        && !numbers.contains('.')
         && let Some((book, start, end)) = chapter_span(token)
     {
         if start < 1 || end < start {
@@ -493,8 +495,8 @@ fn parse_one(token: &str) -> Result<Vec<Passage>, String> {
     if let Some(cross) = cross_chapter_verses(token) {
         return cross;
     }
-    if token.chars().filter(|c| *c == ':' || *c == '.').count() >= 2
-        && token.chars().any(|c| matches!(c, '-' | '–' | '—'))
+    if numbers.chars().filter(|c| *c == ':' || *c == '.').count() >= 2
+        && numbers.chars().any(|c| matches!(c, '-' | '–' | '—'))
     {
         return Err(format!(
             "“{token}” crosses chapters; write each chapter as its own passage (e.g. John 3:16–36, John 4:1–2)"
@@ -507,6 +509,16 @@ fn parse_one(token: &str) -> Result<Vec<Passage>, String> {
         (None, _) => None,
     };
     Ok(vec![Passage { chapter: r.chapter_idx(), verses }])
+}
+
+/// The part of a passage after its book name ("Gen. 1:1–5" gives "1:1–5"), so an
+/// abbreviation's period is not read as a chapter:verse separator. A token with no
+/// letters is all numbers already.
+fn after_book(token: &str) -> &str {
+    let Some((pos, c)) = token.char_indices().rfind(|(_, c)| c.is_alphabetic()) else {
+        return token;
+    };
+    token[pos + c.len_utf8()..].trim_start_matches(|c: char| c == '.' || c.is_whitespace())
 }
 
 /// "John 3:16–4:2" (a verse range that crosses chapters) as the passages it names.
@@ -635,6 +647,22 @@ mod tests {
         assert_eq!(cross[0].verses, Some((16, 36)));
         assert_eq!(cross[1].chapter.chapter(), 4);
         assert_eq!(cross[1].verses, Some((1, 2)));
+        // An abbreviation's period is part of the book name, not a chapter separator.
+        let dotted = parse_passages("Gen. 1:1–5").unwrap();
+        assert_eq!(dotted.len(), 1);
+        assert_eq!(dotted[0].chapter.book().name(), "Genesis");
+        assert_eq!(dotted[0].chapter.chapter(), 1);
+        assert_eq!(dotted[0].verses, Some((1, 5)));
+        let dotted_span = parse_passages("Gen. 1–3").unwrap();
+        assert_eq!(dotted_span.len(), 3);
+        assert!(dotted_span.iter().all(|p| p.verses.is_none()));
+        let dotted_cross = parse_passages("Gen. 1:31–2:3").unwrap();
+        assert_eq!(dotted_cross.len(), 2);
+        assert_eq!(dotted_cross[0].verses, Some((31, 31)));
+        assert_eq!(dotted_cross[1].verses, Some((1, 3)));
+        let numbered = parse_passages("1 Cor. 13:4–7").unwrap();
+        assert_eq!(numbered[0].chapter.book().name(), "1 Corinthians");
+        assert_eq!(numbered[0].verses, Some((4, 7)));
         let same = parse_passages("John 3:16–3:18").unwrap();
         assert_eq!(same.len(), 1);
         assert_eq!(same[0].verses, Some((16, 18)));
