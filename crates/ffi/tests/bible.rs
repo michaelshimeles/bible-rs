@@ -350,6 +350,58 @@ fn a_study_library_folder_carries_notes_between_devices() {
 }
 
 #[test]
+fn custom_reading_plans_round_trip() {
+    let (bible, dir) = open("custom-plans");
+    let catalogue = plan_catalogue();
+    assert!(catalogue.iter().any(|p| p.id == "john-21" && !p.custom));
+    let filled = fill_plan_days("Proverbs".into(), 1, 0).unwrap();
+    assert_eq!(filled.len(), 31);
+    assert!(filled[0].contains("Proverb") || filled[0].contains("Prov"));
+
+    let saved = bible
+        .save_custom_plan(CustomPlanDraft {
+            id: String::new(),
+            title: "Wisdom".into(),
+            description: "A chapter a day".into(),
+            days: filled,
+        })
+        .unwrap();
+    assert!(saved.custom);
+    assert_eq!(saved.title, "Wisdom");
+    assert_eq!(saved.days, 31);
+    assert_eq!(bible.custom_plans().len(), 1);
+    assert_eq!(bible.lookup_plan(saved.id.clone()).unwrap().title, "Wisdom");
+    assert_eq!(bible.lookup_plan_days(saved.id.clone()).len(), 31);
+
+    bible.start_plan(saved.id.clone(), 1_700_000_000).unwrap();
+    bible.set_plan_read(saved.id.clone(), 1, 0, true).unwrap();
+    assert_eq!(bible.started_plans()[0].id, saved.id);
+    assert_eq!(bible.plan_reads(saved.id.clone())[0].day, 1);
+
+    let copy = bible.duplicate_custom_plan(saved.id.clone()).unwrap();
+    assert_ne!(copy.id, saved.id);
+    assert_eq!(copy.title, "Wisdom (copy)");
+
+    bible.delete_custom_plan(saved.id.clone()).unwrap();
+    assert!(bible.lookup_plan(saved.id).is_none());
+    assert!(bible.started_plans().is_empty());
+    assert_eq!(bible.custom_plans().len(), 1);
+
+    assert!(
+        bible
+            .save_custom_plan(CustomPlanDraft {
+                id: "john-21".into(),
+                title: "Nope".into(),
+                description: String::new(),
+                days: vec!["John 1".into()],
+            })
+            .is_err()
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn saving_a_note_over_a_changed_base_keeps_a_conflict_copy() {
     let (bible, dir) = open("note-over");
     bible.set_note(JOHN_3_16, "first".into()).unwrap();

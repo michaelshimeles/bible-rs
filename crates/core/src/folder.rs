@@ -509,6 +509,7 @@ fn add(total: &mut MergeReport, r: &MergeReport) {
     total.bookmarks += r.bookmarks;
     total.plans += r.plans;
     total.plan_reads += r.plan_reads;
+    total.custom_plans += r.custom_plans;
     total.conflicts += r.conflicts;
 }
 

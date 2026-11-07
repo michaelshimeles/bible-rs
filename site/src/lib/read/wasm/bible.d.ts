@@ -30,6 +30,12 @@ export class Bible {
     copyText(translation: string, verses: any, format: string): string | undefined;
     counts(): any;
     /**
+     * Plans the reader wrote, newest first.
+     */
+    customPlans(): any;
+    deleteCustomPlan(id: string): void;
+    duplicateCustomPlan(id: string): any;
+    /**
      * Erases every highlight, note, bookmark, plan and the reading history.
      */
     eraseStudy(): void;
@@ -72,6 +78,10 @@ export class Bible {
      */
     load(bytes: Uint8Array): any;
     /**
+     * A plan's days from a custom plan or the catalogue.
+     */
+    lookupPlanDays(id: string): any;
+    /**
      * Highlights, notes and bookmarks on the verses of a chapter (as numbered in `translation`,
      * or the KJV's numbering when it isn't loaded).
      */
@@ -111,6 +121,10 @@ export class Bible {
      * Replaces the study store with a `snapshot`.
      */
     restore(json: string): void;
+    /**
+     * Create or update a plan the reader wrote. `days` are typed references, one string per day.
+     */
+    saveCustomPlan(draft: any): any;
     /**
      * Searches a translation: every word must appear (as a word prefix unless `whole_words`),
      * `"quoted phrases"` in order, `-words` excluded. `scope` is "all", "ot", "nt" or a book
@@ -195,6 +209,12 @@ export function chapterLabel(index: number): string;
 export function chapterVerses(index: number): number;
 
 /**
+ * Turn typed books and passages into day labels at a given pace (`in_days` is used when
+ * `chapters_per_day` is 0).
+ */
+export function fillPlanDays(source: string, chapters_per_day: number, in_days: number): any;
+
+/**
  * The books a type-ahead book filter offers for what's typed, best first, as indexes (all 66 in
  * order for nothing typed).
  */
@@ -217,7 +237,7 @@ export function parseReferenceIn(input: string, book: number): any;
 export function planCatalogue(): any;
 
 /**
- * A plan's days, each with its passages.
+ * A built-in plan's days, each with its passages.
  */
 export function planDays(id: string): any;
 
@@ -247,6 +267,9 @@ export interface InitOutput {
     readonly bible_copySpan: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly bible_copyText: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly bible_counts: (a: number, b: number) => void;
+    readonly bible_customPlans: (a: number, b: number) => void;
+    readonly bible_deleteCustomPlan: (a: number, b: number, c: number, d: number) => void;
+    readonly bible_duplicateCustomPlan: (a: number, b: number, c: number, d: number) => void;
     readonly bible_eraseStudy: (a: number, b: number) => void;
     readonly bible_exportStudy: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly bible_finishPlan: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
@@ -256,6 +279,7 @@ export interface InitOutput {
     readonly bible_importStudy: (a: number, b: number, c: number, d: number) => void;
     readonly bible_load: (a: number, b: number, c: number, d: number) => void;
     readonly bible_loadNlt: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly bible_lookupPlanDays: (a: number, b: number, c: number, d: number) => void;
     readonly bible_marks: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly bible_mergeSnapshot: (a: number, b: number, c: number, d: number) => void;
     readonly bible_new: () => number;
@@ -267,6 +291,7 @@ export interface InitOutput {
     readonly bible_recordReading: (a: number, b: number, c: number) => void;
     readonly bible_removeHighlight: (a: number, b: number, c: number, d: number) => void;
     readonly bible_restore: (a: number, b: number, c: number, d: number) => void;
+    readonly bible_saveCustomPlan: (a: number, b: number, c: number) => void;
     readonly bible_search: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => void;
     readonly bible_setBookmark: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly bible_setHighlight: (a: number, b: number, c: number, d: number, e: number) => void;
@@ -285,6 +310,7 @@ export interface InitOutput {
     readonly bundledTranslations: (a: number) => void;
     readonly chapterLabel: (a: number, b: number) => void;
     readonly chapterVerses: (a: number) => number;
+    readonly fillPlanDays: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly filterBooks: (a: number, b: number, c: number) => void;
     readonly parseReference: (a: number, b: number, c: number) => void;
     readonly parseReferenceIn: (a: number, b: number, c: number, d: number) => void;

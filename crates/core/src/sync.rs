@@ -1,7 +1,7 @@
 //! What two copies of a study need to agree: who wrote each record and when, and the rules that
 //! pick one when they differ.
 //!
-//! Every highlighted verse, note, bookmark, plan and ticked plan passage carries a [`Stamp`]: the
+//! Every highlighted verse, note, bookmark, plan, custom plan and ticked plan passage carries a [`Stamp`]: the
 //! time it last changed (Unix milliseconds from a hybrid logical clock, so a device whose clock is
 //! behind still moves forward) and the id of the device that changed it. Deleting keeps the record
 //! as a tombstone with a newer stamp, so the delete travels like any other change.
@@ -368,6 +368,25 @@ pub struct PlanReadChange {
     pub at: i64,
 }
 
+/// A plan the reader wrote: its title, description and days of passages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomPlanChange {
+    pub id: String,
+    #[serde(flatten)]
+    pub stamp: Stamp,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deleted: bool,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub days: Vec<Vec<crate::plans::PassageRef>>,
+    /// Unix seconds, when it was first saved.
+    #[serde(default)]
+    pub created: i64,
+}
+
 /// Records with their stamps: what one copy of a study sends another.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Changes {
@@ -381,6 +400,8 @@ pub struct Changes {
     pub plans: Vec<PlanChange>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plan_reads: Vec<PlanReadChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_plans: Vec<CustomPlanChange>,
 }
 
 impl Changes {
@@ -394,6 +415,7 @@ impl Changes {
             + self.bookmarks.len()
             + self.plans.len()
             + self.plan_reads.len()
+            + self.custom_plans.len()
     }
 
     /// Keeps the records whose stamps `keep` says to.
@@ -403,6 +425,7 @@ impl Changes {
         self.bookmarks.retain(|c| keep(&c.stamp));
         self.plans.retain(|c| keep(&c.stamp));
         self.plan_reads.retain(|c| keep(&c.stamp));
+        self.custom_plans.retain(|c| keep(&c.stamp));
     }
 
     /// Every stamp in it.
@@ -414,6 +437,7 @@ impl Changes {
             .chain(self.bookmarks.iter().map(|c| &c.stamp))
             .chain(self.plans.iter().map(|c| &c.stamp))
             .chain(self.plan_reads.iter().map(|c| &c.stamp))
+            .chain(self.custom_plans.iter().map(|c| &c.stamp))
     }
 }
 
@@ -425,13 +449,14 @@ pub struct MergeReport {
     pub bookmarks: usize,
     pub plans: usize,
     pub plan_reads: usize,
+    pub custom_plans: usize,
     /// New conflict copies of notes.
     pub conflicts: usize,
 }
 
 impl MergeReport {
     pub fn changed(&self) -> usize {
-        self.highlights + self.notes + self.bookmarks + self.plans + self.plan_reads
+        self.highlights + self.notes + self.bookmarks + self.plans + self.plan_reads + self.custom_plans
     }
 }
 

@@ -1049,6 +1049,25 @@ impl BibleApp {
                     self.toast(ctx, format!("{e:#}"));
                 }
             }
+            Action::SaveCustomPlan(plan) => {
+                let title = plan.title.clone();
+                match self.study.save_custom_plan(plan.clone()) {
+                    Ok(()) => self.toast(ctx, format!("Saved {title}")),
+                    Err(e) => {
+                        self.pages.plans.restore_editor(plan);
+                        self.toast(ctx, format!("{e:#}"));
+                    }
+                }
+            }
+            Action::DeleteCustomPlan(id) => {
+                if let Err(e) = self.study.delete_custom_plan(&id) {
+                    self.toast(ctx, format!("{e:#}"));
+                }
+            }
+            Action::DuplicateCustomPlan(id) => match self.study.duplicate_custom_plan(&id) {
+                Ok(copy) => self.toast(ctx, format!("Copied “{}”", copy.title)),
+                Err(e) => self.toast(ctx, format!("{e:#}")),
+            },
             Action::SetPlanRead { plan, day, passage, read } => {
                 if let Err(e) = self.study.set_plan_read(&plan, day, passage, read) {
                     self.toast(ctx, format!("{e:#}"));
@@ -1132,7 +1151,8 @@ impl BibleApp {
 
     /// One `BIBLE_RS_DEMO` step: `jump:<reference>`, `select:<reference>`, `palette:<query>`,
     /// `search:<query>`, `scope:<ot|nt>`, `step:<n>` (search results), `offline:<reference>`, `note:<reference>`, `compare:<reference>`, `study:<bookmarks|highlights|notes>`,
-    /// `settings:<reading|translations|data>`, `plans-tab:<active|browse|completed>`,
+    /// `settings:<reading|translations|data>`, `plans-tab:<active|browse|completed|mine>`,
+    /// `plan-new`, `custom-plan:<title>|<source>` or `title|description|source` (saved, then My Plans),
     /// `size:<width>x<height>` (the window's inner size).
     fn demo_step(&mut self, ctx: &egui::Context, step: &str, actions: &mut Vec<Action>) {
         let (cmd, arg) = step.split_once(':').unwrap_or((step, ""));
@@ -1200,6 +1220,39 @@ impl BibleApp {
             }
             "pick" => self.pages.translations.selected = Some(arg.to_string()),
             "plans-tab" => self.pages.plans.set_tab(arg),
+            "plan-new" => self.pages.plans.open_new_plan(),
+            // `custom-plan:<title>|<source>` or `title|description|source`.
+            "custom-plan" => {
+                let parts: Vec<&str> = arg.split('|').collect();
+                let (title, description, source) = match parts.as_slice() {
+                    [title, source] => (*title, "", *source),
+                    [title, description, source, ..] => (*title, *description, *source),
+                    _ => ("", "", ""),
+                };
+                match bible_core::plans::parse_passages(source) {
+                    Ok(passages) => match bible_core::plans::schedule(
+                        &passages,
+                        bible_core::plans::Pace::ChaptersPerDay(1),
+                    ) {
+                        Ok(days) => {
+                            let plan = bible_core::plans::CustomPlan {
+                                id: String::new(),
+                                title: title.trim().into(),
+                                description: description.trim().into(),
+                                days,
+                                created: 0,
+                            };
+                            if let Err(e) = self.study.save_custom_plan(plan) {
+                                eprintln!("BIBLE_RS_DEMO custom-plan: {e:#}");
+                            } else {
+                                self.pages.plans.set_tab("mine");
+                            }
+                        }
+                        Err(e) => eprintln!("BIBLE_RS_DEMO custom-plan: {e}"),
+                    },
+                    Err(e) => eprintln!("BIBLE_RS_DEMO custom-plan: {e}"),
+                }
+            }
             // `plan-day:<plan>@<day>`: a plan's day view.
             "plan-day" => {
                 let (id, day) = arg.split_once('@').unwrap_or((arg, "1"));
@@ -1417,7 +1470,7 @@ impl BibleApp {
         }
         self.reminded = Some(today);
         let due = self.study.plans().into_iter().filter(|p| p.finished.is_none()).find_map(|p| {
-            let plan = bible_core::plans::get(&p.id)?;
+            let plan = self.study.resolve_plan(&p.id)?;
             let day = ((today - p.started) / 86_400 + 1) as usize;
             let reads = self.study.plan_reads(&p.id);
             let todo = (0..plan.day(day).len()).any(|i| !reads.contains(&(day as u16, i as u8)));

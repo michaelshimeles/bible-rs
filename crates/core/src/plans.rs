@@ -3,7 +3,10 @@
 
 use std::sync::OnceLock;
 
+use serde::{Deserialize, Serialize};
+
 use crate::books::{BookId, ChapterIdx};
+use crate::reference;
 
 /// One reading: a whole chapter, or verses of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,8 +16,14 @@ pub struct Passage {
 }
 
 impl Passage {
-    fn whole(chapter: ChapterIdx) -> Self {
+    pub fn whole(chapter: ChapterIdx) -> Self {
         Self { chapter, verses: None }
+    }
+
+    /// Verses `start` through `end` of a chapter, inclusive.
+    pub fn verses(chapter: ChapterIdx, start: u8, end: u8) -> Self {
+        let (a, b) = if end < start { (end, start) } else { (start, end) };
+        Self { chapter, verses: Some((a, b)) }
     }
 }
 
@@ -218,6 +227,377 @@ pub fn label(passages: &[Passage], name: impl Fn(BookId) -> String) -> String {
     parts.join(" · ")
 }
 
+/// A day's passages as typed references that parse back: each passage keeps its book name
+/// ("Psalms 1 · Psalms 3"), so an editor can save the label `label` would show as "Psalms 1, 3".
+pub fn edit_label(passages: &[Passage], name: impl Fn(BookId) -> String + Copy) -> String {
+    passages.iter().map(|p| label(std::slice::from_ref(p), name)).collect::<Vec<_>>().join(" · ")
+}
+
+/// How many days a plan you create may run (about five and a half years).
+pub const MAX_DAYS: usize = 2000;
+/// How many passages one day may hold.
+pub const MAX_PASSAGES_PER_DAY: usize = 32;
+pub const MAX_TITLE: usize = 120;
+pub const MAX_DESCRIPTION: usize = 2000;
+
+/// A book, chapter, and optional verse range, named so it can be stored and synced without tying
+/// the data to this build's chapter-index numbering.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PassageRef {
+    pub book: String,
+    pub chapter: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verses: Option<(u8, u8)>,
+}
+
+impl PassageRef {
+    pub fn from_passage(p: Passage) -> Self {
+        Self {
+            book: p.chapter.book().info().code.to_string(),
+            chapter: p.chapter.chapter(),
+            verses: p.verses,
+        }
+    }
+
+    pub fn to_passage(&self) -> Option<Passage> {
+        let book = BookId::from_code(&self.book)?;
+        let chapter = ChapterIdx::new(book, self.chapter)?;
+        Some(match self.verses {
+            Some((a, b)) => Passage::verses(chapter, a, b),
+            None => Passage::whole(chapter),
+        })
+    }
+}
+
+/// How to turn a list of passages into days.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pace {
+    /// This many passages (usually whole chapters) each day.
+    ChaptersPerDay(u16),
+    /// Spread the passages over this many days.
+    InDays(u16),
+}
+
+/// A plan the reader wrote: title, optional description, and an ordered list of days.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomPlan {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub days: Vec<Vec<Passage>>,
+    /// Unix seconds, when it was first saved.
+    pub created: i64,
+}
+
+impl CustomPlan {
+    pub fn meta(&self) -> String {
+        pace_label(&self.days)
+    }
+
+    pub fn resolved(&self) -> ResolvedPlan {
+        ResolvedPlan {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            meta: self.meta(),
+            description: self.description.clone(),
+            icon: PlanIcon::Note,
+            days: self.days.clone(),
+            custom: true,
+        }
+    }
+
+    pub fn days_as_refs(&self) -> Vec<Vec<PassageRef>> {
+        self.days.iter().map(|d| d.iter().copied().map(PassageRef::from_passage).collect()).collect()
+    }
+
+    pub fn from_refs(
+        id: String,
+        title: String,
+        description: String,
+        days: &[Vec<PassageRef>],
+        created: i64,
+    ) -> Option<Self> {
+        let days: Option<Vec<Vec<Passage>>> =
+            days.iter().map(|d| d.iter().map(PassageRef::to_passage).collect()).collect();
+        let days = days?;
+        if days.iter().any(|d| d.is_empty()) {
+            return None;
+        }
+        Some(Self { id, title, description, days, created })
+    }
+}
+
+/// A built-in or custom plan, owned, so the same UI can show both.
+#[derive(Debug, Clone)]
+pub struct ResolvedPlan {
+    pub id: String,
+    pub title: String,
+    pub meta: String,
+    pub description: String,
+    pub icon: PlanIcon,
+    pub days: Vec<Vec<Passage>>,
+    pub custom: bool,
+}
+
+impl ResolvedPlan {
+    pub fn from_builtin(p: &Plan) -> Self {
+        Self {
+            id: p.id.to_string(),
+            title: p.title.to_string(),
+            meta: p.meta.to_string(),
+            description: p.description.to_string(),
+            icon: p.icon,
+            days: p.days.clone(),
+            custom: false,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.days.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.days.is_empty()
+    }
+
+    /// The passages for day `n` (1-based).
+    pub fn day(&self, n: usize) -> &[Passage] {
+        n.checked_sub(1).and_then(|i| self.days.get(i)).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// An id reserved for a plan the reader created (`custom-` and a unique suffix).
+pub fn is_custom_id(id: &str) -> bool {
+    id.starts_with("custom-") && id.len() > "custom-".len()
+}
+
+/// A fresh id that will not collide with the catalogue.
+pub fn new_custom_id() -> String {
+    format!("custom-{}", crate::sync::new_device_id())
+}
+
+/// Length and pace, e.g. "12 days · ~1 chapter a day".
+pub fn pace_label(days: &[Vec<Passage>]) -> String {
+    let n = days.len();
+    if n == 0 {
+        return "No days".into();
+    }
+    let passages = days.iter().map(Vec::len).sum::<usize>();
+    let avg = (passages as f32 / n as f32).round().max(1.0) as usize;
+    let whole = days.iter().all(|d| d.iter().all(|p| p.verses.is_none()));
+    let unit = match (whole, avg) {
+        (true, 1) => "chapter",
+        (true, _) => "chapters",
+        (false, 1) => "passage",
+        (false, _) => "passages",
+    };
+    format!("{n} days · ~{avg} {unit} a day")
+}
+
+/// Split `items` into `days` groups, in order, the way built-in plans spread chapters.
+pub fn spread_items<T: Clone>(items: &[T], days: usize) -> Vec<Vec<T>> {
+    let n = items.len();
+    if n == 0 || days == 0 {
+        return Vec::new();
+    }
+    let days = days.min(n);
+    (0..days)
+        .map(|d| items[d * n / days..(d + 1) * n / days].to_vec())
+        .filter(|day| !day.is_empty())
+        .collect()
+}
+
+/// Turn a flat list of passages into days at the given pace.
+pub fn schedule(items: &[Passage], pace: Pace) -> Result<Vec<Vec<Passage>>, String> {
+    if items.is_empty() {
+        return Err("Add some books or passages first".into());
+    }
+    let days = match pace {
+        Pace::ChaptersPerDay(0) => return Err("Pace has to be at least one passage a day".into()),
+        Pace::ChaptersPerDay(n) => items.chunks(n as usize).map(|c| c.to_vec()).collect(),
+        Pace::InDays(0) => return Err("A plan needs at least one day".into()),
+        Pace::InDays(d) => spread_items(items, d as usize),
+    };
+    if days.is_empty() {
+        return Err("That schedule has no days".into());
+    }
+    if days.len() > MAX_DAYS {
+        return Err("That would be more than 2,000 days".into());
+    }
+    if days.iter().any(|d| d.len() > MAX_PASSAGES_PER_DAY) {
+        return Err("A day can hold at most 32 passages".into());
+    }
+    Ok(days)
+}
+
+/// One or more passages from typed references: "John 1", "John 1–3", "Matthew 5:1–16",
+/// "Proverbs 3, James 1:2–8", or a book name for every chapter of that book. Does not invent
+/// verse text — only the references.
+pub fn parse_passages(input: &str) -> Result<Vec<Passage>, String> {
+    let parts: Vec<&str> =
+        input.split([',', ';', '\n', '·']).map(str::trim).filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return Err("Add a book, chapter, or verse range".into());
+    }
+    let mut out = Vec::new();
+    let mut last_book: Option<BookId> = None;
+    for part in parts {
+        let carried;
+        let token = if !part.chars().any(|c| c.is_ascii_alphabetic()) {
+            if let Some(book) = last_book {
+                carried = format!("{} {part}", book.name());
+                carried.as_str()
+            } else {
+                part
+            }
+        } else {
+            part
+        };
+        let added = parse_one(token)?;
+        if let Some(p) = added.last() {
+            last_book = Some(p.chapter.book());
+        }
+        out.extend(added);
+    }
+    Ok(out)
+}
+
+fn parse_one(token: &str) -> Result<Vec<Passage>, String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("Empty passage".into());
+    }
+    if let Some(book) = reference::parse_book(token) {
+        let chapters = book_chapters([book.0]);
+        if chapters.is_empty() {
+            return Err(format!("Couldn't read “{token}” as a book"));
+        }
+        return Ok(chapters.into_iter().map(Passage::whole).collect());
+    }
+    // Only the numbers after the book name count: the period in "Gen." is not a separator.
+    let numbers = after_book(token);
+    if !numbers.contains(':')
+        && !numbers.contains('.')
+        && let Some((book, start, end)) = chapter_span(token)
+    {
+        if start < 1 || end < start {
+            return Err(format!("“{token}” is not a chapter range"));
+        }
+        let mut out = Vec::new();
+        for c in start..=end {
+            let ch = ChapterIdx::new(book, c).ok_or_else(|| format!("{} has no chapter {c}", book.name()))?;
+            out.push(Passage::whole(ch));
+        }
+        return Ok(out);
+    }
+    // `reference::parse` keeps only three numbers, so a second chapter:verse after the dash
+    // must be handled here (or refused) rather than becoming a verse-end on the first chapter.
+    if let Some(cross) = cross_chapter_verses(token) {
+        return cross;
+    }
+    if numbers.chars().filter(|c| *c == ':' || *c == '.').count() >= 2
+        && numbers.chars().any(|c| matches!(c, '-' | '–' | '—'))
+    {
+        return Err(format!(
+            "“{token}” crosses chapters; write each chapter as its own passage (e.g. John 3:16–36, John 4:1–2)"
+        ));
+    }
+    let r = reference::parse(token).ok_or_else(|| format!("Couldn't read “{token}” as a passage"))?;
+    let verses = match (r.verse, r.verse_end) {
+        (Some(a), Some(b)) => Some(if b >= a { (a, b) } else { (b, a) }),
+        (Some(a), None) => Some((a, a)),
+        (None, _) => None,
+    };
+    Ok(vec![Passage { chapter: r.chapter_idx(), verses }])
+}
+
+/// The part of a passage after its book name ("Gen. 1:1–5" gives "1:1–5"), so an
+/// abbreviation's period is not read as a chapter:verse separator. A token with no
+/// letters is all numbers already.
+fn after_book(token: &str) -> &str {
+    let Some((pos, c)) = token.char_indices().rfind(|(_, c)| c.is_alphabetic()) else {
+        return token;
+    };
+    token[pos + c.len_utf8()..].trim_start_matches(|c: char| c == '.' || c.is_whitespace())
+}
+
+/// "John 3:16–4:2" (a verse range that crosses chapters) as the passages it names.
+/// `reference::parse` only keeps three numbers, so without this "John 3:16–4:2" became John 3:4–16.
+fn cross_chapter_verses(token: &str) -> Option<Result<Vec<Passage>, String>> {
+    let pos = token.rfind(['-', '–', '—'])?;
+    let dash = token[pos..].chars().next()?.len_utf8();
+    let (left, right) = (token[..pos].trim(), token[pos + dash..].trim());
+    let (end_ch, end_vs) = chapter_and_verse(right)?;
+    let start = reference::parse(left)?;
+    let start_vs = start.verse?;
+    Some(expand_cross_chapter(token, start.book, start.chapter, start_vs, end_ch, end_vs))
+}
+
+fn chapter_and_verse(s: &str) -> Option<(u8, u8)> {
+    let pos = s.find([':', '.'])?;
+    if s[pos + 1..].find([':', '.']).is_some() {
+        return None;
+    }
+    let chapter: u8 = s[..pos].trim().parse().ok()?;
+    let verse: u8 = s[pos + 1..].trim().parse().ok()?;
+    (chapter >= 1 && verse >= 1).then_some((chapter, verse))
+}
+
+fn expand_cross_chapter(
+    token: &str,
+    book: BookId,
+    start_ch: u8,
+    start_vs: u8,
+    end_ch: u8,
+    end_vs: u8,
+) -> Result<Vec<Passage>, String> {
+    let first = ChapterIdx::new(book, start_ch)
+        .ok_or_else(|| format!("{} has no chapter {start_ch}", book.name()))?;
+    let last =
+        ChapterIdx::new(book, end_ch).ok_or_else(|| format!("{} has no chapter {end_ch}", book.name()))?;
+    if start_vs < 1 || start_vs > first.kjv_verses() {
+        return Err(format!("{} {start_ch} has no verse {start_vs}", book.name()));
+    }
+    if end_vs < 1 || end_vs > last.kjv_verses() {
+        return Err(format!("{} {end_ch} has no verse {end_vs}", book.name()));
+    }
+    if end_ch < start_ch {
+        return Err(format!("“{token}” is not a forward range"));
+    }
+    if start_ch == end_ch {
+        let (a, b) = if end_vs >= start_vs { (start_vs, end_vs) } else { (end_vs, start_vs) };
+        return Ok(vec![Passage { chapter: first, verses: Some((a, b)) }]);
+    }
+    let mut out = Vec::new();
+    if start_vs == 1 {
+        out.push(Passage::whole(first));
+    } else {
+        out.push(Passage { chapter: first, verses: Some((start_vs, first.kjv_verses())) });
+    }
+    for c in start_ch + 1..end_ch {
+        let ch = ChapterIdx::new(book, c).ok_or_else(|| format!("{} has no chapter {c}", book.name()))?;
+        out.push(Passage::whole(ch));
+    }
+    if end_vs == last.kjv_verses() {
+        out.push(Passage::whole(last));
+    } else {
+        out.push(Passage { chapter: last, verses: Some((1, end_vs)) });
+    }
+    Ok(out)
+}
+
+/// "John 1-3" / "John 1–3" as chapters 1 through 3 of John (not John 1:3).
+fn chapter_span(token: &str) -> Option<(BookId, u8, u8)> {
+    let pos = token.rfind(['-', '–', '—'])?;
+    let (left, right) = (token[..pos].trim(), token[pos + token[pos..].chars().next()?.len_utf8()..].trim());
+    let end: u8 = right.parse().ok()?;
+    let r = reference::parse(left)?;
+    if r.verse.is_some() {
+        return None;
+    }
+    Some((r.book, r.chapter, end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +620,110 @@ mod tests {
         let luke5 = ChapterIdx::new(BookId(41), 5).unwrap();
         let two = [Passage::whole(luke5), Passage::whole(ChapterIdx(luke5.0 + 1))];
         assert_eq!(label(&two, name), "Luke 5–6");
+    }
+
+    #[test]
+    fn typed_passages_become_days() {
+        let john = parse_passages("John").unwrap();
+        assert_eq!(john.len(), 21);
+        assert!(john.iter().all(|p| p.verses.is_none() && p.chapter.book().name() == "John"));
+        let range = parse_passages("John 1–3").unwrap();
+        assert_eq!(range.len(), 3);
+        assert_eq!(range[0].chapter.chapter(), 1);
+        assert_eq!(range[2].chapter.chapter(), 3);
+        let mixed = parse_passages("Matthew 5:1–16, Proverbs 3").unwrap();
+        assert_eq!(mixed.len(), 2);
+        assert_eq!(mixed[0].verses, Some((1, 16)));
+        assert!(mixed[1].verses.is_none());
+        let many = parse_passages("John 1 · Prov 3:5–6").unwrap();
+        assert_eq!(many.len(), 2);
+        assert!(parse_passages("xyzzy").is_err());
+        assert!(parse_passages("").is_err());
+
+        // A verse range that names two chapters must not collapse to one chapter's verses.
+        let cross = parse_passages("John 3:16–4:2").unwrap();
+        assert_eq!(cross.len(), 2);
+        assert_eq!(cross[0].chapter.chapter(), 3);
+        assert_eq!(cross[0].verses, Some((16, 36)));
+        assert_eq!(cross[1].chapter.chapter(), 4);
+        assert_eq!(cross[1].verses, Some((1, 2)));
+        // An abbreviation's period is part of the book name, not a chapter separator.
+        let dotted = parse_passages("Gen. 1:1–5").unwrap();
+        assert_eq!(dotted.len(), 1);
+        assert_eq!(dotted[0].chapter.book().name(), "Genesis");
+        assert_eq!(dotted[0].chapter.chapter(), 1);
+        assert_eq!(dotted[0].verses, Some((1, 5)));
+        let dotted_span = parse_passages("Gen. 1–3").unwrap();
+        assert_eq!(dotted_span.len(), 3);
+        assert!(dotted_span.iter().all(|p| p.verses.is_none()));
+        let dotted_cross = parse_passages("Gen. 1:31–2:3").unwrap();
+        assert_eq!(dotted_cross.len(), 2);
+        assert_eq!(dotted_cross[0].verses, Some((31, 31)));
+        assert_eq!(dotted_cross[1].verses, Some((1, 3)));
+        let numbered = parse_passages("1 Cor. 13:4–7").unwrap();
+        assert_eq!(numbered[0].chapter.book().name(), "1 Corinthians");
+        assert_eq!(numbered[0].verses, Some((4, 7)));
+        let same = parse_passages("John 3:16–3:18").unwrap();
+        assert_eq!(same.len(), 1);
+        assert_eq!(same[0].verses, Some((16, 18)));
+    }
+
+    #[test]
+    fn pace_spreads_chapters_without_empty_days() {
+        let john = parse_passages("John").unwrap();
+        let one = schedule(&john, Pace::ChaptersPerDay(1)).unwrap();
+        assert_eq!(one.len(), 21);
+        assert!(one.iter().all(|d| d.len() == 1));
+        let three = schedule(&john, Pace::ChaptersPerDay(3)).unwrap();
+        assert_eq!(three.len(), 7);
+        assert_eq!(three.last().unwrap().len(), 3);
+        let month = schedule(&john, Pace::InDays(10)).unwrap();
+        assert_eq!(month.len(), 10);
+        assert_eq!(month.iter().map(Vec::len).sum::<usize>(), 21);
+        // More days than chapters: one chapter a day, no empty days.
+        let stretched = schedule(&john, Pace::InDays(40)).unwrap();
+        assert_eq!(stretched.len(), 21);
+        assert!(pace_label(&one).starts_with("21 days"));
+    }
+
+    #[test]
+    fn compact_labels_parse_back() {
+        let a = parse_passages("Psalms 1, 3").unwrap();
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0].chapter.book().name(), "Psalms");
+        assert_eq!(a[0].chapter.chapter(), 1);
+        assert_eq!(a[1].chapter.chapter(), 3);
+        let label = label(&a, |b| b.ref_name().to_string());
+        assert!(label.contains('1') && label.contains('3'), "{label}");
+        let again = parse_passages(&label).unwrap();
+        assert_eq!(again.len(), 2);
+        let edit = edit_label(&a, |b| b.ref_name().to_string());
+        assert!(edit.contains("Psalm"), "{edit}");
+        assert_eq!(parse_passages(&edit).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn numbered_books_cover_every_chapter() {
+        let john = parse_passages("John").unwrap();
+        assert_eq!(john.len(), 21);
+        let first = parse_passages("1 John").unwrap();
+        assert_eq!(first.len(), 5, "1 John has five chapters, not only chapter 1");
+        assert!(first.iter().all(|p| p.chapter.book().name() == "1 John"));
+        let only = parse_passages("1 John 1").unwrap();
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].chapter.chapter(), 1);
+    }
+
+    #[test]
+    fn passage_refs_round_trip() {
+        let p = parse_passages("Matthew 5:1–16").unwrap()[0];
+        let r = PassageRef::from_passage(p);
+        assert_eq!(r.book, "MAT");
+        assert_eq!(r.chapter, 5);
+        assert_eq!(r.verses, Some((1, 16)));
+        assert_eq!(r.to_passage(), Some(p));
+        assert!(is_custom_id(&new_custom_id()));
+        assert!(!is_custom_id("john-21"));
+        assert!(!is_custom_id("custom-"));
     }
 }

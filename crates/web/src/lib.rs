@@ -287,13 +287,24 @@ impl Default for ExportOptions {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PlanInfo {
-    id: &'static str,
-    title: &'static str,
+    id: String,
+    title: String,
     /// Length and pace ("90 days · ~3 chapters a day").
-    meta: &'static str,
-    description: &'static str,
-    icon: &'static str,
+    meta: String,
+    description: String,
+    icon: String,
     days: usize,
+    custom: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct CustomPlanDraft {
+    id: String,
+    title: String,
+    description: String,
+    /// Each day's typed references ("John 1 · Proverbs 3").
+    days: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -819,6 +830,59 @@ impl Bible {
     pub fn set_plan_read(&mut self, id: &str, day: u16, passage: u8, read: bool) -> Result<(), JsError> {
         self.study.set_plan_read(id, day, passage, read).map_err(err)
     }
+
+    /// Plans the reader wrote, newest first.
+    #[wasm_bindgen(js_name = customPlans)]
+    pub fn custom_plans(&self) -> Result<JsValue, JsError> {
+        let plans: Vec<PlanInfo> = self.study.custom_plans().iter().map(info_from_custom).collect();
+        to_js(&plans)
+    }
+
+    /// Create or update a plan the reader wrote. `days` are typed references, one string per day.
+    #[wasm_bindgen(js_name = saveCustomPlan)]
+    pub fn save_custom_plan(&mut self, draft: JsValue) -> Result<JsValue, JsError> {
+        let draft: CustomPlanDraft = serde_wasm_bindgen::from_value(draft).map_err(jserr)?;
+        let id = if draft.id.is_empty() { plans::new_custom_id() } else { draft.id.clone() };
+        let mut days = Vec::new();
+        for (i, input) in draft.days.iter().enumerate() {
+            if input.trim().is_empty() {
+                continue;
+            }
+            match plans::parse_passages(input) {
+                Ok(ps) if !ps.is_empty() => days.push(ps),
+                Ok(_) => return Err(JsError::new(&format!("Day {} has no passages", i + 1))),
+                Err(e) => return Err(JsError::new(&format!("Day {}: {e}", i + 1))),
+            }
+        }
+        let plan = plans::CustomPlan {
+            id: id.clone(),
+            title: draft.title,
+            description: draft.description,
+            days,
+            created: 0,
+        };
+        self.study.save_custom_plan(plan).map_err(err)?;
+        let saved = self.study.custom_plan(&id).ok_or_else(|| JsError::new("Couldn't save the plan"))?;
+        to_js(&info_from_custom(&saved))
+    }
+
+    #[wasm_bindgen(js_name = deleteCustomPlan)]
+    pub fn delete_custom_plan(&mut self, id: &str) -> Result<(), JsError> {
+        self.study.delete_custom_plan(id).map_err(err)
+    }
+
+    #[wasm_bindgen(js_name = duplicateCustomPlan)]
+    pub fn duplicate_custom_plan(&mut self, id: &str) -> Result<JsValue, JsError> {
+        let plan = self.study.duplicate_custom_plan(id).map_err(err)?;
+        to_js(&info_from_custom(&plan))
+    }
+
+    /// A plan's days from a custom plan or the catalogue.
+    #[wasm_bindgen(js_name = lookupPlanDays)]
+    pub fn lookup_plan_days(&self, id: &str) -> Result<JsValue, JsError> {
+        let plan = self.study.resolve_plan(id).ok_or_else(|| JsError::new(&format!("no plan {id}")))?;
+        to_js(&days_of(&plan.days))
+    }
 }
 
 impl Bible {
@@ -932,35 +996,67 @@ pub fn range_label(from: JsValue, to: JsValue) -> Result<String, JsError> {
 /// The reading plans on offer, in order.
 #[wasm_bindgen(js_name = planCatalogue)]
 pub fn plan_catalogue() -> Result<JsValue, JsError> {
-    let plans: Vec<PlanInfo> = plans::catalogue()
-        .iter()
-        .map(|p| PlanInfo {
-            id: p.id,
-            title: p.title,
-            meta: p.meta,
-            description: p.description,
-            icon: match p.icon {
-                plans::PlanIcon::Calendar => "calendar",
-                plans::PlanIcon::Book => "book",
-                plans::PlanIcon::Quote => "quote",
-                plans::PlanIcon::History => "history",
-                plans::PlanIcon::Flame => "flame",
-                plans::PlanIcon::Note => "note",
-            },
-            days: p.len(),
-        })
-        .collect();
+    let plans: Vec<PlanInfo> = plans::catalogue().iter().map(info_from_builtin).collect();
     to_js(&plans)
 }
 
-/// A plan's days, each with its passages.
+/// A built-in plan's days, each with its passages.
 #[wasm_bindgen(js_name = planDays)]
 pub fn plan_days(id: &str) -> Result<JsValue, JsError> {
     let plan = plans::get(id).ok_or_else(|| JsError::new(&format!("no plan {id}")))?;
+    to_js(&days_of(&plan.days))
+}
+
+/// Turn typed books and passages into day labels at a given pace (`in_days` is used when
+/// `chapters_per_day` is 0).
+#[wasm_bindgen(js_name = fillPlanDays)]
+pub fn fill_plan_days(source: &str, chapters_per_day: u16, in_days: u16) -> Result<JsValue, JsError> {
+    let passages = plans::parse_passages(source).map_err(|e| JsError::new(&e))?;
+    let pace = if chapters_per_day > 0 {
+        plans::Pace::ChaptersPerDay(chapters_per_day)
+    } else {
+        plans::Pace::InDays(in_days)
+    };
+    let days = plans::schedule(&passages, pace).map_err(|e| JsError::new(&e))?;
+    let name = |b: BookId| b.ref_name().to_string();
+    let labels: Vec<String> = days.iter().map(|d| plans::label(d, name)).collect();
+    to_js(&labels)
+}
+
+fn icon_name(icon: plans::PlanIcon) -> &'static str {
+    match icon {
+        plans::PlanIcon::Calendar => "calendar",
+        plans::PlanIcon::Book => "book",
+        plans::PlanIcon::Quote => "quote",
+        plans::PlanIcon::History => "history",
+        plans::PlanIcon::Flame => "flame",
+        plans::PlanIcon::Note => "note",
+    }
+}
+
+fn info_from_builtin(p: &plans::Plan) -> PlanInfo {
+    info_of(&plans::ResolvedPlan::from_builtin(p))
+}
+
+fn info_from_custom(p: &plans::CustomPlan) -> PlanInfo {
+    info_of(&p.resolved())
+}
+
+fn info_of(p: &plans::ResolvedPlan) -> PlanInfo {
+    PlanInfo {
+        id: p.id.clone(),
+        title: p.title.clone(),
+        meta: p.meta.clone(),
+        description: p.description.clone(),
+        icon: icon_name(p.icon).into(),
+        days: p.len(),
+        custom: p.custom,
+    }
+}
+
+fn days_of(days: &[Vec<plans::Passage>]) -> Vec<PlanDay> {
     let name = |b: BookId| b.name().to_string();
-    let days: Vec<PlanDay> = plan
-        .days
-        .iter()
+    days.iter()
         .map(|day| PlanDay {
             label: plans::label(day, name),
             passages: day
@@ -972,8 +1068,7 @@ pub fn plan_days(id: &str) -> Result<JsValue, JsError> {
                 })
                 .collect(),
         })
-        .collect();
-    to_js(&days)
+        .collect()
 }
 
 fn chapter_idx(index: u16) -> ChapterIdx {
@@ -1012,6 +1107,10 @@ fn verses_arg(v: JsValue) -> Result<Vec<VerseRef>, JsError> {
 
 fn err(e: anyhow::Error) -> JsError {
     JsError::new(&format!("{e:#}"))
+}
+
+fn jserr(e: impl std::fmt::Display) -> JsError {
+    JsError::new(&e.to_string())
 }
 
 fn to_js(value: &impl Serialize) -> Result<JsValue, JsError> {

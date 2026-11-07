@@ -50,6 +50,10 @@ pub enum Action {
     /// Start (or restart) a reading plan today; stop one.
     StartPlan(String),
     StopPlan(String),
+    /// Create or update a plan the reader wrote.
+    SaveCustomPlan(bible_core::plans::CustomPlan),
+    DeleteCustomPlan(String),
+    DuplicateCustomPlan(String),
     /// Tick a plan's passage (day, index) read or not.
     SetPlanRead {
         plan: String,

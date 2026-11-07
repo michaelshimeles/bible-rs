@@ -26,6 +26,8 @@ afterEach(() => {
 	document.body.innerHTML = '';
 	plansPage.tab = 'active';
 	plansPage.open = null;
+	plansPage.editor = null;
+	plansPage.confirm = null;
 	plansPage.leaving = null;
 });
 
@@ -129,5 +131,54 @@ describe('leaving a reading plan', () => {
 		left();
 		expect(plansPage.open).toBeNull();
 		expect(plansPage.leaving).toBeNull();
+	});
+
+	it('leaves a custom plan without deleting the definition', () => {
+		reader();
+		app.dispatch({
+			type: 'saveCustomPlan',
+			id: '',
+			title: 'Wisdom',
+			description: 'A chapter a day',
+			days: ['John 1']
+		});
+		const mine = app.customPlans();
+		expect(mine).toHaveLength(1);
+		const id = mine[0].id;
+		app.dispatch({ type: 'startPlan', id });
+		app.dispatch({ type: 'setPlanRead', plan: id, day: 1, passage: 0, read: true });
+		expect(app.plans().some((p) => p.id === id && p.finished === null)).toBe(true);
+		plansPage.tab = 'active';
+		plansPage.open = null;
+		plansPage.leaving = null;
+		showList();
+		expect(shown('Wisdom')).toBe(true);
+		button('Leave plan').click();
+		flushSync();
+		expect(shown('This clears your reading ticks.')).toBe(true);
+		expect(app.customPlans().some((p) => p.id === id)).toBe(true);
+		button('Leave plan').click();
+		flushSync();
+		expect(app.plans().some((p) => p.id === id)).toBe(false);
+		expect([...app.planReads(id)]).toHaveLength(0);
+		expect(app.customPlans().some((p) => p.id === id && p.title === 'Wisdom')).toBe(true);
+	});
+
+	it('keeps an open custom plan when search does not match its title', () => {
+		reader();
+		app.dispatch({
+			type: 'saveCustomPlan',
+			id: '',
+			title: 'Wisdom',
+			description: 'A chapter a day',
+			days: ['John 1']
+		});
+		const id = app.customPlans()[0].id;
+		app.dispatch({ type: 'startPlan', id });
+		plansPage.open = { id, day: 1 };
+		app.pageQuery = 'zzzz';
+		showList();
+		expect(shown('Day 1')).toBe(true);
+		expect(plansPage.open?.id).toBe(id);
 	});
 });
