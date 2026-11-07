@@ -55,6 +55,7 @@ fn wheel(h: &mut Harness<'_, BibleApp>, delta: egui::Vec2) {
         delta,
         phase: egui::TouchPhase::Move,
         modifiers: Modifiers::NONE,
+        source: egui::MouseWheelSource::Unknown,
     });
     h.step();
 }

@@ -32,7 +32,7 @@ impl ShortcutsOverlay {
     ) -> bool {
         let mut close = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let screen = ctx.content_rect();
-        egui::Area::new(egui::Id::new("shortcuts-scrim")).order(Order::Middle).fixed_pos(screen.min).show(
+        egui::Area::new(egui::Id::unique("shortcuts-scrim")).order(Order::Middle).fixed_pos(screen.min).show(
             ctx,
             |ui| {
                 let (r, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
@@ -58,7 +58,7 @@ impl ShortcutsOverlay {
             pos2((screen.center().x - width / 2.0).round(), screen.top() + 72.0),
             vec2(width, height),
         );
-        egui::Area::new(egui::Id::new("shortcuts-overlay"))
+        egui::Area::new(egui::Id::unique("shortcuts-overlay"))
             .order(Order::Foreground)
             .fixed_pos(rect.min)
             .show(ctx, |ui| {
@@ -82,7 +82,7 @@ impl ShortcutsOverlay {
                     pos2(rect.right() - 16.0 - 28.0, rect.top() + 16.0),
                     vec2(28.0, 28.0),
                 );
-                if widgets::round_button(ui, p, close_r, icons::close, ui.id().with("close-shortcuts"))
+                if widgets::round_button(ui, p, close_r, icons::close, ui.scope_id().with("close-shortcuts"))
                     .clicked()
                 {
                     close = true;
@@ -100,7 +100,7 @@ impl ShortcutsOverlay {
                     Some(icons::search),
                     false,
                     false,
-                    egui::Id::new("shortcuts-filter"),
+                    egui::Id::unique("shortcuts-filter"),
                 );
                 painter.hline(rect.x_range(), rect.top() + 59.5, Stroke::new(1.0, p.separator));
 
@@ -174,7 +174,7 @@ impl ShortcutsOverlay {
                         p,
                         foot.right() - 16.0,
                         foot.center().y,
-                        ui.id().with("customize-shortcuts"),
+                        ui.scope_id().with("customize-shortcuts"),
                     );
                 if resp.clicked() {
                     actions.push(Action::OpenSettings(SettingsTab::Shortcuts));

@@ -26,7 +26,7 @@ ENTITLEMENTS="packaging/macos/entitlements.plist"
 # Sparkle checks this feed for updates and installs only archives signed with the private half
 # of this key, which `generate_keys --account bible-rs` keeps in the release Mac's login keychain
 # (RELEASING.md). Every release must be signed with the same key.
-FEED_URL="https://github.com/michaelshimeles/bible-rs/releases/latest/download/appcast.xml"
+FEED_URL="https://github.com/michaelshimeles/bible/releases/latest/download/appcast.xml"
 SPARKLE_PUBLIC_KEY="Pq8ULcnRQOe3FxC6l7qBrhZ4VS3W53yxzZeO9z9dmY0="
 SPARKLE="$(scripts/fetch-sparkle.sh)"
 

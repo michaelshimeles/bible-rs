@@ -579,7 +579,7 @@ impl Sidebar {
                             chapter_grid(
                                 ui,
                                 p,
-                                ui.id().with(("pinned-chapters", b)),
+                                ui.scope_id().with(("pinned-chapters", b)),
                                 b,
                                 env.location.0,
                                 &self.activity.1.chapters,
@@ -619,7 +619,7 @@ impl Sidebar {
                         );
                         r.widget_info(|| {
                             egui::WidgetInfo::labeled(
-                                egui::WidgetType::CollapsingHeader,
+                                egui::Role::DisclosureTriangle,
                                 ui.is_enabled(),
                                 group.name,
                             )
@@ -695,7 +695,7 @@ impl Sidebar {
                                 chapter_grid(
                                     ui,
                                     p,
-                                    ui.id().with(("chapters", b)),
+                                    ui.scope_id().with(("chapters", b)),
                                     b,
                                     env.location.0,
                                     &self.activity.1.chapters,
@@ -899,7 +899,7 @@ impl Sidebar {
                     painter.layout_no_wrap(detail.clone(), text::SMALL.font(), Color32::PLACEHOLDER).size().x;
                 let inner = (sw + 8.0 + dw).max(80.0);
                 let card = Rect::from_min_size(pos2(cx - inner / 2.0 - 16.0, y), vec2(inner + 32.0, 60.0));
-                let resp = ui.interact(card, ui.id().with("did-you-mean"), Sense::click());
+                let resp = ui.interact(card, ui.scope_id().with("did-you-mean"), Sense::click());
                 painter.rect_filled(card, 12.0, if resp.hovered() { p.fill_strong } else { p.fill });
                 painter.text(
                     pos2(cx, y + 12.0 + 8.0),
@@ -1093,7 +1093,7 @@ impl Sidebar {
                     font.clone(),
                     p.ink_2,
                 );
-                ui.interact(r, ui.id().with("summary"), Sense::hover()).on_hover_text(format!(
+                ui.interact(r, ui.scope_id().with("summary"), Sense::hover()).on_hover_text(format!(
                     "{:.2} ms · {}",
                     self.elapsed.as_secs_f64() * 1000.0,
                     t.meta.abbrev
@@ -1105,7 +1105,7 @@ impl Sidebar {
                     pos2(chevron.left() - 2.0 - ow, cy - 8.0),
                     pos2(chevron.right(), cy + 8.0),
                 );
-                let resp = ui.interact(order_rect, ui.id().with("order"), Sense::click());
+                let resp = ui.interact(order_rect, ui.scope_id().with("order"), Sense::click());
                 ui.painter().text(pos2(chevron.left() - 2.0, cy), Align2::RIGHT_CENTER, order, font, p.ink_2);
                 crate::icons::chevron_down(ui.painter(), chevron, p.ink_3);
                 crate::menu::popup(&resp, p).show(|ui| {
@@ -1134,7 +1134,7 @@ impl Sidebar {
                 entries.iter().find(|e| matches!(e.kind, EntryKind::Item(i, _) if i == self.selected))
         {
             let avail = ui.available_height();
-            let cur = ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("results-offset"))).unwrap_or(0.0);
+            let cur = ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::unique("results-offset"))).unwrap_or(0.0);
             if e.y < cur || e.y + e.height > cur + avail {
                 sa = sa.vertical_scroll_offset((e.y - avail / 3.0).max(0.0));
             }
@@ -1172,7 +1172,7 @@ impl Sidebar {
                     EntryKind::Item(i, rows) => {
                         let vi = self.results[i];
                         let Some(v) = t.verse_view(vi) else { continue };
-                        let resp = ui.interact(r, ui.id().with(("hit", vi)), Sense::click());
+                        let resp = ui.interact(r, ui.scope_id().with(("hit", vi)), Sense::click());
                         let selected = i == self.selected;
                         if selected {
                             ui.painter().rect_filled(r, 10.0, p.accent_soft);
@@ -1212,7 +1212,8 @@ impl Sidebar {
                 }
             }
         });
-        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("results-offset"), out.state.offset.y));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::unique("results-offset"), out.state.clamped_offset().y));
         if let Some(vi) = jump_to
             && let Some(v) = t.verse_view(vi)
         {
@@ -1314,7 +1315,8 @@ fn pin_toggle(ui: &Ui, p: &Palette, row: Rect, book: BookId, pinned: bool, pinne
         pos2(row.right() - ROW_PAD - ICON_LANE, row.center().y - ICON_LANE / 2.0),
         vec2(ICON_LANE, ICON_LANE),
     );
-    let hit = ui.interact(lane.expand(4.0), ui.id().with(("book-pin", book, pinned_row)), Sense::click());
+    let hit =
+        ui.interact(lane.expand(4.0), ui.scope_id().with(("book-pin", book, pinned_row)), Sense::click());
     if pinned || ui.rect_contains_pointer(row) {
         let ink = if hit.hovered() { p.ink } else { p.ink_3 };
         crate::icons::pin(ui.painter(), Rect::from_center_size(lane.center(), vec2(12.0, 12.0)), ink, pinned);
@@ -1415,7 +1417,7 @@ pub(crate) fn list_item(ui: &mut Ui, p: &Palette, item: &ListItem) -> Response {
 fn filter_field(ui: &mut Ui, p: &Palette, value: &mut String, focus: bool) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
     let field = Rect::from_min_size(rect.min, vec2(rect.width(), 28.0));
-    let id = egui::Id::new("filter-books");
+    let id = egui::Id::unique("filter-books");
     let focused = ui.memory(|m| m.has_focus(id));
     if focused {
         ui.painter().rect_filled(field.expand(3.0), 11.0, p.focus);
@@ -1447,7 +1449,7 @@ fn filter_field(ui: &mut Ui, p: &Palette, value: &mut String, focus: bool) -> bo
             .font(text::UI.font())
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
-            .vertical_align(Align::Center)
+            .align(Align2::LEFT_CENTER)
             .desired_width(edit_rect.width()),
     );
     if focus {
@@ -1475,7 +1477,7 @@ fn colour_filter(ui: &mut Ui, p: &Palette, filter: &mut Option<HighlightColor>) 
     let all_font = theme::ui_semibold(11.0);
     let all_w = ui.painter().layout_no_wrap("All".into(), all_font.clone(), p.ink).size().x + 16.0;
     let all = Rect::from_min_size(pos2(x, cy - 10.0), vec2(all_w, 20.0));
-    let resp = ui.interact(all, ui.id().with("hl-all"), Sense::click());
+    let resp = ui.interact(all, ui.scope_id().with("hl-all"), Sense::click());
     let on = filter.is_none();
     let fill = if on { p.accent } else { widgets::hover_fill(ui, &resp, p, false).unwrap_or(p.fill) };
     ui.painter().rect_filled(all, 10.0, fill);
@@ -1492,7 +1494,7 @@ fn colour_filter(ui: &mut Ui, p: &Palette, filter: &mut Option<HighlightColor>) 
     let mut x = all.right() + GAP;
     for c in HighlightColor::ALL {
         let r = Rect::from_min_size(pos2(x, cy - 8.0), vec2(16.0, 16.0));
-        let resp = ui.interact(r.expand(2.0), ui.id().with(("hl", c.name())), Sense::click());
+        let resp = ui.interact(r.expand(2.0), ui.scope_id().with(("hl", c.name())), Sense::click());
         let selected = *filter == Some(c);
         if selected {
             ui.painter().circle_stroke(r.center(), 8.0 + 2.75, egui::Stroke::new(1.5, p.ink));
@@ -1513,7 +1515,7 @@ fn colour_filter(ui: &mut Ui, p: &Palette, filter: &mut Option<HighlightColor>) 
 fn section(ui: &mut Ui, p: &Palette, label: &str, first: bool) {
     let (top, h) = if first { (8.0, 28.0) } else { (16.0, 36.0) };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, ui.is_enabled(), label));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, ui.is_enabled(), label));
     ui.ctx().accesskit_node_builder(resp.id, |node| node.set_role(egui::accesskit::Role::Heading));
     let y = rect.top() + top + (h - top) / 2.0;
     ui.painter().text(
@@ -1917,7 +1919,7 @@ fn result_entries(ui: &Ui, t: &bible_core::Translation, results: &[u32], query: 
 /// A pop-up button (`ds-14` select): field colour, hairline and soft drop, book glyph, value,
 /// up-down chevrons.
 fn select_field(ui: &mut Ui, p: &Palette, r: Rect, value: &str, id: &str) -> Response {
-    let resp = ui.interact(r, ui.id().with(id), Sense::click());
+    let resp = ui.interact(r, ui.scope_id().with(id), Sense::click());
     let painter = ui.painter();
     painter.add(
         eframe::epaint::RectShape::filled(r.translate(vec2(0.0, 1.0)), 8.0, Color32::from_black_alpha(15))

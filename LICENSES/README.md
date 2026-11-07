@@ -61,7 +61,7 @@ carries `ark.jpg` and the specs) are licensed CC BY 4.0, unlike the MIT code tha
 notice is [`objects/LICENSE`](../objects/LICENSE) and the legal code is
 [`CC-BY-4.0.txt`](CC-BY-4.0.txt). Credit them as:
 
-> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible-rs
+> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible
 
 ## Test fixtures
 

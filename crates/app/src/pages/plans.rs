@@ -9,7 +9,7 @@ use bible_core::plans::{self, Passage, Plan, PlanIcon};
 use bible_core::study::PlanProgress;
 use bible_core::{ChapterIdx, Translation, VerseRef};
 
-use super::{PageEnv, group_label, text};
+use super::{PageEnv, group_label, note_save_failed, text};
 use crate::actions::Action;
 use crate::icons;
 use crate::theme::{self, Palette};
@@ -20,6 +20,12 @@ const DAY: i64 = 86_400;
 const CARD_W: f32 = 300.0;
 /// Reading speed for time estimates, in words a minute.
 const WPM: usize = 230;
+
+/// What leaving does: `stop_plan` drops the plan and its ticks; starting again begins from day 1.
+const LEAVE_TITLE: &str = "Leave this plan?";
+const LEAVE_BODY: &str = "Leaving removes this plan from Active and clears its reading ticks. You can start it again from the beginning.";
+const LEAVE_BODY_SHORT: &str = "This clears your reading ticks.";
+const LEAVE_HINT: &str = "Clears its reading ticks.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
@@ -39,6 +45,8 @@ pub struct State {
     /// The text the last reflection save was sent over, until the next frame shows whether it
     /// landed.
     reflection_sent: Option<(String, String)>,
+    /// Plan the user asked to leave, waiting for a confirm (`None`: none).
+    leaving: Option<String>,
 }
 
 /// A plan with its progress, as of today.
@@ -217,8 +225,17 @@ impl State {
         for ((t, l, n), w) in tabs.into_iter().zip(widths) {
             let r = Rect::from_min_size(pos2(x, top + 30.0), vec2(w, 28.0));
             let n = n.to_string();
-            if widgets::pill_tab(ui, p, r, l, Some(&n), None, self.tab == t, ui.id().with(("plans-tab", l)))
-                .clicked()
+            if widgets::pill_tab(
+                ui,
+                p,
+                r,
+                l,
+                Some(&n),
+                None,
+                self.tab == t,
+                ui.scope_id().with(("plans-tab", l)),
+            )
+            .clicked()
             {
                 self.tab = t;
             }
@@ -306,6 +323,140 @@ impl State {
         y
     }
 
+    fn is_leaving(&self, id: &str) -> bool {
+        self.leaving.as_deref() == Some(id)
+    }
+
+    fn request_leave(&mut self, id: &str) {
+        self.leaving = Some(id.to_string());
+    }
+
+    fn cancel_leave(&mut self) {
+        self.leaving = None;
+    }
+
+    fn confirm_leave(&mut self, id: &str, actions: &mut Vec<Action>) {
+        actions.push(Action::StopPlan(id.to_string()));
+        if self.open.as_ref().is_some_and(|(open_id, _)| open_id == id) {
+            self.open = None;
+        }
+        self.leaving = None;
+    }
+
+    /// Leave control on an Active card, on the Continue row so it never covers the day badge.
+    fn leave_on_hero(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        plan_id: &str,
+        left: f32,
+        cy: f32,
+        actions: &mut Vec<Action>,
+    ) -> bool {
+        if self.is_leaving(plan_id) {
+            let (cancel_b, cancel) = Button::new(Kind::Plain, "Cancel").small().show_left(
+                ui,
+                p,
+                left,
+                cy,
+                ui.scope_id().with(("leave-cancel", plan_id)),
+            );
+            let (_, leave) = Button::new(Kind::Destructive, "Leave plan").small().show_left(
+                ui,
+                p,
+                cancel_b.right() + 8.0,
+                cy,
+                ui.scope_id().with(("leave-confirm", plan_id)),
+            );
+            if leave.clicked() {
+                self.confirm_leave(plan_id, actions);
+                return true;
+            }
+            if cancel.clicked() {
+                self.cancel_leave();
+                return true;
+            }
+            false
+        } else {
+            let (_, resp) = Button::new(Kind::Secondary, "Leave plan").small().show_left(
+                ui,
+                p,
+                left,
+                cy,
+                ui.scope_id().with(("leave-plan", plan_id)),
+            );
+            if resp.clicked() {
+                self.request_leave(plan_id);
+                return true;
+            }
+            false
+        }
+    }
+
+    /// Leave control on a plan's day: "Leave…", then a confirm that explains the ticks go too.
+    #[allow(clippy::too_many_arguments)]
+    fn leave_on_page(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        left: f32,
+        top: f32,
+        width: f32,
+        plan_id: &str,
+        actions: &mut Vec<Action>,
+    ) -> f32 {
+        let painter = ui.painter().clone();
+        let confirming = self.is_leaving(plan_id);
+        let inner = width - 32.0;
+        let body = if confirming { LEAVE_BODY } else { LEAVE_HINT };
+        let mut job = egui::text::LayoutJob::simple(body.into(), theme::ui_font(12.0), p.ink_3, inner);
+        job.sections[0].format.line_height = Some(16.0);
+        let galley = painter.layout_job(job);
+        let h = if confirming { 12.0 + 20.0 + 4.0 + galley.size().y + 12.0 + 24.0 + 12.0 } else { 60.0 };
+        let card = Rect::from_min_size(pos2(left, top), vec2(width, h));
+        painter.rect_filled(card, 12.0, p.surface);
+        painter.rect_stroke(card, 12.0, Stroke::new(0.5, p.border), StrokeKind::Outside);
+        if confirming {
+            text(&painter, left + 16.0, top + 12.0, 20.0, LEAVE_TITLE, theme::ui_medium(13.0), p.ink, false);
+            painter.galley(pos2(left + 16.0, top + 36.0), galley, p.ink_3);
+            let cy = card.bottom() - 24.0;
+            let (leave_b, leave) = Button::new(Kind::Destructive, "Leave plan").small().show_right(
+                ui,
+                p,
+                card.right() - 16.0,
+                cy,
+                ui.scope_id().with(("leave-confirm", plan_id)),
+            );
+            let (_, cancel) = Button::new(Kind::Plain, "Cancel").small().show_right(
+                ui,
+                p,
+                leave_b.left() - 8.0,
+                cy,
+                ui.scope_id().with(("leave-cancel", plan_id)),
+            );
+            if leave.clicked() {
+                self.confirm_leave(plan_id, actions);
+            }
+            if cancel.clicked() {
+                self.cancel_leave();
+            }
+        } else {
+            text(&painter, left + 16.0, top + 12.0, 20.0, "Leave plan", theme::ui_medium(13.0), p.ink, false);
+            text(&painter, left + 16.0, top + 32.0, 16.0, LEAVE_HINT, theme::ui_font(12.0), p.ink_3, false);
+            let (_, resp) = Button::new(Kind::Secondary, "Leave…").small().show_right(
+                ui,
+                p,
+                card.right() - 16.0,
+                card.center().y,
+                ui.scope_id().with(("leave-plan", plan_id)),
+            );
+            if resp.clicked() {
+                self.request_leave(plan_id);
+            }
+        }
+        card.bottom()
+    }
+
     /// The plan under way: its day, progress, what to read and a calendar.
     #[allow(clippy::too_many_arguments)]
     fn hero(
@@ -319,7 +470,7 @@ impl State {
         actions: &mut Vec<Action>,
     ) -> f32 {
         let painter = ui.painter().clone();
-        let resp = ui.interact(card, ui.id().with(("hero", u.plan.id)), Sense::click());
+        let resp = ui.interact(card, ui.scope_id().with(("hero", u.plan.id)), Sense::click());
         painter.rect_filled(card, 20.0, p.sidebar);
         let x = card.left() + 28.0;
         let y = card.top() + 28.0;
@@ -342,6 +493,9 @@ impl State {
         let text_w = card.width() - 56.0 - 32.0 - calendar_w;
         let desc = super::elide(&painter, &desc, &theme::ui_font(13.0), text_w);
         text(&painter, x, y + 68.0, 20.0, &desc, theme::ui_font(13.0), p.ink_2, false);
+        if self.is_leaving(u.plan.id) {
+            text(&painter, x, y + 88.0, 16.0, LEAVE_BODY_SHORT, theme::ui_font(12.0), p.ink_2, false);
+        }
         let done = u.done_days();
         let track = Rect::from_min_size(pos2(x, y + 107.0), vec2(320.0, 6.0));
         painter.rect_filled(track, 3.0, p.fill_strong);
@@ -370,7 +524,7 @@ impl State {
             p,
             x,
             cy,
-            ui.id().with(("continue", u.plan.id)),
+            ui.scope_id().with(("continue", u.plan.id)),
         );
         if resp_c.clicked() {
             let next = (0..u.plan.day(current).len()).find(|i| !u.passage_done(current, *i)).unwrap_or(0);
@@ -400,8 +554,17 @@ impl State {
         let words: usize = u.plan.day(day.max(1)).iter().map(|ps| passage_size(ps, t).1).sum();
         if words > 0 {
             let mins = format!("~{} min today", minutes(words));
-            text(&painter, sx, cy - 8.0, 16.0, &mins, theme::ui_font(13.0), p.ink_2, false);
+            let w = text(&painter, sx, cy - 8.0, 16.0, &mins, theme::ui_font(13.0), p.ink_2, false);
+            sx += w + 16.0;
         }
+        // Reserve room for Cancel + Leave plan so a narrow card does not lose the confirm
+        // off the right edge (a 620 pt window leaves little after Continue, streak and time).
+        let needed = Button::new(Kind::Plain, "Cancel").small().width(&painter)
+            + 8.0
+            + Button::new(Kind::Destructive, "Leave plan").small().width(&painter);
+        let row_right = card.right() - 28.0 - calendar_w - 12.0;
+        let (leave_x, leave_cy) = if sx + needed <= row_right { (sx, cy) } else { (x, cy + 36.0) };
+        let leave_used = self.leave_on_hero(ui, p, u.plan.id, leave_x, leave_cy, actions);
 
         // The calendar: this month of the plan as dots.
         let cal = Rect::from_min_size(
@@ -450,7 +613,7 @@ impl State {
             let w = text(&painter, lx + 12.0, ly, 16.0, label, theme::ui_medium(11.0), p.ink_3, false);
             lx += 12.0 + w + 12.0;
         }
-        if resp.clicked() {
+        if resp.clicked() && !leave_used {
             self.open = Some((u.plan.id.to_string(), current));
         }
         card.bottom()
@@ -516,7 +679,7 @@ impl State {
                     p,
                     card.right() - 16.0,
                     card.top() + 36.0,
-                    ui.id().with(("start-plan", plan.id)),
+                    ui.scope_id().with(("start-plan", plan.id)),
                 );
                 if resp.clicked() {
                     actions.push(Action::StartPlan(plan.id.to_string()));
@@ -570,7 +733,7 @@ impl State {
         // Breadcrumb.
         let w = text(&painter, left, top, 16.0, "Reading Plans", theme::ui_medium(13.0), p.accent, false);
         let crumb = Rect::from_min_size(pos2(left, top), vec2(w, 16.0));
-        if ui.interact(crumb, ui.id().with("crumb"), Sense::click()).clicked() {
+        if ui.interact(crumb, ui.scope_id().with("crumb"), Sense::click()).clicked() {
             self.open = None;
         }
         let chev = Rect::from_min_size(pos2(left + w + 6.0, top + 2.0), vec2(12.0, 12.0));
@@ -602,13 +765,15 @@ impl State {
         text(&painter, left, y + 38.0, 20.0, &sub, theme::ui_font(13.0), p.ink_2, false);
         let prev = Rect::from_min_size(pos2(right - 72.0, y + 26.0), vec2(32.0, 32.0));
         if day > 1
-            && widgets::round_button(ui, p, prev, icons::chevron_left, ui.id().with("prev-day")).clicked()
+            && widgets::round_button(ui, p, prev, icons::chevron_left, ui.scope_id().with("prev-day"))
+                .clicked()
         {
             self.open = Some((u.plan.id.to_string(), day - 1));
         }
         let next = prev.translate(vec2(40.0, 0.0));
         if day < len
-            && widgets::round_button(ui, p, next, icons::chevron_right, ui.id().with("next-day")).clicked()
+            && widgets::round_button(ui, p, next, icons::chevron_right, ui.scope_id().with("next-day"))
+                .clicked()
         {
             self.open = Some((u.plan.id.to_string(), day + 1));
         }
@@ -618,7 +783,7 @@ impl State {
         let start = day.saturating_sub(4).max(1).min(len.saturating_sub(8).max(1));
         for (k, d) in (start..=(start + 8).min(len)).enumerate() {
             let cell = Rect::from_min_size(pos2(left + 60.0 * k as f32, y), vec2(56.0, 68.0));
-            let resp = ui.interact(cell, ui.id().with(("strip", d)), Sense::click());
+            let resp = ui.interact(cell, ui.scope_id().with(("strip", d)), Sense::click());
             let selected = d == day;
             if selected {
                 painter.rect_filled(cell, 12.0, p.accent_soft);
@@ -680,7 +845,7 @@ impl State {
             pp.rect_filled(row, 14.0, p.surface);
             pp.rect_stroke(row, 14.0, Stroke::new(0.5, p.border), StrokeKind::Outside);
             let check = Rect::from_min_size(pos2(row.left() + 16.0, row.center().y - 8.0), vec2(16.0, 16.0));
-            let cr = ui.interact(check.expand(6.0), ui.id().with(("tick", day, i)), Sense::click());
+            let cr = ui.interact(check.expand(6.0), ui.scope_id().with(("tick", day, i)), Sense::click());
             if done {
                 pp.rect_filled(check, 4.0, p.accent);
                 icons::check(&pp, Rect::from_center_size(check.center(), vec2(12.0, 12.0)), p.on_accent);
@@ -711,7 +876,7 @@ impl State {
                 p,
                 row.right() - 16.0,
                 row.center().y,
-                ui.id().with(("read", day, i)),
+                ui.scope_id().with(("read", day, i)),
             );
             if done {
                 // Dim the button with the row.
@@ -851,14 +1016,16 @@ impl State {
             ui,
             p,
             pos2(reminder.right() - 16.0, reminder.center().y),
-            ui.id().with("reminder"),
+            ui.scope_id().with("reminder"),
             &mut on,
         )
         .clicked()
         {
             actions.push(Action::SetPlanReminder(on));
         }
-        bottom.max(reminder.bottom())
+        let leave_bottom =
+            self.leave_on_page(ui, p, sx, reminder.bottom() + 16.0, side_w, u.plan.id, actions);
+        bottom.max(leave_bottom)
     }
 
     /// The reflection card: the verse quoted, and a note on it.
@@ -875,13 +1042,16 @@ impl State {
     ) -> f32 {
         let painter = ui.painter().clone();
         let saved = env.study.note(v).map(|n| n.body.clone()).unwrap_or_default();
-        // The save didn't land (the note isn't the text sent): keep the draft unsaved.
-        if let Some((sent, body)) = self.reflection_sent.take()
+        // A failed save keeps the draft unsaved. Success is the write's own result, so a
+        // remote edit that arrives after a successful save is not treated as a failure.
+        if let Some((sent, sent_body)) = self.reflection_sent.take()
             && let Some((rv, base, _)) = &mut self.reflection
             && *rv == v
-            && saved != body
         {
-            *base = sent;
+            let reported = env.note_saves.get(&v).and_then(|r| (r.body == sent_body).then_some(r.ok));
+            if note_save_failed(&saved, &sent_body, &sent, reported) {
+                *base = sent;
+            }
         }
         // New, or a sync changed the note under a draft with nothing typed: start from the note.
         if self
@@ -903,7 +1073,7 @@ impl State {
         );
         job.sections[0].format.line_height = Some(20.0);
         let quote = painter.layout_job(job);
-        let id = egui::Id::new(("reflection", v.key()));
+        let id = egui::Id::unique(("reflection", v.key()));
         let focused = ui.memory(|m| m.has_focus(id));
         let editor_h = 20.0f32.max(ui.ctx().data(|d| d.get_temp::<f32>(id.with("h"))).unwrap_or(20.0));
         let h = 16.0 + 16.0 + 10.0 + quote.size().y + 10.0 + editor_h + 10.0 + 24.0 + 16.0;
@@ -954,14 +1124,14 @@ impl State {
             p,
             card.right() - 16.0,
             fy + 12.0,
-            ui.id().with("save-reflection"),
+            ui.scope_id().with("save-reflection"),
         );
         let (_, cr) = Button::new(Kind::Plain, "Cancel").small().enabled(changed).show_right(
             ui,
             p,
             save.left() - 8.0,
             fy + 12.0,
-            ui.id().with("cancel-reflection"),
+            ui.scope_id().with("cancel-reflection"),
         );
         if sr.clicked() {
             let sent = std::mem::replace(base, draft.clone());

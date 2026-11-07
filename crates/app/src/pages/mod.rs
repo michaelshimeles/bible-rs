@@ -9,8 +9,11 @@ pub mod notes;
 pub mod plans;
 pub mod translations;
 
+use std::collections::HashMap;
+
 use eframe::egui::{self, Color32, FontId, Painter, Rect, ScrollArea, Ui, pos2, vec2};
 
+use bible_core::VerseRef;
 use bible_core::library::Library;
 use bible_core::study::StudyStore;
 
@@ -64,6 +67,24 @@ impl Page {
     }
 }
 
+/// Whether `Action::SaveNote` wrote the text the editor sent.
+#[derive(Debug, Clone)]
+pub struct NoteSaveResult {
+    pub body: String,
+    pub ok: bool,
+}
+
+/// Whether a just-sent note save should be treated as failed, restoring `sent_base` as the
+/// editor's saved text. Prefer the write's own result; only fall back to comparing texts when
+/// it hasn't been reported yet, and never treat a different stored note (a remote edit) as a
+/// failed save.
+pub fn note_save_failed(stored: &str, saved: &str, sent_base: &str, reported_ok: Option<bool>) -> bool {
+    match reported_ok {
+        Some(ok) => !ok,
+        None => stored != saved && stored == sent_base,
+    }
+}
+
 /// What a page reads from the app each frame.
 pub struct PageEnv<'a> {
     pub library: &'a Library,
@@ -73,6 +94,9 @@ pub struct PageEnv<'a> {
     pub query: &'a str,
     /// The toolbar's height (content starts 24 pt below it).
     pub toolbar: f32,
+    /// The last `Action::SaveNote` for each verse, so editors don't infer failure from text
+    /// that another device can change after a successful save.
+    pub note_saves: &'a HashMap<VerseRef, NoteSaveResult>,
 }
 
 /// The open page and each page's own state.
@@ -154,7 +178,7 @@ impl Pages {
                 );
             },
         );
-        self.scrolled = out.state.offset.y > 0.5;
+        self.scrolled = out.state.clamped_offset().y > 0.5;
     }
 }
 
@@ -360,7 +384,7 @@ impl Empty<'_> {
             let trail = self.buttons.last().map_or(0.0, |b| b.rest_inset());
             let mut x = cx - (total - lead - trail) / 2.0 - lead;
             for (i, (b, w)) in self.buttons.iter().zip(widths).enumerate() {
-                responses.push(b.show_left(ui, p, x, y + 16.0, ui.id().with(("empty-button", i))).1);
+                responses.push(b.show_left(ui, p, x, y + 16.0, ui.scope_id().with(("empty-button", i))).1);
                 x += w + BUTTON_GAP;
             }
             y += 32.0;
@@ -397,4 +421,34 @@ pub fn under_toolbar(ui: &Ui, content: Rect) -> egui::Rangef {
 /// with 45 % of the leftover height above it, and never above `min_top`.
 pub fn optical_top(area: egui::Rangef, h: f32, min_top: f32) -> f32 {
     (area.min + (area.span() - h).max(0.0) * 0.45).max(min_top)
+}
+
+#[cfg(test)]
+mod note_save_tests {
+    use super::note_save_failed;
+
+    #[test]
+    fn a_reported_success_keeps_the_saved_text_even_if_the_store_moved_on() {
+        assert!(!note_save_failed("remote", "mine", "old", Some(true)));
+    }
+
+    #[test]
+    fn a_reported_failure_restores_the_base() {
+        assert!(note_save_failed("old", "mine", "old", Some(false)));
+    }
+
+    #[test]
+    fn without_a_report_a_later_remote_edit_is_not_treated_as_failure() {
+        assert!(!note_save_failed("remote", "mine", "old", None));
+    }
+
+    #[test]
+    fn without_a_report_an_unchanged_store_means_the_save_failed() {
+        assert!(note_save_failed("old", "mine", "old", None));
+    }
+
+    #[test]
+    fn without_a_report_a_store_that_matches_the_saved_text_succeeded() {
+        assert!(!note_save_failed("mine", "mine", "old", None));
+    }
 }

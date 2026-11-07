@@ -65,7 +65,7 @@ SUMS="dist/bible-rs-${VERSION}-SHA256SUMS.txt"
 # Installed copies read releases/latest/download/appcast.xml (SUFeedURL), which points them at
 # this release's zip.
 APPCAST="dist/appcast.xml"
-REPO_URL="https://github.com/michaelshimeles/bible-rs"
+REPO_URL="https://github.com/michaelshimeles/bible"
 SPARKLE_ACCOUNT="${SPARKLE_ACCOUNT:-bible-rs}"
 SPARKLE_PUBLIC_KEY="$(sed -n 's/^SPARKLE_PUBLIC_KEY="\(.*\)"$/\1/p' scripts/bundle-macos.sh)"
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: Fabrika LLC (5S3KCRYBD2)}"

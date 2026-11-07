@@ -104,7 +104,7 @@ impl Onboarding {
                 let r =
                     Rect::from_min_size(pos2(footer.left() + 32.0, footer.center().y - 16.0), vec2(w, 32.0));
                 let back = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                if widgets::plain_button(ui, p, r, "Back", ui.id().with("back")).clicked() || back {
+                if widgets::plain_button(ui, p, r, "Back", ui.scope_id().with("back")).clicked() || back {
                     self.step = 0;
                     next = false;
                 }
@@ -112,8 +112,15 @@ impl Onboarding {
         }
         let w = widgets::primary_button_width(ui, "Continue", true);
         let r = Rect::from_min_size(pos2(footer.right() - 32.0 - w, footer.center().y - 16.0), vec2(w, 32.0));
-        if widgets::primary_button(ui, p, r, "Continue", Some(icons::arrow_right), ui.id().with("continue"))
-            .clicked()
+        if widgets::primary_button(
+            ui,
+            p,
+            r,
+            "Continue",
+            Some(icons::arrow_right),
+            ui.scope_id().with("continue"),
+        )
+        .clicked()
         {
             next = true;
         }
@@ -179,7 +186,7 @@ impl Onboarding {
                 pos2(left + (i % 3) as f32 * (266.0 + 16.0), top + 296.0 + (i / 3) as f32 * (114.0 + 16.0)),
                 vec2(266.0, 114.0),
             );
-            let resp = ui.interact(card, ui.id().with(("translation", *id)), Sense::click());
+            let resp = ui.interact(card, ui.scope_id().with(("translation", *id)), Sense::click());
             let on = settings.translation == *id;
             if on {
                 painter.rect_filled(card.expand(2.0), 14.0, p.accent);
@@ -262,7 +269,7 @@ impl Onboarding {
             let card =
                 Rect::from_min_size(pos2(left + i as f32 * (244.0 + 24.0), top + 170.0), vec2(244.0, 288.0));
             let radio_row = Rect::from_min_size(pos2(card.left(), card.bottom() + 14.0), vec2(244.0, 16.0));
-            let resp = ui.interact(card.union(radio_row), ui.id().with(("theme", i)), Sense::click());
+            let resp = ui.interact(card.union(radio_row), ui.scope_id().with(("theme", i)), Sense::click());
             let on = settings.theme == t;
             if on {
                 painter.rect_filled(card.expand(6.0), 20.0, p.focus);
@@ -325,7 +332,16 @@ impl Onboarding {
         paint_on_baseline(&painter, x, css_baseline(y, 24.0, 14.0, true), small, p.ink_2);
         x += sw + 12.0;
         let slider = Rect::from_min_size(pos2(x, y), vec2(280.0, 24.0));
-        widgets::slider(ui, p, slider, ui.id().with("size"), &mut settings.typo.size, 14.0..=32.0, 1.0, 7);
+        widgets::slider(
+            ui,
+            p,
+            slider,
+            ui.scope_id().with("size"),
+            &mut settings.typo.size,
+            14.0..=32.0,
+            1.0,
+            7,
+        );
         x += 280.0 + 12.0;
         let bw = large.size().x;
         paint_on_baseline(&painter, x, css_baseline(y, 24.0, 22.0, true), large, p.ink_2);
@@ -441,7 +457,7 @@ pub fn app_icon(painter: &Painter, r: Rect) {
 /// The logo resampled to `side` pixels, made once per size. The wgpu renderer makes no mipmaps,
 /// so a larger texture drawn small would alias.
 fn logo_texture(ctx: &egui::Context, side: u32) -> egui::TextureHandle {
-    let id = egui::Id::new(("app-icon", side));
+    let id = egui::Id::unique(("app-icon", side));
     if let Some(texture) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return texture;
     }

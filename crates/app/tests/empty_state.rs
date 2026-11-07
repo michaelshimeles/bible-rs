@@ -169,7 +169,15 @@ fn the_empty_notes_page_scrolls_to_its_last_row_in_a_short_window() {
     let library = bible_core::library::Library::open(&dir, std::sync::Arc::new(|| {}));
     let study = bible_core::study::StudyStore::open_in_memory().unwrap();
     let settings = bible_rs::app::Settings::default();
-    let env = PageEnv { library: &library, study: &study, settings: &settings, query: "", toolbar: 52.0 };
+    let note_saves = std::collections::HashMap::new();
+    let env = PageEnv {
+        library: &library,
+        study: &study,
+        settings: &settings,
+        query: "",
+        toolbar: 52.0,
+        note_saves: &note_saves,
+    };
     let mut pages = Pages::default();
     pages.open(Page::Notes);
     let window = Rect::from_min_size(Pos2::ZERO, vec2(620.0, 420.0));
@@ -207,6 +215,7 @@ fn the_empty_notes_page_scrolls_to_its_last_row_in_a_short_window() {
                 delta: vec2(0.0, dy),
                 modifiers: egui::Modifiers::NONE,
                 phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
             },
         ]
     };

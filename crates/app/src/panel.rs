@@ -126,7 +126,7 @@ impl VersePanel {
                 Rect::from_min_size(pos2(footer.left() + 16.0, footer.center().y - 12.0), vec2(w, 24.0));
             let resp = ui.interact(
                 button,
-                ui.id().with("add-parallel"),
+                ui.scope_id().with("add-parallel"),
                 if enabled { Sense::click() } else { Sense::hover() },
             );
             let fade = if enabled { 1.0 } else { 0.4 };
@@ -283,7 +283,7 @@ fn round_button(
     icon: fn(&egui::Painter, Rect, egui::Color32),
     tip: &str,
 ) -> egui::Response {
-    let resp = ui.interact(r, ui.id().with(id), Sense::click());
+    let resp = ui.interact(r, ui.scope_id().with(id), Sense::click());
     if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
         ui.painter().circle_filled(r.center(), 14.0, fill);
     }

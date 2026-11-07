@@ -16,7 +16,7 @@ export const NAME = 'Bible';
  * name in the JSON-LD. src/lib/topics/build.mjs reads it from here for the topic pages' titles.
  */
 export const SITE_NAME = 'Simply My Bible';
-export const REPO_URL = 'https://github.com/michaelshimeles/bible-rs';
+export const REPO_URL = 'https://github.com/michaelshimeles/bible';
 
 /** The DMG on the latest GitHub release. */
 export const DOWNLOAD_URL = `${REPO_URL}/releases/latest/download/bible-rs-universal.dmg`;

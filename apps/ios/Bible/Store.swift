@@ -16,6 +16,9 @@ struct ReaderSettings: Codable, Equatable {
     var headings = true
     var wholeWords = false
     var bookLayout = BookLayout.allBooks
+    /// Study Library (beta): sync notes, highlights, bookmarks and plans through this app's
+    /// iCloud Drive folder. Off until the reader turns it on.
+    var studyLibrary = false
 
     static let textSizes: ClosedRange<Double> = 14...32
     static let lineSpacings: ClosedRange<Double> = 1.3...2.0
@@ -39,6 +42,7 @@ struct ReaderSettings: Codable, Equatable {
         headings = value(.headings, d.headings)
         wholeWords = value(.wholeWords, d.wholeWords)
         bookLayout = value(.bookLayout, d.bookLayout)
+        studyLibrary = value(.studyLibrary, d.studyLibrary)
     }
 }
 
@@ -88,6 +92,7 @@ final class Store {
         didSet {
             guard settings != oldValue else { return }
             if settings.translation != oldValue.translation { translationChanged() }
+            if settings.studyLibrary != oldValue.studyLibrary { studyLibraryToggled() }
             scheduleSave()
         }
     }
@@ -104,6 +109,23 @@ final class Store {
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
+
+    /// Study Library (beta) status shown in Settings.
+    private(set) var studyLibraryLabel = "Off"
+    private(set) var studyLibraryDetail: String?
+    private(set) var studyLibrarySyncing = false
+    @ObservationIgnored private var studyLibraryTask: Task<Void, Never>?
+    @ObservationIgnored private var studyLibraryDebounce: Task<Void, Never>?
+    @ObservationIgnored private var studyLibraryPoll: Task<Void, Never>?
+    @ObservationIgnored private var studyLibraryRetry: Task<Void, Never>?
+    @ObservationIgnored private var iCloudQuery: NSMetadataQuery?
+    @ObservationIgnored private var iCloudQueryObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var identityObserver: NSObjectProtocol?
+    @ObservationIgnored private var queryDidGather = false
+    @ObservationIgnored private var lastSyncedAt: Date?
+    @ObservationIgnored private var studyLibraryQueued = false
+    /// Incremented when sync is turned off so an older background pass cannot clear a newer one.
+    @ObservationIgnored private var studyLibraryGeneration: UInt64 = 0
 
     init() {
         let bible = Self.openBible()
@@ -127,6 +149,12 @@ final class Store {
         self.settings = settings
         self.position = position
         jump = JumpRequest(chapter: position.chapter, verse: position.verse)
+        if ProcessInfo.processInfo.arguments.contains("--open-settings") {
+            sheet = .settings
+        }
+        if settings.studyLibrary {
+            startStudyLibrary()
+        }
     }
 
     /// The study database and imported texts live in Application Support. If that can't be
@@ -286,8 +314,15 @@ final class Store {
     func note(_ ref: VerseRef) -> String { (try? bible.note(verse: ref)) ?? "" }
 
     @discardableResult
-    func setNote(_ ref: VerseRef, _ body: String) -> Bool {
-        study { try bible.setNote(verse: ref, body: body) }
+    func setNote(_ ref: VerseRef, _ body: String, over base: String) -> Bool {
+        var conflict = false
+        let ok = study { conflict = try bible.setNoteOver(verse: ref, body: body, base: base) }
+        if ok, conflict {
+            show(
+                "A note was edited on two devices. Both versions are kept; you can choose on a Mac in Settings › Data."
+            )
+        }
+        return ok
     }
 
     func setHighlight(_ ref: VerseRef, _ color: HighlightColor?) {
@@ -316,6 +351,7 @@ final class Store {
         defer { marksVersion += 1 }
         do {
             try change()
+            scheduleStudyLibrarySync()
             return true
         } catch {
             show("Couldn’t save: \(error.localizedDescription)")
@@ -357,6 +393,244 @@ final class Store {
         let saved = Saved(settings: settings, chapter: position.chapter, verse: position.verse)
         guard let data = try? JSONEncoder().encode(saved), let json = String(data: data, encoding: .utf8) else { return }
         try? bible.setSetting(key: "ios", value: json)
+    }
+
+    // MARK: Study Library (iCloud)
+
+    func studyLibraryForeground() {
+        guard settings.studyLibrary else { return }
+        startStudyLibrary()
+        syncStudyLibraryNow()
+    }
+
+    func syncStudyLibraryNow() {
+        guard settings.studyLibrary else { return }
+        studyLibraryDebounce?.cancel()
+        studyLibraryRetry?.cancel()
+        runStudyLibrarySync()
+    }
+
+    private func studyLibraryToggled() {
+        if settings.studyLibrary {
+            startStudyLibrary()
+            syncStudyLibraryNow()
+        } else {
+            stopStudyLibrary()
+            studyLibraryLabel = "Off"
+            studyLibraryDetail = nil
+            studyLibrarySyncing = false
+        }
+    }
+
+    private func scheduleStudyLibrarySync() {
+        guard settings.studyLibrary else { return }
+        studyLibraryDebounce?.cancel()
+        studyLibraryDebounce = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            self?.syncStudyLibraryNow()
+        }
+    }
+
+    private func startStudyLibrary() {
+        guard !ProcessInfo.processInfo.arguments.contains("--uitest") else { return }
+        startIdentityObserver()
+        startICloudQuery()
+        startStudyLibraryPoll()
+    }
+
+    private func stopStudyLibrary() {
+        studyLibraryGeneration += 1
+        studyLibraryDebounce?.cancel()
+        studyLibraryDebounce = nil
+        studyLibraryRetry?.cancel()
+        studyLibraryRetry = nil
+        studyLibraryPoll?.cancel()
+        studyLibraryPoll = nil
+        // Leave `studyLibraryTask` until that pass finishes and reports in; cancel() does not
+        // stop the folder work already running, and clearing the handle here would let a new
+        // pass start while the old one can still clear it.
+        studyLibraryQueued = false
+        queryDidGather = false
+        stopICloudQuery()
+        stopIdentityObserver()
+    }
+
+    private func startStudyLibraryPoll() {
+        guard studyLibraryPoll == nil else { return }
+        studyLibraryPoll = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled, self.settings.studyLibrary {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled, self.settings.studyLibrary else { return }
+                self.syncStudyLibraryNow()
+            }
+        }
+    }
+
+    private func startIdentityObserver() {
+        guard identityObserver == nil else { return }
+        identityObserver = NotificationCenter.default.addObserver(
+            forName: .NSUbiquityIdentityDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.queryDidGather = false
+                self?.syncStudyLibraryNow()
+            }
+        }
+    }
+
+    private func stopIdentityObserver() {
+        if let identityObserver {
+            NotificationCenter.default.removeObserver(identityObserver)
+            self.identityObserver = nil
+        }
+    }
+
+    private func startICloudQuery() {
+        guard iCloudQuery == nil else { return }
+        let query = NSMetadataQuery()
+        query.predicate = NSPredicate(value: true)
+        query.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
+        let center = NotificationCenter.default
+        let gathered = center.addObserver(
+            forName: .NSMetadataQueryDidFinishGathering, object: query, queue: .main
+        ) { [weak self] note in
+            Task { @MainActor [weak self] in
+                self?.handleICloudQuery(note.object as? NSMetadataQuery, gathered: true)
+            }
+        }
+        let updated = center.addObserver(
+            forName: .NSMetadataQueryDidUpdate, object: query, queue: .main
+        ) { [weak self] note in
+            Task { @MainActor [weak self] in
+                self?.handleICloudQuery(note.object as? NSMetadataQuery, gathered: false)
+            }
+        }
+        iCloudQueryObservers = [gathered, updated]
+        iCloudQuery = query
+        query.start()
+    }
+
+    private func stopICloudQuery() {
+        iCloudQuery?.stop()
+        iCloudQuery = nil
+        for observer in iCloudQueryObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        iCloudQueryObservers = []
+    }
+
+    private func handleICloudQuery(_ query: NSMetadataQuery?, gathered: Bool) {
+        guard let query else { return }
+        query.disableUpdates()
+        defer { query.enableUpdates() }
+        if gathered { queryDidGather = true }
+        var pending = 0
+        for item in query.results {
+            guard let item = item as? NSMetadataItem else { continue }
+            let path = item.value(forAttribute: NSMetadataItemPathKey) as? String ?? ""
+            guard path.contains(StudyLibrary.folderName) else { continue }
+            let status = item.value(forAttribute: NSMetadataUbiquitousItemDownloadingStatusKey) as? String
+            if status == NSMetadataUbiquitousItemDownloadingStatusNotDownloaded {
+                if let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL {
+                    StudyLibrary.startDownloading(url)
+                }
+                pending += 1
+            }
+        }
+        if pending > 0 || gathered {
+            scheduleStudyLibrarySync()
+        }
+    }
+
+    private func runStudyLibrarySync() {
+        if studyLibraryTask != nil {
+            studyLibraryQueued = true
+            return
+        }
+        studyLibrarySyncing = true
+        if studyLibraryLabel == "Off" || studyLibraryLabel.isEmpty {
+            studyLibraryLabel = "Syncing…"
+        }
+        let bible = bible
+        let queryDidGather = queryDidGather
+        let generation = studyLibraryGeneration
+        studyLibraryTask = Task.detached(priority: .utility) { [weak self] in
+            let outcome = StudyLibrary.run(bible: bible, queryDidGather: queryDidGather)
+            await self?.applyStudyLibrary(outcome, generation: generation)
+        }
+    }
+
+    private func applyStudyLibrary(_ outcome: StudyLibrary.Outcome, generation: UInt64) {
+        studyLibraryTask = nil
+        if generation != studyLibraryGeneration {
+            // The older pass may already have merged remote items into the local
+            // store before we rejected its status. Refresh study views for those.
+            if case .synced(let changed, _, _, _, _) = outcome, changed > 0 {
+                marksVersion += 1
+            }
+            if settings.studyLibrary, studyLibraryQueued {
+                studyLibraryQueued = false
+                runStudyLibrarySync()
+            }
+            return
+        }
+        studyLibrarySyncing = false
+        switch outcome {
+        case .signedOut:
+            studyLibraryLabel = "iCloud is signed out"
+            studyLibraryDetail = "Sign in to iCloud in the Settings app to sync this library."
+        case .unavailable:
+            studyLibraryLabel = "iCloud isn’t available"
+            studyLibraryDetail = "This iPhone couldn’t reach the Study Library folder."
+        case .waiting(let count):
+            studyLibraryLabel = "Waiting for iCloud…"
+            studyLibraryDetail =
+                count == 1 ? "1 file is still downloading." : "\(count) files are still downloading."
+            retryStudyLibrary(after: 3)
+        case .waitingToAppear:
+            studyLibraryLabel = "Waiting for iCloud…"
+            studyLibraryDetail = "Checking for a library already in iCloud Drive."
+            retryStudyLibrary(after: 3)
+        case .synced(let changed, let conflicts, let label, let offline, let devices):
+            let now = Date()
+            lastSyncedAt = now
+            studyLibraryLabel = label
+            if offline {
+                studyLibraryDetail = "The folder can’t be reached right now."
+            } else {
+                let others: String
+                switch devices {
+                case 0: others = "no other devices yet"
+                case 1: others = "1 other device"
+                default: others = "\(devices) other devices"
+                }
+                studyLibraryDetail = "Last synced \(now.formatted(date: .omitted, time: .shortened)) · \(others)"
+            }
+            if changed > 0 { marksVersion += 1 }
+            if conflicts > 0 {
+                show(
+                    "A note was edited on two devices. Both versions are kept; you can choose on a Mac in Settings › Data."
+                )
+            }
+        case .failed(let message):
+            studyLibraryLabel = "Couldn’t sync"
+            studyLibraryDetail = message
+            retryStudyLibrary(after: 8)
+        }
+        if studyLibraryQueued {
+            studyLibraryQueued = false
+            runStudyLibrarySync()
+        }
+    }
+
+    private func retryStudyLibrary(after seconds: Double) {
+        studyLibraryRetry?.cancel()
+        studyLibraryRetry = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            self?.syncStudyLibraryNow()
+        }
     }
 }
 

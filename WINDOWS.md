@@ -65,7 +65,7 @@ The app updates itself from inside the app, with no browser:
    **Later**.
 3. **Update** downloads `bible-rs-<version>-windows-x64-setup.exe` from the release and shows its
    progress. The app takes the file only from
-   `https://github.com/michaelshimeles/bible-rs/releases/download/v<version>/`, over HTTPS,
+   `https://github.com/michaelshimeles/bible/releases/download/v<version>/`, over HTTPS,
    redirects included. Before running it, the app checks two things. Its size must be the size
    GitHub lists. Its SHA-256 must match every checksum the release gives for it: the one GitHub
    lists for the file, and the one in the release's `bible-rs-<version>-windows-x64-SHA256SUMS.txt`.

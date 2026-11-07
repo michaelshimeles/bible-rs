@@ -489,7 +489,7 @@ impl Reader {
                 ui.ctx().request_repaint();
             }
         }
-        let id = Id::new("reader");
+        let id = Id::unique("reader");
         // Text runs under the toolbar, but clicks there belong to the toolbar (and the window).
         let below_toolbar = Rect::from_min_max(pos2(rect.left(), rect.top() + env.toolbar), rect.max);
         let resp = ui.interact(below_toolbar, id, Sense::click_and_drag());
@@ -1150,7 +1150,8 @@ impl Reader {
         let active = resp.hovered() || resp.dragged();
         // Overlay scroller: visible while scrolling and for a moment after, or under the pointer.
         let since = ui.input(|i| i.time) - self.scrolled_at;
-        let shown = ui.ctx().animate_bool_with_time(Id::new("reader-scroller"), active || since < 1.0, 0.2);
+        let shown =
+            ui.ctx().animate_bool_with_time(Id::unique("reader-scroller"), active || since < 1.0, 0.2);
         if since < 1.0 {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }
@@ -1190,7 +1191,7 @@ impl Reader {
             egui::Tooltip::always_open(
                 ui.ctx().clone(),
                 ui.layer_id(),
-                Id::new("bar-tip"),
+                Id::unique("bar-tip"),
                 egui::PopupAnchor::Pointer,
             )
             .show(|ui| {

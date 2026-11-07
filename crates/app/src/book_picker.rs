@@ -65,7 +65,7 @@ struct Keys {
 
 /// Whether the picker is open (it takes the arrow keys, return and escape then).
 pub fn is_open(ctx: &egui::Context) -> bool {
-    egui::Popup::is_id_open(ctx, Id::new(POPUP))
+    egui::Popup::is_id_open(ctx, Id::unique(POPUP))
 }
 
 /// The picker, opening from `anchor`; `here` is the chapter being read.
@@ -76,9 +76,9 @@ pub fn show(
     here: ChapterIdx,
     actions: &mut Vec<Action>,
 ) {
-    let state_id = Id::new(POPUP).with("state");
+    let state_id = Id::unique(POPUP).with("state");
     let shown = menu::popup(anchor, p)
-        .id(Id::new(POPUP))
+        .id(Id::unique(POPUP))
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             let mut state: State = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
@@ -165,7 +165,7 @@ fn follow_pointer(ui: &Ui, state: &mut State, hovered: Option<Spot>) {
 
 fn cell_response(ui: &Ui, r: Rect, id: Id, label: &str, selected: bool) -> Response {
     let resp = ui.interact(r, id, Sense::CLICK);
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
     resp
 }
 
@@ -267,7 +267,7 @@ fn books(
                 area.top() + m::HEADER_HEIGHT + row as f32 * cell.y,
             );
             let r = Rect::from_min_size(min, cell);
-            (r, cell_response(ui, r, ui.id().with(("book", i)), &names[i], i == current))
+            (r, cell_response(ui, r, ui.scope_id().with(("book", i)), &names[i], i == current))
         })
         .collect();
     follow_pointer(ui, state, cells.iter().position(|(_, r)| r.hovered()).map(Spot::Cell));
@@ -370,7 +370,7 @@ fn chapters(
         }
     }
 
-    let back_resp = cell_response(ui, back, ui.id().with("books"), "Books", false);
+    let back_resp = cell_response(ui, back, ui.scope_id().with("books"), "Books", false);
     let cells: Vec<(Rect, Response)> = (0..n)
         .map(|i| {
             let min = pos2(
@@ -378,7 +378,16 @@ fn chapters(
                 top + (i / CHAPTER_COLUMNS) as f32 * cell.y,
             );
             let r = Rect::from_min_size(min, cell);
-            (r, cell_response(ui, r, ui.id().with(("chapter", i)), &(i + 1).to_string(), Some(i) == current))
+            (
+                r,
+                cell_response(
+                    ui,
+                    r,
+                    ui.scope_id().with(("chapter", i)),
+                    &(i + 1).to_string(),
+                    Some(i) == current,
+                ),
+            )
         })
         .collect();
     let hovered = if back_resp.hovered() {

@@ -64,7 +64,7 @@ impl State {
             p,
             right,
             cy,
-            ui.id().with("export"),
+            ui.scope_id().with("export"),
         );
         if resp.clicked() {
             actions.push(Action::Export(ExportKind::Markdown));
@@ -73,7 +73,7 @@ impl State {
             ui,
             p,
             pos2(export.left() - 8.0, cy),
-            ui.id().with("order"),
+            ui.scope_id().with("order"),
             &["Canonical", "Recent"],
             usize::from(self.recent),
         );
@@ -110,7 +110,7 @@ impl State {
             let lines = flow(&painter, &verse, &serif, 13.0, width, 2);
             let h = 12.0 + 22.0 + LINE * lines.len().max(1) as f32 + 12.0;
             let row = Rect::from_min_size(pos2(left, y), vec2(right - left, h));
-            let resp = ui.interact(row, ui.id().with(("bookmark", v.key())), Sense::click());
+            let resp = ui.interact(row, ui.scope_id().with(("bookmark", v.key())), Sense::click());
             let hovered = ui.rect_contains_pointer(row);
             if hovered {
                 let fill = if resp.is_pointer_button_down_on() { p.fill_strong } else { p.fill };
@@ -130,13 +130,13 @@ impl State {
             let mut acted = false;
             if hovered {
                 let go = Rect::from_min_size(pos2(right - 16.0 - 58.0, y + 12.0), vec2(28.0, 28.0));
-                let id = ui.id().with(("bookmark-go", v.key()));
+                let id = ui.scope_id().with(("bookmark-go", v.key()));
                 if widgets::round_button(ui, p, go, icons::arrow_right, id).clicked() {
                     acted = true;
                     open(v, actions);
                 }
                 let bin = go.translate(vec2(30.0, 0.0));
-                let id = ui.id().with(("bookmark-remove", v.key()));
+                let id = ui.scope_id().with(("bookmark-remove", v.key()));
                 if widgets::round_button(ui, p, bin, icons::trash, id).clicked() {
                     acted = true;
                     actions.push(Action::RemoveBookmark(v));

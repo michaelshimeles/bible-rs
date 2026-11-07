@@ -65,7 +65,7 @@ impl ComparePopover {
 
         // Rows that fit under the verse (or above it), the rest summarised in the footer.
         let painter =
-            ctx.layer_painter(egui::LayerId::new(Order::Foreground, egui::Id::new("compare-measure")));
+            ctx.layer_painter(egui::LayerId::new(Order::Foreground, egui::Id::unique("compare-measure")));
         let heights: Vec<f32> = rows
             .iter()
             .map(|(_, _, t)| 16.0 + 20.0 * flow(&painter, t, &serif, 10.0, MEASURE, 8).len().max(1) as f32)
@@ -92,7 +92,7 @@ impl ComparePopover {
         let rect = Rect::from_min_size(pos2(left, top), vec2(WIDTH, height));
 
         let mut close = false;
-        let area = egui::Area::new(egui::Id::new("compare-popover"))
+        let area = egui::Area::new(egui::Id::unique("compare-popover"))
             .order(Order::Foreground)
             .fixed_pos(rect.min)
             .show(ctx, |ui| {
@@ -130,13 +130,15 @@ impl ComparePopover {
                     pos2(rect.right() - 12.0 - 28.0, rect.top() + 18.0),
                     vec2(28.0, 28.0),
                 );
-                if widgets::round_button(ui, p, close_r, icons::close, ui.id().with("compare-close"))
+                if widgets::round_button(ui, p, close_r, icons::close, ui.scope_id().with("compare-close"))
                     .clicked()
                 {
                     close = true;
                 }
                 let copy_r = close_r.translate(vec2(-32.0, 0.0));
-                if widgets::round_button(ui, p, copy_r, icons::copy, ui.id().with("compare-copy")).clicked() {
+                if widgets::round_button(ui, p, copy_r, icons::copy, ui.scope_id().with("compare-copy"))
+                    .clicked()
+                {
                     let all: Vec<String> = rows.iter().map(|(_, a, t)| format!("{a}: {t}")).collect();
                     ui.ctx().copy_text(format!("{}\n{}", v.display(), all.join("\n")));
                     actions.push(Action::Toast(format!("Copied {} in {n} translations", v.display())));
@@ -147,7 +149,7 @@ impl ComparePopover {
                 let mut y = rect.top() + 60.0 + 6.0;
                 for ((id, abbrev, verse), h) in rows.iter().zip(&heights).take(shown) {
                     let row = Rect::from_min_size(pos2(rect.left() + 8.0, y), vec2(WIDTH - 16.0, *h));
-                    let resp = ui.interact(row, ui.id().with(("compare-row", id)), Sense::click());
+                    let resp = ui.interact(row, ui.scope_id().with(("compare-row", id)), Sense::click());
                     let current = *id == settings.translation;
                     if current {
                         painter.rect_filled(row, 8.0, p.accent_soft);
@@ -197,7 +199,7 @@ impl ComparePopover {
                         p,
                         rect.right() - 12.0,
                         footer.top() + 10.0 + 12.0,
-                        ui.id().with("compare-parallel"),
+                        ui.scope_id().with("compare-parallel"),
                     );
                 if open.clicked() {
                     for (id, _, _) in rows.iter().take(shown).skip(1) {

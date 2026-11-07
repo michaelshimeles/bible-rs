@@ -64,8 +64,13 @@ impl State {
 
         // Header actions: the range, and Clear….
         let cy = top + 26.0 + 16.0;
-        let (clear, resp) =
-            Button::new(Kind::Plain, "Clear…").show_right(ui, p, right, cy, ui.id().with("clear-history"));
+        let (clear, resp) = Button::new(Kind::Plain, "Clear…").show_right(
+            ui,
+            p,
+            right,
+            cy,
+            ui.scope_id().with("clear-history"),
+        );
         crate::menu::popup(&resp, p).show(|ui| {
             ui.set_min_width(200.0);
             if ui.button("Clear Today").clicked() {
@@ -83,7 +88,7 @@ impl State {
             ui,
             p,
             pos2(clear.left() - 8.0, cy),
-            ui.id().with("history-range"),
+            ui.scope_id().with("history-range"),
             &["Today", "Week", "All"],
             self.range,
         );
@@ -161,7 +166,7 @@ impl State {
     ) {
         let painter = ui.painter().clone();
         let (x0, y) = (row.left(), row.top());
-        let resp = ui.interact(row, ui.id().with(("session", s.started)), Sense::click());
+        let resp = ui.interact(row, ui.scope_id().with(("session", s.started)), Sense::click());
         text(&painter, x0 + 48.0, y, 20.0, &time::clock(s.started), theme::ui_medium(12.0), p.ink_3, true);
         // The rail: a dot, and a line down to the next session.
         painter.circle_filled(pos2(x0 + 68.0, y + 10.5), 4.5, p.accent);

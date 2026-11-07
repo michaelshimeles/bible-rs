@@ -438,9 +438,9 @@ pub fn bar(
     let painter = painter.with_clip_rect(panel);
 
     // Clicks on the bar don't reach the text beneath it.
-    ui.interact(panel, Id::new("recall-bar"), Sense::click_and_drag());
+    ui.interact(panel, Id::unique("recall-bar"), Sense::click_and_drag());
     let cy = panel.center().y;
-    let (back_rect, back_resp) = back.show_left(ui, p, panel.left() + pad, cy, Id::new("recall-back"));
+    let (back_rect, back_resp) = back.show_left(ui, p, panel.left() + pad, cy, Id::unique("recall-back"));
     if back_resp.on_hover_text("Back to reading (Esc)").clicked() {
         actions.push(Action::EndRecall);
     }
@@ -464,7 +464,7 @@ pub fn bar(
     let mut right = panel.right() - pad + 6.0;
     for (i, (button, action)) in buttons.iter().enumerate().rev() {
         right -= 6.0;
-        let (_, resp) = button.show_right(ui, p, right, cy, Id::new(("recall-bar", i)));
+        let (_, resp) = button.show_right(ui, p, right, cy, Id::unique(("recall-bar", i)));
         let resp = if done { resp.on_hover_text(&labels[i]) } else { resp };
         right -= widths[i];
         if resp.clicked() {
